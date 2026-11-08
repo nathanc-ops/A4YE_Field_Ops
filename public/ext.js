@@ -587,7 +587,7 @@ async function viewAccounting() {
   const { params } = hashParams();
   const tab = params.get('tab') || 'overview';
   await loadAccounts(true);
-  const tabs = [['overview', 'Overview'], ['coa', 'Chart of accounts'], ['journal', 'Journal'], ['bills', 'Bills (A/P)'], ['statements', 'Financial statements'], ['payroll', 'Labor & payroll'], ['close', 'Close books']];
+  const tabs = [['overview', 'Overview'], ['banking', 'Banking'], ['coa', 'Chart of accounts'], ['journal', 'Journal'], ['bills', 'Bills (A/P)'], ['statements', 'Financial statements'], ['payroll', 'Labor & payroll'], ['close', 'Close books']];
   $('#view').innerHTML = setTop('Accounting', `<a class="btn" href="#/accounting/bills/new">+ Bill</a><button class="btn primary" id="je">+ Journal entry</button>`,
     'Double-entry ledger. Invoices, payments, bills, expenses, stock usage and labor post automatically.') +
     `<div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-t="${k}">${l}</button>`).join('')}</div><div id="acc"></div>`;
@@ -629,6 +629,7 @@ async function viewAccounting() {
     $$('[data-s]').forEach(b => b.onclick = () => go('#/accounting' + qs({ tab, status: b.dataset.s })));
   }
   if (tab === 'statements') await statements(E, params);
+  if (tab === 'banking') await bankingTab(E, params);
   if (tab === 'payroll') {
     const weeks = await GET('/accounting/labor');
     E.innerHTML = `<div class="grid g2"><div class="card"><h2>Labor accrual by week</h2><p class="small muted">Posts each week's clocked hours at loaded cost (wage + burden): job time to Direct Labor (5000), shop/training/PTO to Indirect Labor (6000), against Accrued Payroll &amp; Burden (2100). Re-post if time was edited.</p>
@@ -860,6 +861,149 @@ function ccForm(c) {
       { name: 'ply_code', label: 'Ply cost code (if different)' }, { name: 'active', label: 'Active', type: 'checkbox', default: 1 }],
     submit: async d => { if (c.id) await PUT('/cost-codes/' + c.id, d); else await POST('/cost-codes', d); await loadCostCodes(true); toast('Saved'); route(); },
   });
+}
+
+// ============================================================ banking & reconciliation (admin)
+const signed = n => `<span style="font-variant-numeric:tabular-nums;white-space:nowrap">${n < 0 ? '−' : '+'}${money(Math.abs(n))}</span>`;
+async function bankingTab(E, params) {
+  const accts = await GET('/banking/accounts');
+  if (!accts.length) { E.innerHTML = '<div class="empty">No bank or credit card accounts. Add one in Chart of accounts with Detail = Bank account or Credit card.</div>'; return; }
+  const acctId = Number(params.get('acct')) || accts[0].id;
+  const acct = accts.find(a => a.id === acctId) || accts[0];
+  const status = params.get('status') ?? 'unmatched';
+  const [txs, rules, recs] = await Promise.all([GET('/banking/transactions' + qs({ account_id: acct.id, status })), GET('/banking/rules'), GET('/reconciliations' + qs({ account_id: acct.id }))]);
+  const lastDone = recs.find(r => r.status === 'completed');
+  E.innerHTML = `<div class="grid g4">${accts.map(a => `<a class="card kpi" href="#/accounting${qs({ tab: 'banking', acct: a.id })}" style="text-decoration:none;color:inherit;${a.id === acct.id ? 'outline:2px solid var(--brand)' : ''}">
+      <div class="label">${esc(a.number)} · ${esc(a.name)}</div><div class="value">${money0(a.book_balance)}</div>
+      <div class="sub">${a.to_review ? `<span class="pill warn">${a.to_review} to review</span> ` : ''}${a.last_reconciled ? `Reconciled through ${fmtDate(a.last_reconciled.statement_date)}` : 'Never reconciled'}</div></a>`).join('')}</div>
+    <div class="card" style="margin-top:14px"><div class="row spread"><h2>${esc(acct.name)} — bank transactions</h2>
+      <div class="row"><label class="btn"><input type="file" id="stmt" accept=".csv,.ofx,.qfx,.qbo,text/csv" style="display:none">⬆ Import statement</label>
+        ${acct.subtype === 'credit_card' ? '<label class="check small"><input type="checkbox" id="flip"> Purchases show as positive in my file</label>' : ''}
+        <button class="btn" id="automatch">Auto-match</button>
+        <button class="btn primary" id="reconcile">${acct.open_reconciliation ? 'Resume reconciliation' : 'Reconcile'}</button></div></div>
+      <p class="small muted">Download a CSV or OFX/QFX statement from your bank's website and import it. Lines that match something already in the books are matched automatically; review the rest.</p>
+      <div class="tabs" style="border:0">${[['unmatched', `To review (${acct.to_review})`], ['matched', 'Matched'], ['excluded', 'Excluded'], ['', 'All']].map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
+      ${table([{ label: 'Date', get: t => fmtDate(t.date) }, { label: 'Bank description', html: t => `${esc(t.description)}${t.reference ? ` <span class="muted small">#${esc(t.reference)}</span>` : ''}` },
+        { label: 'Amount', num: 1, html: t => signed(t.amount) },
+        { label: 'In the books', html: t => t.status === 'matched' ? `<span class="pill good">✓ Matched</span> <span class="small">${esc(t.match_memo || '')} · ${fmtDate(t.match_date)}</span>`
+          : t.status === 'excluded' ? '<span class="pill">Excluded</span>'
+          : (t.candidates && t.candidates.length ? `<span class="small">Looks like: <b>${esc(t.candidates[0].entry_memo || t.candidates[0].memo || label(t.candidates[0].source_type))}</b> · ${fmtDate(t.candidates[0].date)}</span>`
+          : t.invoice_suggestions && t.invoice_suggestions.length ? `<span class="small">Payment for <b>${esc(t.invoice_suggestions[0].number)}</b> (${esc(t.invoice_suggestions[0].customer_name)})?</span>`
+          : t.rule ? `<span class="small">Rule → ${esc(t.rule.account_number)} ${esc(t.rule.account_name)}</span>` : '<span class="muted small">Not in the books yet</span>') },
+        { label: '', html: t => t.status === 'matched' ? `<button class="btn sm" data-unmatch="${t.id}">Unmatch</button>`
+          : t.status === 'excluded' ? `<button class="btn sm" data-include="${t.id}">Include</button>`
+          : `<div class="status-btns">${t.candidates && t.candidates.length ? `<button class="btn sm primary" data-match="${t.id}:${t.candidates[0].id}">Match</button>` : ''}
+             ${t.invoice_suggestions && t.invoice_suggestions.length ? `<button class="btn sm primary" data-inv="${t.id}:${t.invoice_suggestions[0].id}">Apply</button>` : ''}
+             <button class="btn sm ${!(t.candidates && t.candidates.length) && !(t.invoice_suggestions && t.invoice_suggestions.length) ? 'primary' : ''}" data-cat="${t.id}">${t.amount < 0 ? 'Add expense' : 'Categorize'}</button>
+             <button class="btn sm" data-find="${t.id}">Find match</button><button class="btn sm" data-excl="${t.id}" title="Ignore this line (e.g. a duplicate)">✕</button></div>` }],
+      txs, { empty: status === 'unmatched' ? 'Nothing to review — import a statement or reconcile.' : 'Nothing here' })}</div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><div class="row spread"><h2>Reconciliations</h2></div>
+        ${table([{ label: 'Statement ending', get: r => fmtDate(r.statement_date) }, { label: 'Ending balance', num: 1, get: r => money(r.statement_balance) }, { label: 'Status', html: r => pill(r.status === 'completed' ? 'passed' : 'open').replace(/Passed|Open/, r.status === 'completed' ? 'Reconciled' : 'In progress') },
+          { label: 'By', get: r => r.completed_by_name || '' }, { label: '', html: r => r.status === 'completed' && lastDone && r.id === lastDone.id ? `<button class="btn sm" data-undo="${r.id}">Undo</button>` : '' }],
+        recs, { onClick: r => go('#/accounting/reconcile/' + r.id), empty: 'No reconciliations yet' })}</div>
+      <div class="card"><div class="row spread"><h2>Categorization rules</h2><button class="btn sm" id="newrule">+ Rule</button></div>
+        <p class="small muted">When a bank description contains the text, "Add expense" pre-fills the account.</p>
+        ${table([{ label: 'Contains', html: r => `<code>${esc(r.match_text)}</code>` }, { label: 'Direction', get: r => ({ out: 'Money out', in: 'Money in', any: 'Either' })[r.direction] }, { label: 'Account', get: r => `${r.account_number} ${r.account_name}` },
+          { label: '', html: r => `<button class="btn sm danger" data-delrule="${r.id}">✕</button>` }], rules, { empty: 'No rules' })}</div></div>`;
+
+  const reload = () => route();
+  $$('[data-s]').forEach(b => b.onclick = () => go('#/accounting' + qs({ tab: 'banking', acct: acct.id, status: b.dataset.s })));
+  $('#stmt').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    const content = await f.text();
+    const r = await act(() => POST('/banking/import', { account_id: acct.id, filename: f.name, content, flip: $('#flip') ? $('#flip').checked : false }));
+    toast(`Imported ${r.added} new line(s)${r.duplicates ? `, skipped ${r.duplicates} already imported` : ''}; ${r.matched} matched automatically`);
+    reload();
+  };
+  $('#automatch').onclick = async () => { const r = await act(() => POST('/banking/auto-match', { account_id: acct.id })); toast(`${r.matched} matched`); reload(); };
+  $('#reconcile').onclick = () => acct.open_reconciliation ? go('#/accounting/reconcile/' + acct.open_reconciliation.id) : formModal({
+    title: `Reconcile ${acct.name}`, okLabel: 'Start', values: { statement_date: todayStr() },
+    fields: [
+      ...(lastDone ? [] : [{ name: 'start_date', label: 'Statement start date', type: 'date', required: true }, { name: 'beginning_balance', label: 'Statement beginning balance', type: 'number', required: true }]),
+      { name: 'statement_date', label: 'Statement ending date', type: 'date', required: true },
+      { name: 'statement_balance', label: acct.subtype === 'credit_card' ? 'Statement balance owed' : 'Statement ending balance', type: 'number', required: true }],
+    extra: lastDone ? `<p class="small muted">Beginning balance ${money(lastDone.statement_balance)}, carried from the ${fmtDate(lastDone.statement_date)} statement.</p>`
+      : '<p class="small muted">First reconciliation for this account: copy the start date and beginning balance from the top of your bank statement. Transactions before the start date are treated as already included in that balance.</p>',
+    submit: async d => { const r = await POST('/reconciliations', { account_id: acct.id, ...d }); go('#/accounting/reconcile/' + r.id); },
+  });
+  const txById = Object.fromEntries(txs.map(t => [t.id, t]));
+  $$('[data-match]').forEach(b => b.onclick = async () => { const [t, l] = b.dataset.match.split(':'); await act(() => POST(`/banking/transactions/${t}/match`, { journal_line_id: Number(l) }), 'Matched'); reload(); });
+  $$('[data-inv]').forEach(b => b.onclick = async () => { const [t, i] = b.dataset.inv.split(':'); await act(() => POST(`/banking/transactions/${t}/apply-invoice`, { invoice_id: Number(i) }), 'Payment recorded and matched'); reload(); });
+  $$('[data-unmatch]').forEach(b => b.onclick = async () => { await act(() => POST(`/banking/transactions/${b.dataset.unmatch}/unmatch`), 'Unmatched'); reload(); });
+  $$('[data-excl]').forEach(b => b.onclick = async () => { await act(() => POST(`/banking/transactions/${b.dataset.excl}/exclude`, {}), 'Excluded'); reload(); });
+  $$('[data-include]').forEach(b => b.onclick = async () => { await act(() => POST(`/banking/transactions/${b.dataset.include}/exclude`, { include: true }), 'Back in review'); reload(); });
+  $$('[data-undo]').forEach(b => b.onclick = async () => { if (confirm('Undo this reconciliation? Its transactions become editable again.')) { await act(() => POST(`/reconciliations/${b.dataset.undo}/undo`), 'Reconciliation reopened'); reload(); } });
+  $$('[data-delrule]').forEach(b => b.onclick = async () => { await act(() => DEL('/banking/rules/' + b.dataset.delrule)); reload(); });
+  $$('[data-find]').forEach(b => b.onclick = async () => {
+    const t = txById[b.dataset.find];
+    const list = await GET(`/banking/transactions/${t.id}/candidates`);
+    const m = modal(`<h2>Match ${signed(t.amount)} · ${esc(t.description)}</h2><p class="small muted">Unreconciled ledger lines on ${esc(acct.name)} for exactly this amount, closest date first.</p>
+      ${table([{ label: 'Date', get: c => fmtDate(c.date) }, { label: 'Memo', get: c => c.entry_memo || c.memo || '' }, { label: 'Name', get: c => c.name || '' }, { label: 'Source', html: c => pill(c.source_type) }, { label: '', html: c => `<button class="btn sm primary" data-pick="${c.id}">Match</button>` }],
+        list, { empty: 'Nothing in the books for this amount. Use "Add expense"/"Categorize" to record it.' })}<div class="actions"><button class="btn" data-x>Close</button></div>`, { wide: true });
+    $('[data-x]', m.el).onclick = m.close;
+    $$('[data-pick]', m.el).forEach(p => p.onclick = async () => { await act(() => POST(`/banking/transactions/${t.id}/match`, { journal_line_id: Number(p.dataset.pick) }), 'Matched'); m.close(); reload(); });
+  });
+  $$('[data-cat]').forEach(b => b.onclick = async () => {
+    const t = txById[b.dataset.cat];
+    await loadAccounts();
+    const jobs = await jobPicker();
+    const out = t.amount < 0;
+    const words = String(t.description).toUpperCase().replace(/[^A-Z ]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
+    formModal({
+      title: `${out ? 'Add expense' : 'Categorize deposit'} · ${t.description}`, okLabel: 'Save & match', wide: true,
+      values: { account_id: t.rule ? t.rule.account_id : '', category: t.rule ? t.rule.category : '', vendor: t.rule ? t.rule.vendor : '', description: t.description, rule_text: words },
+      fields: [{ name: 'account_id', label: out ? 'Expense account (or another bank/card = transfer)' : 'Income / source account (or another bank/card = transfer)', type: 'select',
+          options: S.accounts.filter(a => a.id !== acct.id && (out ? ['expense', 'cogs', 'asset', 'liability', 'equity'] : ['income', 'liability', 'equity', 'asset']).includes(a.type)).map(a => [a.id, `${a.number} · ${a.name}`]), required: true, full: true },
+        ...(out ? [{ name: 'category', label: 'Expense category', type: 'select', options: EXPENSE_CATS }, { name: 'vendor', label: 'Vendor' }] : []),
+        { name: 'job_id', label: 'Job (job cost)', type: 'select', options: jobs, blank: '— None / overhead —' }, { name: 'cost_code_id', label: 'Cost code', type: 'select', options: ccOptions() },
+        { name: 'description', label: 'Memo', full: true },
+        { name: 'save_rule', label: 'Remember: next time the description contains…', type: 'checkbox' }, { name: 'rule_text', label: 'Text to match' }],
+      submit: async d => { await POST(`/banking/transactions/${t.id}/categorize`, { ...d, save_rule: !!d.save_rule }); toast('Recorded and matched'); reload(); },
+    });
+  });
+  $('#newrule').onclick = async () => {
+    await loadAccounts();
+    formModal({ title: 'New categorization rule', fields: [{ name: 'match_text', label: 'Description contains', required: true }, { name: 'direction', label: 'Applies to', type: 'select', options: [['out', 'Money out'], ['in', 'Money in'], ['any', 'Either']], blank: false },
+      { name: 'account_id', label: 'Account', type: 'select', options: acctOptions(), required: true, full: true }, { name: 'category', label: 'Expense category', type: 'select', options: EXPENSE_CATS }, { name: 'vendor', label: 'Vendor' }],
+      submit: async d => { await POST('/banking/rules', d); toast('Rule saved'); reload(); } });
+  };
+}
+
+async function viewReconcile(id) {
+  let st = await GET('/reconciliations/' + id);
+  const done = st.status === 'completed';
+  const draw = () => {
+    const ins = st.lines.filter(l => l.amount > 0), outs = st.lines.filter(l => l.amount < 0);
+    const zero = Math.abs(st.difference) < 0.005;
+    const col = (title, list) => `<div class="card"><div class="row spread"><h2>${title} (${list.filter(l => l.cleared).length}/${list.length})</h2>${done ? '' : `<span class="row"><button class="btn sm" data-all="${title}">Check all</button><button class="btn sm" data-none="${title}">Clear all</button></span>`}</div>
+      ${table([{ label: '', html: l => `<input type="checkbox" data-line="${l.id}" ${l.cleared ? 'checked' : ''} ${done ? 'disabled' : ''} style="width:20px;height:20px">` },
+        { label: 'Date', get: l => fmtDate(l.date) }, { label: 'Memo', html: l => `${esc(l.entry_memo || l.memo || '')}${l.name ? `<div class="small muted">${esc(l.name)}</div>` : ''}` },
+        { label: '', html: l => l.bank_tx_id ? '<span class="pill good" title="Matched to an imported bank line">Bank ✓</span>' : '' }, { label: 'Amount', num: 1, html: l => signed(l.amount) }],
+      list, { empty: 'None' })}</div>`;
+    $('#view').innerHTML = setTop(`Reconcile ${esc(st.account_name)}`, `<a class="btn" href="#/accounting?tab=banking&acct=${st.account_id}">← Banking</a>
+        ${done ? '<span class="pill good">✓ Reconciled</span>' : `<button class="btn danger" id="discard">Discard</button><button class="btn primary" id="finish" ${zero ? '' : 'disabled'}>Finish reconciliation</button>`}`,
+      `Statement ending ${fmtDate(st.statement_date)}`) + `
+      ${st.unmatched_bank_lines && !done ? `<div class="alert" style="margin-bottom:14px">⚠ ${st.unmatched_bank_lines} imported bank line(s) on or before this date aren't in the books yet. <a href="#/accounting?tab=banking&acct=${st.account_id}">Review them</a> first, or the difference won't reach zero.</div>` : ''}
+      <div class="grid g4">
+        <div class="card kpi"><div class="label">Statement ending balance</div>${done ? `<div class="value">${money(st.statement_balance)}</div>` : `<div class="row" style="margin-top:6px"><input type="number" step="any" id="sbal" value="${st.statement_balance}" style="font-size:20px;font-weight:700"></div><input type="date" id="sdate" value="${st.statement_date}" style="margin-top:6px">`}</div>
+        ${kpi('Beginning balance', money(st.beginning_balance), 'from the last reconciliation')}
+        ${kpi('Cleared balance', money(st.cleared_balance), `${money(st.cleared_in)} in · ${money(Math.abs(st.cleared_out))} out`)}
+        <div class="card kpi" style="border-top-color:${zero ? 'var(--good)' : 'var(--bad)'}"><div class="label">Difference</div><div class="value" style="color:${zero ? 'var(--good)' : 'var(--bad)'}">${money(st.difference)}</div>
+          <div class="sub">${zero ? (done ? 'Balanced' : '✓ Balanced — ready to finish') : 'Check off items that appear on the statement'}</div></div>
+      </div>
+      <div class="grid g2" style="margin-top:14px">${col('Deposits & credits', ins)}${col('Checks & payments', outs)}</div>`;
+    if (done) return;
+    $$('[data-line]').forEach(c => c.onchange = async () => { st = await PUT('/reconciliations/' + id, { line_ids: [Number(c.dataset.line)], cleared: c.checked }); draw(); });
+    const bulk = (title, val) => { const list = st.lines.filter(l => title.startsWith('Deposits') ? l.amount > 0 : l.amount < 0).map(l => l.id); return PUT('/reconciliations/' + id, { line_ids: list, cleared: val }).then(r => { st = r; draw(); }); };
+    $$('[data-all]').forEach(b => b.onclick = () => bulk(b.dataset.all, true));
+    $$('[data-none]').forEach(b => b.onclick = () => bulk(b.dataset.none, false));
+    const hdr = async () => { st = await act(() => PUT('/reconciliations/' + id, { statement_balance: Number($('#sbal').value), statement_date: $('#sdate').value })); draw(); };
+    $('#sbal').onchange = hdr; $('#sdate').onchange = hdr;
+    $('#finish').onclick = async () => { await act(() => POST(`/reconciliations/${id}/finish`), 'Reconciled — these transactions are now locked'); go(`#/accounting?tab=banking&acct=${st.account_id}`); };
+    $('#discard').onclick = async () => { if (confirm('Discard this reconciliation? Check marks are kept.')) { await act(() => DEL('/reconciliations/' + id)); go(`#/accounting?tab=banking&acct=${st.account_id}`); } };
+  };
+  draw();
 }
 
 boot();

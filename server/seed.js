@@ -228,6 +228,25 @@ function seed(db) {
   for (let w = A.mondayOf(date(-200)); w <= date(0); w = new Date(new Date(w + 'T00:00:00').getTime() + 7 * 864e5).toISOString().slice(0, 10)) A.postLaborWeek(db, A.mondayOf(w));
   A.post(db, { date: date(-30), memo: 'Payroll paid (prior months)', lines: [{ account: '2100', debit: 9000 }, { account: '1000', credit: 9000 }] });
   A.post(db, { date: date(-15), memo: 'Sales tax remitted', lines: [{ account: '2200', debit: 900 }, { account: '1000', credit: 900 }] });
+
+  // A checking statement for the last 30 days: everything the books already know about, plus a few
+  // things they don't (fuel, a bank fee, an unexplained deposit) so the review queue has work in it.
+  const B = require('./banking');
+  const chk = A.accountId(db, '1000');
+  // last month's statement was already reconciled
+  const prior = date(-31);
+  const priorBal = D.get(db, 'SELECT COALESCE(SUM(jl.debit - jl.credit), 0) v FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id WHERE jl.account_id = ? AND je.date <= ?', chk, prior).v;
+  const rec = ins('reconciliations', { account_id: chk, statement_date: prior, beginning_balance: 0, statement_balance: Math.round(priorBal * 100) / 100, status: 'completed', completed_at: prior + ' 17:00:00', completed_by: users[0].id });
+  run(db, 'UPDATE journal_lines SET cleared = 1, reconciliation_id = ? WHERE account_id = ? AND entry_id IN (SELECT id FROM journal_entries WHERE date <= ?)', rec, chk, prior);
+  const known = D.all(db, `SELECT je.date, jl.debit - jl.credit amt, je.memo FROM journal_lines jl JOIN journal_entries je ON je.id = jl.entry_id
+    WHERE jl.account_id = ? AND je.date >= ? ORDER BY je.date`, chk, date(-30));
+  const bankDesc = m => /Payment on/.test(m) ? 'MOBILE DEPOSIT' : /Rent/.test(m) ? 'ONLINE PMT LANDLORD LLC' : /Insurance/.test(m) ? 'CONTRACTORS MUTUAL INS' : /Fuel/.test(m) ? 'FLEETCOR FUEL CARD'
+    : /Payroll/.test(m) ? 'GUSTO PAYROLL' : /Sales tax/.test(m) ? 'STATE TAX COMM' : /Marketing|Google/.test(m) ? 'GOOGLE *ADS' : /phones/i.test(m) ? 'VERIZON WIRELESS' : 'ACH ' + String(m || '').toUpperCase().slice(0, 24);
+  const fmt = iso => `${iso.slice(5, 7)}/${iso.slice(8, 10)}/${iso.slice(0, 4)}`;
+  const lines = known.filter(k => k.date <= date(-1)).map(k => [k.date, k.amt, bankDesc(k.memo)]);
+  lines.push([date(-6), -68.42, 'SHELL OIL 57442 BOISE ID'], [date(-3), -54.10, 'CHEVRON 0091 MERIDIAN'], [date(-2), -15, 'MONTHLY SERVICE FEE'], [date(-1), 640, 'MOBILE DEPOSIT']);
+  const csv = 'Date,Description,Amount\n' + lines.sort((a, b) => a[0].localeCompare(b[0])).map(([d, a, t]) => `${fmt(d)},"${t}",${a.toFixed(2)}`).join('\n');
+  B.importStatement(db, { accountId: chk, filename: 'checking-statement.csv', content: csv });
 }
 
 if (require.main === module) {

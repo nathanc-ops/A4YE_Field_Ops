@@ -22,9 +22,15 @@ function assertOpen(db, date) {
   if (c && date && String(date).slice(0, 10) <= c) throw err(`Books are closed through ${c}. Reopen the period in Accounting → Close books to change this.`);
 }
 
+// A line that appears on a completed bank reconciliation is part of a closed statement.
+function assertNotReconciled(db, entryId) {
+  const r = get(db, `SELECT r.statement_date, a.name FROM journal_lines jl JOIN reconciliations r ON r.id = jl.reconciliation_id
+    JOIN accounts a ON a.id = jl.account_id WHERE jl.entry_id = ? LIMIT 1`, entryId);
+  if (r) throw err(`This transaction is on the ${r.name} reconciliation for the statement ending ${r.statement_date}. Undo that reconciliation (Accounting → Banking) to change it.`);
+}
 function unpost(db, sourceType, sourceId) {
   const existing = all(db, 'SELECT * FROM journal_entries WHERE source_type = ? AND source_id = ?', sourceType, sourceId);
-  for (const e of existing) assertOpen(db, e.date);
+  for (const e of existing) { assertOpen(db, e.date); assertNotReconciled(db, e.id); }
   run(db, 'DELETE FROM journal_entries WHERE source_type = ? AND source_id = ?', sourceType, sourceId);
 }
 
@@ -177,14 +183,19 @@ function laborStatus(db, from, to) {
 function rebuild(db) {
   const closed = closedThrough(db);
   const after = d => !closed || String(d).slice(0, 10) > closed;
-  run(db, `DELETE FROM journal_entries WHERE source_type IN ('invoice','payment','bill','bill_payment','expense','job_material') ${closed ? 'AND date > ?' : ''}`, ...(closed ? [closed] : []));
+  run(db, `DELETE FROM journal_entries WHERE source_type IN ('invoice','payment','bill','bill_payment','expense','job_material') ${closed ? 'AND date > ?' : ''}
+    AND id NOT IN (SELECT entry_id FROM journal_lines WHERE reconciliation_id IS NOT NULL)`, ...(closed ? [closed] : []));
+  // entries kept because they're reconciled stay exactly as they are
+  const kept = new Set(all(db, "SELECT source_type || ':' || source_id k FROM journal_entries WHERE id IN (SELECT entry_id FROM journal_lines WHERE reconciliation_id IS NOT NULL)").map(r => r.k));
+  const _after = after;
+  const afterK = (type, id, d) => !kept.has(`${type}:${id}`) && _after(d);
   let n = 0;
-  for (const r of all(db, "SELECT id, issue_date d FROM invoices WHERE status NOT IN ('draft','void')")) if (after(r.d)) { postInvoice(db, r.id); n++; }
-  for (const r of all(db, 'SELECT id, paid_at d FROM payments')) if (after(r.d)) { postPayment(db, r.id); n++; }
-  for (const r of all(db, "SELECT id, bill_date d FROM bills WHERE status != 'void'")) if (after(r.d)) { postBill(db, r.id); n++; }
-  for (const r of all(db, 'SELECT id, paid_at d FROM bill_payments')) if (after(r.d)) { postBillPayment(db, r.id); n++; }
-  for (const r of all(db, 'SELECT id, date d FROM expenses')) if (after(r.d)) { postExpense(db, r.id); n++; }
-  for (const r of all(db, "SELECT id, used_on d FROM job_materials WHERE source = 'stock' AND pricebook_id IS NOT NULL")) if (after(r.d)) { postJobMaterial(db, r.id); n++; }
+  for (const r of all(db, "SELECT id, issue_date d FROM invoices WHERE status NOT IN ('draft','void')")) if (afterK('invoice', r.id, r.d)) { postInvoice(db, r.id); n++; }
+  for (const r of all(db, 'SELECT id, paid_at d FROM payments')) if (afterK('payment', r.id, r.d)) { postPayment(db, r.id); n++; }
+  for (const r of all(db, "SELECT id, bill_date d FROM bills WHERE status != 'void'")) if (afterK('bill', r.id, r.d)) { postBill(db, r.id); n++; }
+  for (const r of all(db, 'SELECT id, paid_at d FROM bill_payments')) if (afterK('bill_payment', r.id, r.d)) { postBillPayment(db, r.id); n++; }
+  for (const r of all(db, 'SELECT id, date d FROM expenses')) if (afterK('expense', r.id, r.d)) { postExpense(db, r.id); n++; }
+  for (const r of all(db, "SELECT id, used_on d FROM job_materials WHERE source = 'stock' AND pricebook_id IS NOT NULL")) if (afterK('job_material', r.id, r.d)) { postJobMaterial(db, r.id); n++; }
   return { reposted: n };
 }
 
@@ -251,7 +262,7 @@ function apAging(db) {
 }
 
 module.exports = {
-  accountId, assertOpen, closedThrough, post, unpost, postInvoice, postPayment, postBill, postBillPayment, postExpense, postJobMaterial,
+  assertNotReconciled, accountId, assertOpen, closedThrough, post, unpost, postInvoice, postPayment, postBill, postBillPayment, postExpense, postJobMaterial,
   postInventoryAdjustment, postLaborWeek, laborStatus, laborForWeek, mondayOf, rebuild, billTotals, refreshBillStatus, expenseAccount,
   trialBalance, incomeStatement, balanceSheet, generalLedger, apAging, balances,
 };

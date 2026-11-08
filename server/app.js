@@ -709,6 +709,7 @@ function createApp(db) {
   app.get('/api/reports/lead-sources', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.revenueBySource(db, from, to)); }));
 
   require('./routes_ext').webhook(app, db, { H });
+  require('./routes_bank')(app, db, { wrap, bad, admin, pick, insert, update });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

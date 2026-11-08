@@ -319,6 +319,62 @@ const MIGRATIONS = [
     set('logo_url', '/brand/a4y-logo.png', ['']);
     set('company_tagline', 'Powered by people. Built All 4 You.', ['']);
   },
+  // 3: banking — statement imports, transaction matching, categorization rules, reconciliations
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_imports (
+      id INTEGER PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES accounts(id),
+      filename TEXT, rows INTEGER NOT NULL DEFAULT 0, added INTEGER NOT NULL DEFAULT 0, duplicates INTEGER NOT NULL DEFAULT 0,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS bank_transactions (
+      id INTEGER PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES accounts(id),
+      import_id INTEGER REFERENCES bank_imports(id) ON DELETE SET NULL,
+      date TEXT NOT NULL,
+      amount REAL NOT NULL,              -- + money in, − money out (as the bank shows it)
+      description TEXT,
+      reference TEXT,                     -- check number / bank reference
+      fit_id TEXT NOT NULL,               -- bank's unique id, or a hash, for de-duplication
+      status TEXT NOT NULL DEFAULT 'unmatched' CHECK (status IN ('unmatched','matched','excluded')),
+      journal_line_id INTEGER,            -- the ledger line this bank line is matched to
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (account_id, fit_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_banktx_acct ON bank_transactions(account_id, status, date);
+    CREATE TABLE IF NOT EXISTS bank_rules (
+      id INTEGER PRIMARY KEY,
+      match_text TEXT NOT NULL,           -- case-insensitive "description contains"
+      direction TEXT NOT NULL DEFAULT 'out' CHECK (direction IN ('in','out','any')),
+      account_id INTEGER NOT NULL REFERENCES accounts(id),
+      category TEXT, vendor TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS reconciliations (
+      id INTEGER PRIMARY KEY,
+      account_id INTEGER NOT NULL REFERENCES accounts(id),
+      statement_date TEXT NOT NULL,
+      start_date TEXT,                    -- first reconciliation only: earlier lines are part of the opening balance
+      beginning_balance REAL NOT NULL DEFAULT 0,
+      statement_balance REAL NOT NULL,
+      status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress','completed')),
+      completed_at TEXT, completed_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    -- re-posting a source deletes its old lines: release any bank match on them
+    CREATE TRIGGER IF NOT EXISTS trg_jl_delete_unmatch AFTER DELETE ON journal_lines BEGIN
+      UPDATE bank_transactions SET status = 'unmatched', journal_line_id = NULL WHERE journal_line_id = OLD.id;
+    END;`);
+    addColumn(db, 'journal_lines', 'cleared', 'INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'journal_lines', 'reconciliation_id', 'INTEGER');
+    const r = db.prepare('INSERT INTO bank_rules (match_text, direction, account_id, category, vendor) SELECT ?, ?, id, ?, ? FROM accounts WHERE number = ?');
+    for (const [t, acct, cat, v] of [['SHELL', '6300', 'Vehicles & fuel', 'Shell'], ['CHEVRON', '6300', 'Vehicles & fuel', 'Chevron'], ['HOME DEPOT', '5100', 'Materials (supply house)', 'Home Depot'],
+      ['LOWES', '5100', 'Materials (supply house)', "Lowe's"], ['VERIZON', '6400', 'Software & phones', 'Verizon'], ['GOOGLE ADS', '6500', 'Marketing', 'Google Ads'], ['SERVICE FEE', '6800', 'Bank & card fees', 'Bank']])
+      r.run(t, 'out', cat, v, acct);
+  },
 ];
 
 function migrate(db) {

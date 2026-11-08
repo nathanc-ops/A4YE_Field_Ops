@@ -35,6 +35,7 @@ Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no
 | **Pick lists** | Built from the approved estimate or by hand, picked on a phone or tablet. Completing a pick charges the materials to the job from stock. |
 | **Ply** | Sends POs, pick lists and jobs with cost codes to Ply; pulls Ply's items and stock; accepts signed webhooks for receipts, vendor invoices, inventory and pick progress. See [docs/PLY_INTEGRATION.md](docs/PLY_INTEGRATION.md). |
 | **Accounting (admin)** | Double-entry general ledger and chart of accounts set up for an electrical contractor. Invoices, payments, vendor bills, bill payments, expenses, stock usage and weekly labor accruals post **automatically**. Also: manual journal entries, A/P with bill payments, account registers, income statement, balance sheet, trial balance, A/P aging, recording payroll payments and closing the books (which locks the period). |
+| **Banking (admin)** | Import bank and credit card statements (CSV, OFX, QFX — every bank exports these; re-importing the same file never duplicates). Lines that match something already in the books (customer payments, bill payments, expenses, transfers) are **matched automatically**. For the rest: **Add expense** (pre-filled by categorization rules like SHELL → Fuel; lands in Expenses and job costing), **Apply** a deposit to the open invoice with that balance, record a transfer between your own accounts, or exclude. **Reconcile** against each statement: check off cleared items until the difference is $0.00, then finish; reconciled transactions are locked until the reconciliation is undone. |
 | **Branding** | All 4 You Electrical theme out of the box: red on black, Barlow / Barlow Condensed type, the A4 logo and the "Powered by people. Built All 4 You." sign-in screen. Colors, logo and tagline can be changed in Settings → Branding and apply to the app and to the estimate/invoice pages customers see. Button and link colors are adjusted automatically to keep text readable in light and dark mode. |
 | **Reports** | P&L (revenue by segment → COGS → gross profit → overhead → net), 12-month trend, job costing (budget vs actual, margin), hours on job, payroll with weekly overtime, tech performance (utilization, revenue/hour), A/R aging, estimate close rate and lead-source ROI. CSV export and print on all of them. |
 | **Roles** | **Admin**: everything. **Office**: everything except team and settings. **Tech**: their own jobs, the clock and material logging. Techs never see costs, wages or financials. |
@@ -62,7 +63,13 @@ Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no
 | Payroll paid | 2100 Accrued payroll | Bank |
 | Inventory count change | 1300 / 5900 | 5900 / 1300 |
 
-Editing or voiding a source record re-posts its entry. Entries dated on or before **Books closed through** can't change: the whole edit is rolled back. When upgrading a database from an earlier version, run **Accounting → Close books → Rebuild ledger** once.
+Editing or voiding a source record re-posts its entry. Entries dated on or before **Books closed through** can't change: the whole edit is rolled back. The same goes for any transaction that appears on a completed bank reconciliation: undo the reconciliation first.
+
+### Banking workflow
+
+1. Download your statement from the bank as CSV or OFX/QFX. In **Accounting → Banking**, pick the account and choose **Import statement**.
+2. Work the **To review** list: **Match**, **Apply** (a customer deposit), **Add expense** or **Categorize**, or ✕ to exclude a duplicate.
+3. Choose **Reconcile** and enter the statement's ending date and balance. On an account's very first reconciliation, also enter the statement's start date and beginning balance. Matched lines arrive already checked; check anything else on the statement until the difference is $0.00, then choose **Finish**. When upgrading a database from an earlier version, run **Accounting → Close books → Rebuild ledger** once.
 
 ## Email
 
@@ -78,7 +85,7 @@ PUBLIC_URL=https://ops.yourdomain.com npm start
 ## Not built yet (be aware before you rely on it)
 
 - **Online card payments.** Invoices show how to pay but have no Stripe/Square checkout. Payments are recorded manually.
-- **Bank feeds & reconciliation.** There's no bank connection or reconciliation screen yet. Use an account's register to tick off your statement by hand.
+- **Live bank feeds.** Statements are imported as files (CSV, OFX, QFX). Pulling transactions in automatically needs a bank-data aggregator such as Plaid: a paid account, API keys and their approval. Imported transactions already flow into the same matching, so a feed can be added later without changing the review or reconcile steps.
 - **Payroll tax filing.** Labor is accrued at loaded cost and you record what payroll actually paid. Gross-to-net, tax deposits and W-2s still need a payroll provider.
 - **Ply's real API.** The connector is built and tested against a stand-in Ply API, but Ply doesn't publish its specification. Confirm endpoints and field names with Ply before relying on it (see docs/PLY_INTEGRATION.md).
 - **SMS, GPS tracking, photo uploads, offline mode.** The tech view is mobile-friendly but needs a signal.
@@ -97,6 +104,7 @@ npm test          # API + calculation tests
 - `server/accounting.js` — general ledger posting rules and financial statements
 - `server/routes_ext.js` — visits/dispatch, cost codes, purchasing, pick lists, accounting API, Ply webhook
 - `server/ply.js` — Ply connector (payload mapping lives here)
+- `server/banking.js` / `server/routes_bank.js` — statement parsing, matching, rules, reconciliation
 - `server/migrations.js` — versioned schema upgrades (existing databases upgrade automatically on start)
 - `server/app.js` — REST API and role checks
 - `public/app.js` — single-page UI (vanilla JS)

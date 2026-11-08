@@ -428,6 +428,7 @@ module.exports = function routesExt(app, db, X) {
     const e = mustGet('journal_entries', req.params.id);
     if (e.source_type !== 'manual') throw bad('Automatic entries are removed by changing the source record (invoice, bill, expense…)');
     A.assertOpen(db, e.date);
+    A.assertNotReconciled(db, e.id);
     run(db, 'DELETE FROM journal_entries WHERE id = ?', e.id); res.json({ ok: true });
   }));
 

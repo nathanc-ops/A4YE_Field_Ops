@@ -216,7 +216,7 @@ const ROUTES = [
   [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
   [/^\/purchasing$/, () => viewPurchasing()], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
-  [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],
+  [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],
   [/^\/jobs$/, viewJobs], [/^\/jobs\/(\d+)$/, viewJob],
   [/^\/customers$/, viewCustomers], [/^\/customers\/(\d+)$/, viewCustomer],
   [/^\/estimates$/, viewEstimates], [/^\/estimates\/(new|\d+)$/, id => viewDoc('estimate', id)],
