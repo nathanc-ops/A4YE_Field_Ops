@@ -79,7 +79,10 @@ function fixedBilling(j, T, b, invTable) {
 function tmBilling(j, T, b, invTable, through) {
   const u = b.unbilled;
   const nteBar = b.nte != null ? (() => { const used = Math.min(100, (b.billed_to_date + u.total) / b.nte * 100); return `<div class="cap ${used >= 100 ? 'over' : used > 85 ? 'full' : ''}" style="margin-top:6px"><i style="width:${used}%"></i></div>`; })() : '';
-  T.innerHTML = `<div class="alert info" style="margin-bottom:14px"><b>Time &amp; material job.</b> The customer pays for labor hours and materials used. Everything logged is billable once, and items are locked after they're billed.</div>
+  const approvedQuote = (j.estimates || []).find(e => e.status === 'approved' && !e.change_order);
+  T.innerHTML = `${approvedQuote ? `<div class="alert" style="margin-bottom:14px">✍ The customer approved ${esc(approvedQuote.number)} (${money(approvedQuote.subtotal - approvedQuote.discount)} before tax). If the job is now being done for that price, switch it to quoted-price billing.
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="toquote">Bill as quoted price</button></div></div>` : ''}
+    <div class="alert info" style="margin-bottom:14px"><b>Time &amp; material job.</b> The customer pays for labor hours and materials used. Everything logged is billable once, and items are locked after they're billed.</div>
     ${b.open_time_entries ? `<div class="alert" style="margin-bottom:14px">⏱ ${b.open_time_entries} person is still clocked in on this job. Their open time isn't included until they clock out.</div>` : ''}
     ${b.nte != null && b.nte_after < 0 ? `<div class="alert" style="margin-bottom:14px">⚠ Unbilled work would put this job ${money(-b.nte_after)} over its ${money(b.nte)} not-to-exceed. Get the customer's OK before billing past it.</div>` : ''}
     <div class="grid g4">
@@ -105,6 +108,10 @@ function tmBilling(j, T, b, invTable, through) {
     <div class="grid g2" style="margin-top:14px"><div class="card"><h2>Invoices</h2>${invTable(b.invoices)}</div>
       <div class="card"><h2>Estimates</h2>${table([{ label: '#', key: 'number' }, { label: 'Title', key: 'title' }, { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }],
         j.estimates || [], { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates (optional on T&M jobs)' })}</div></div>`;
+  if ($('#toquote')) $('#toquote').onclick = async () => {
+    if (!confirm(`Switch ${j.number} to quoted price ${money(approvedQuote.subtotal - approvedQuote.discount)}? Time and materials stay on the job for costing; anything already billed counts toward the price.`)) return;
+    await act(() => PUT('/jobs/' + j.id, { billing_type: 'fixed', contract_amount: Math.round((approvedQuote.subtotal - approvedQuote.discount) * 100) / 100 }), 'Now a quoted-price job'); route();
+  };
   const f = $('#tmf');
   $('#tmpreview').onclick = () => go(`#/jobs/${j.id}?tab=billing${f.through.value ? '&through=' + f.through.value : ''}`);
   f.onsubmit = async e => {

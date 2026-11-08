@@ -64,7 +64,7 @@ function render(d) {
   if (ok(d.company.brand_accent)) root.setProperty('--brand', d.company.brand_accent);
   const loc = d.location;
   const cust = d.customer;
-  const canRespond = isEst && ['sent', 'viewed'].includes(doc.status);
+  const canRespond = isEst && ['sent', 'viewed'].includes(doc.status) && !doc.pending_review;
   const opts = isEst ? (doc.options || []) : [];
   const chosen = opts.find(o => o.id === doc.approved_option_id);
   let pick = chosen ? chosen.id : canRespond && opts.length ? (opts.find(o => o.recommended) || opts[0]).id : null;
@@ -91,6 +91,7 @@ function render(d) {
       <div class="muted small">${[d.company.address, d.company.phone, d.company.email].filter(Boolean).map(esc).join(' · ')}${d.company.license ? `<br>License ${esc(d.company.license)}` : ''}</div></div>
       <div><div class="big">${isEst ? 'ESTIMATE' : 'INVOICE'}</div><div class="num">#${esc(doc.number)}</div>
       <div class="num muted small">${isEst ? (doc.valid_until ? `Valid until ${fmtDate(doc.valid_until)}` : '') : `Issued ${fmtDate(doc.issue_date)}<br>Due ${fmtDate(doc.due_date) || 'on receipt'}`}</div></div></div>
+    ${isEst && doc.pending_review && ['sent', 'viewed', 'draft'].includes(doc.status) ? '<div class="alert info" style="margin-bottom:16px">Your technician is confirming this pricing with our office. You can review the options now and approve as soon as it’s confirmed — usually within minutes.</div>' : ''}
     ${statusMsg ? `<div class="alert ${doc.status === 'approved' || doc.status === 'paid' ? 'info' : ''}" style="margin-bottom:16px">${statusMsg}</div>` : ''}
     <div class="parties"><div><h3>${isEst ? 'Prepared for' : 'Bill to'}</h3><b>${esc(cust.company || cust.name)}</b>${cust.company ? `<br>${esc(cust.name)}` : ''}<br>${esc(cust.billing_address || '')}</div>
       ${loc ? `<div><h3>Job site</h3>${esc([loc.address, loc.city, loc.state, loc.zip].filter(Boolean).join(', '))}${d.job ? `<br><span class="muted">Job ${esc(d.job.number)}</span>` : ''}</div>` : ''}</div>

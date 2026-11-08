@@ -97,6 +97,8 @@ function createApp(db) {
       for (const it of [...full.items, ...full.chosen_items]) delete it.unit_cost;
       for (const o of full.options) { delete o.est_cost; delete o.est_margin_pct; }
       delete full.est_cost; delete full.est_margin_pct;
+      full.pending_review = e.review_status === 'pending';
+      delete full.review_reasons; delete full.review_note;
       return { kind, company, doc: full, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', e.customer_id),
         location: e.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', e.location_id) : null };
     }
@@ -114,6 +116,7 @@ function createApp(db) {
     const e = get(db, 'SELECT * FROM estimates WHERE public_token = ?', req.params.token);
     if (!e) throw bad('Not found', 404);
     if (!['sent', 'viewed'].includes(e.status)) throw bad(`This estimate is already ${e.status}`);
+    if (e.review_status === 'pending' && req.body.decision === 'approve') throw bad('Your technician is confirming this pricing with the office. You can approve once it’s confirmed — usually within minutes.');
     if (req.body.decision === 'approve') {
       const sig = String(req.body.signature_name || '').trim();
       if (!sig) throw bad('Please type your name to sign');
@@ -292,7 +295,7 @@ function createApp(db) {
       // techs can present the job's estimates to the customer (customer-facing link only, no costs)
       job.present = all(db, "SELECT * FROM estimates WHERE job_id = ? AND status IN ('draft','sent','viewed','approved') ORDER BY id DESC", job.id).map(e => {
         const t = C.estimateWithTotals(db, e);
-        return { number: e.number, title: e.title, status: e.status, change_order: e.change_order, options: t.options.length, price_min: t.price_min ?? t.total, price_max: t.price_max ?? t.total,
+        return { id: e.id, review_status: e.review_status, number: e.number, title: e.title, status: e.status, change_order: e.change_order, options: t.options.length, price_min: t.price_min ?? t.total, price_max: t.price_max ?? t.total,
           url: `${baseUrl(req)}/p/estimate/${e.public_token}` };
       });
       for (const m of job.materials) delete m.unit_cost;
@@ -444,6 +447,8 @@ function createApp(db) {
   app.delete('/api/time/:id', office, wrap((req, res) => { Bill.assertUnbilled(db, 'time_entries', Number(req.params.id)); run(db, 'DELETE FROM time_entries WHERE id = ?', req.params.id); res.json({ ok: true }); }));
 
   // ------------------------------------------------------------ estimates
+  // techs' estimate routes come first; office users fall through to the routes below
+  require('./tech_estimates')(app, db, { wrap, bad, mustGet, pick, insert, update, saveItems, saveOptions, baseUrl, today, addDays, office });
   const DOC_FIELDS = ['customer_id', 'title', 'tax_rate', 'discount', 'notes', 'terms'];
   function saveItems(table, fk, id, items, optionIds) {
     if (!Array.isArray(items)) return;
@@ -468,7 +473,8 @@ function createApp(db) {
   }
   app.get('/api/estimates', office, wrap((req, res) => {
     const p = [], where = [];
-    if (req.query.status) { where.push('e.status = ?'); p.push(req.query.status); }
+    if (req.query.status === 'review') where.push("e.review_status = 'pending'");
+    else if (req.query.status) { where.push('e.status = ?'); p.push(req.query.status); }
     res.json(all(db, `SELECT e.*, c.name customer_name, c.type customer_type FROM estimates e JOIN customers c ON c.id = e.customer_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY e.id DESC LIMIT 500`, ...p)
       .map(e => C.estimateWithTotals(db, e)));
   }));
@@ -507,6 +513,7 @@ function createApp(db) {
       if (req.body.items) saveItems('estimate_items', 'estimate_id', e.id, req.body.items, saveOptions(e.id, req.body.options) || (req.body.options ? [] : undefined));
       // approving an estimate with options records which option the customer chose
       if (req.body.status === 'approved') {
+        if (e.review_status === 'pending') run(db, "UPDATE estimates SET review_status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?", req.user.id, e.id);
         const opts = all(db, 'SELECT id FROM estimate_options WHERE estimate_id = ?', e.id).map(o => o.id);
         if (opts.length) {
           const pickId = Number(req.body.approved_option_id);
@@ -534,6 +541,7 @@ function createApp(db) {
       subject: `Estimate ${e.number} from ${s.company_name}`,
       text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for the opportunity. Your estimate is ready to review.'}\n\nEstimate ${e.number}: $${e.total.toFixed(2)}\nView and approve online: ${url}\n\n${s.company_name}\n${s.company_phone || ''}` });
     if (e.status === 'draft') run(db, "UPDATE estimates SET status = 'sent', sent_at = datetime('now') WHERE id = ?", e.id);
+    if (e.review_status === 'pending') run(db, "UPDATE estimates SET review_status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?", req.user.id, e.id);
     res.json({ ...r, url });
   }));
   // approved estimate -> job (book the work)
@@ -724,6 +732,7 @@ function createApp(db) {
       unscheduled: get(db, "SELECT COUNT(*) n FROM jobs WHERE status = 'unscheduled'").n,
       to_invoice: all(db, `${jobSelect} WHERE j.status = 'completed' ORDER BY j.completed_at`).map(fixTechs),
       wip: Bill.wipReport(db).totals,
+      estimates_review: get(db, "SELECT COUNT(*) n FROM estimates WHERE review_status = 'pending'").n,
       clocked_in: all(db, 'SELECT t.*, u.name user_name, j.number job_number, j.title job_title FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE t.clock_out IS NULL'),
       open_estimates: C.estimateConversion(db, '0000-01-01', t),
       ar, mtd: pl,

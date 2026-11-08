@@ -235,6 +235,20 @@ const _settingsExtras = settingsExtras;
 settingsExtras = async function (el) { // eslint-disable-line no-func-assign
   await _settingsExtras(el);
   if (!isOffice()) return;
+  if (isAdmin()) {
+    const s = S.settings;
+    el.insertAdjacentHTML('beforeend', `<div class="card"><h2>Field estimating</h2><p class="small muted">Lets techs build estimates on their jobs and close them on site. Inside these limits the customer can sign right away; outside them the estimate waits for office review.</p>
+      <form id="fef"><div class="form-grid">
+        ${fieldHtml({ name: 'tech_estimates', label: 'Techs can build estimates', type: 'checkbox', full: true }, s.tech_estimates !== '0')}
+        ${fieldHtml({ name: 'tech_max_discount_pct', label: 'Max discount without review (%)', type: 'number' }, s.tech_max_discount_pct)}
+        ${fieldHtml({ name: 'tech_min_margin_pct', label: 'Minimum margin without review (%)', type: 'number' }, s.tech_min_margin_pct)}
+        ${fieldHtml({ name: 'tech_custom_lines', label: 'Custom (non-price-book) lines', type: 'select', options: [['review', 'Allowed — send to office review'], ['allow', 'Allowed — no review'], ['block', 'Not allowed']], blank: false, full: true }, s.tech_custom_lines)}
+        ${fieldHtml({ name: 'tech_see_costs', label: 'Techs can see costs and margins (off = prices only)', type: 'checkbox', full: true }, s.tech_see_costs === '1')}
+      </div><button class="btn primary" style="margin-top:10px">Save</button></form></div>`);
+    $('#fef').onsubmit = async e => { e.preventDefault(); const f = e.target;
+      S.settings = await act(() => PUT('/settings', { tech_estimates: f.tech_estimates.checked ? '1' : '0', tech_see_costs: f.tech_see_costs.checked ? '1' : '0',
+        tech_max_discount_pct: f.tech_max_discount_pct.value, tech_min_margin_pct: f.tech_min_margin_pct.value, tech_custom_lines: f.tech_custom_lines.value }), 'Field estimating saved'); };
+  }
   const ts = await GET('/form-templates?all=1');
   el.insertAdjacentHTML('beforeend', `<div class="card"><div class="row spread"><h2>Checklist templates</h2><button class="btn" id="newtpl">+ Checklist</button></div>
     <p class="small muted">Attached automatically to jobs of the listed types. "Required" checklists must be finished before a tech can complete the job.</p>

@@ -69,8 +69,11 @@ test('full workflow: estimate -> approve -> job -> time & materials -> invoice -
   const est = (await call('admin', 'GET', `/estimates/${eid}`)).data;
   assert.equal(est.total, 3000);
 
-  // tech cannot see estimates
-  assert.equal((await call('tech', 'GET', '/estimates')).status, 403);
+  // techs only see estimates on jobs they're assigned to (none yet)
+  const techList = await call('tech', 'GET', '/estimates');
+  assert.equal(techList.status, 200);
+  assert.equal(techList.data.length, 0);
+  assert.equal((await call('tech', 'GET', `/estimates/${eid}`)).status, 403);
 
   r = await call('admin', 'POST', `/estimates/${eid}/send`, {});
   assert.equal(r.data.status, 'not_configured'); // no SMTP in tests

@@ -549,6 +549,16 @@ const MIGRATIONS = [
     addColumn(db, 'estimate_items', 'option_id', 'INTEGER');          // null = included in every option
     addColumn(db, 'estimates', 'approved_option_id', 'INTEGER');
   },
+  // 8: techs build estimates in the field, with price guardrails and office review
+  db => {
+    addColumn(db, 'estimates', 'review_status', 'TEXT');        // null | pending | approved | rejected
+    addColumn(db, 'estimates', 'review_reasons', 'TEXT');       // JSON list of why it needs review
+    addColumn(db, 'estimates', 'review_note', 'TEXT');
+    addColumn(db, 'estimates', 'reviewed_by', 'INTEGER');
+    addColumn(db, 'estimates', 'reviewed_at', 'TEXT');
+    const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
+    for (const [k, v] of Object.entries({ tech_estimates: '1', tech_see_costs: '0', tech_max_discount_pct: '10', tech_min_margin_pct: '35', tech_custom_lines: 'review' })) ins.run(k, v);
+  },
 ];
 
 function migrate(db) {
