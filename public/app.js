@@ -2,7 +2,7 @@
 /* A4YE Field Ops — single-page front end (no build step). */
 
 // ============================================================ core helpers
-const S = { token: localStorage.getItem('fo_token'), user: null, settings: {}, users: [], pricebook: null };
+const S = { token: localStorage.getItem('fo_token'), user: null, settings: {}, users: [], pricebook: null, costCodes: [], accounts: null, vendors: null };
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -128,6 +128,13 @@ function toCSV(cols, rows, filename) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = filename; a.click();
 }
 async function loadUsers(force) { if (!S.users.length || force) S.users = await GET('/users'); return S.users; }
+async function loadCostCodes(force) { if (!S.costCodes.length || force) S.costCodes = await GET('/cost-codes'); return S.costCodes; }
+// kind: 'labor' | 'material' | 'other' — codes of that kind plus 'both'
+const ccOptions = kind => S.costCodes.filter(c => !kind || c.kind === kind || c.kind === 'both').map(c => [c.id, `${c.code} · ${c.name}`]);
+const ccLabel = id => { const c = S.costCodes.find(x => x.id === Number(id)); return c ? `${c.code} ${c.name}` : ''; };
+async function loadAccounts(force) { if (!S.accounts || force) S.accounts = isOffice() ? await GET('/accounts') : []; return S.accounts; }
+const acctOptions = (...types) => (S.accounts || []).filter(a => !types.length || types.includes(a.type) || types.includes(a.subtype)).map(a => [a.id, `${a.number} · ${a.name}`]);
+async function loadVendors(force) { if (!S.vendors || force) S.vendors = await GET('/vendors'); return S.vendors; }
 async function loadPricebook(force) { if (!S.pricebook || force) S.pricebook = await GET('/pricebook'); return S.pricebook; }
 const techOptions = () => S.users.filter(u => u.active).map(u => [u.id, u.name]);
 const userName = id => (S.users.find(u => u.id === Number(id)) || {}).name || '—';
@@ -167,6 +174,7 @@ const NAV = [
   { href: '#/schedule', label: 'Schedule & Dispatch', icon: '🗓' },
   { href: '#/jobs', label: 'Jobs', icon: '🔧' },
   { href: '#/time', label: 'Time Clock', icon: '⏱' },
+  { href: '#/picklists', label: 'Pick Lists', icon: '🧺', roles: ['tech'] },
   { href: '#/permits', label: 'Permits & Inspections', icon: '📋' },
   { sect: 'Sales & Billing', roles: ['admin', 'office'] },
   { href: '#/customers', label: 'Customers', icon: '👥', roles: ['admin', 'office'] },
@@ -174,16 +182,18 @@ const NAV = [
   { href: '#/invoices', label: 'Invoices', icon: '💵', roles: ['admin', 'office'] },
   { href: '#/agreements', label: 'Service Agreements', icon: '🔁', roles: ['admin', 'office'] },
   { sect: 'Back Office', roles: ['admin', 'office'] },
+  { href: '#/purchasing', label: 'Purchasing & Pick Lists', icon: '🚚', roles: ['admin', 'office'] },
   { href: '#/pricebook', label: 'Price Book & Inventory', icon: '📦', roles: ['admin', 'office'] },
   { href: '#/expenses', label: 'Expenses', icon: '🧾', roles: ['admin', 'office'] },
   { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'office'] },
+  { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin'] },
   { href: '#/team', label: 'Team', icon: '👷', roles: ['admin'] },
   { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'office'] },
 ];
 function renderShell() {
   const nav = NAV.filter(n => !n.roles || n.roles.includes(S.user.role));
   $('#root').innerHTML = `<div class="app">
-    <nav class="side" id="side"><div class="brand"><span class="bolt">⚡</span> <span>${esc(S.settings.company_name || 'Field Ops')}</span></div>
+    <nav class="side" id="side"><div class="brand">${S.settings.logo_url ? `<img class="logo" src="${esc(S.settings.logo_url)}" alt="">` : '<span class="bolt">⚡</span>'} <span>${esc(S.settings.company_name || 'Field Ops')}</span></div>
       ${nav.map(n => n.sect ? `<div class="sect">${esc(n.sect)}</div>` : `<a href="${n.href}" data-nav>${n.icon} &nbsp;${esc(n.label)}</a>`).join('')}
       <div class="me">${esc(S.user.name)}<br><span class="muted">${esc(label(S.user.role))}</span><br><a href="#" id="logout" style="padding:6px 0;color:#93c5fd">Sign out</a></div>
     </nav>
@@ -197,7 +207,10 @@ function setTop(title, actions = '', sub = '') {
 
 // ============================================================ router
 const ROUTES = [
-  [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, viewMyDay], [/^\/schedule$/, viewSchedule],
+  [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
+  [/^\/purchasing$/, () => viewPurchasing()], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
+  [/^\/picklists$/, () => viewTechPickLists()],
+  [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],
   [/^\/jobs$/, viewJobs], [/^\/jobs\/(\d+)$/, viewJob],
   [/^\/customers$/, viewCustomers], [/^\/customers\/(\d+)$/, viewCustomer],
   [/^\/estimates$/, viewEstimates], [/^\/estimates\/(new|\d+)$/, id => viewDoc('estimate', id)],
@@ -234,7 +247,8 @@ async function boot() {
   try {
     const me = await GET('/me');
     S.user = me.user; S.settings = me.settings;
-    await loadUsers(true);
+    applyBrand();
+    await Promise.all([loadUsers(true), loadCostCodes(true)]);
     renderShell(); route();
   } catch { /* api() already handled 401 */ }
 }
@@ -270,9 +284,9 @@ async function viewDashboard() {
       ${kpi('Open estimates', money0(d.open_estimates.open_value), `${d.open_estimates.open} awaiting answer · ${pct(d.open_estimates.close_rate_pct)} close rate`)}
     </div>
     <div class="grid g2" style="margin-top:14px">
-      <div class="card"><div class="row spread"><h2>Today's jobs</h2><a href="#/schedule">Dispatch board →</a></div>
-        ${table([{ label: 'Time', get: j => `${fmtTime(j.scheduled_start)}–${fmtTime(j.scheduled_end)}` }, { label: 'Job', html: j => `<b>${esc(j.number)}</b> ${esc(j.title)}<div class="muted small">${esc(j.customer_name)} · ${esc(j.address || '')}</div>` },
-          { label: 'Tech', get: j => j.tech_names || 'Unassigned' }, { label: 'Status', html: j => pill(j.status) }], d.today_jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs scheduled today' })}
+      <div class="card"><div class="row spread"><h2>Today's visits</h2><a href="#/schedule">Tech board →</a></div>
+        ${table([{ label: 'Time', get: a => `${fmtTime(a.start)}–${fmtTime(a.end)}` }, { label: 'Job', html: a => `<b>${esc(a.job_number)}</b> ${esc(a.job_title)}<div class="muted small">${esc(a.customer_name)} · ${esc(a.address || '')}</div>` },
+          { label: 'Tech', get: a => a.tech_names || 'Unassigned' }, { label: 'Status', html: a => pill(a.status) }], d.today_jobs, { onClick: a => go('#/jobs/' + a.job_id), empty: 'No visits scheduled today' })}
         ${d.unscheduled ? `<div class="alert" style="margin-top:10px">${d.unscheduled} job(s) waiting to be scheduled. <a href="#/schedule">Schedule them</a></div>` : ''}
       </div>
       <div class="card"><h2>Revenue — last 6 months</h2>${bars(d.trend, 'revenue', 'month')}
@@ -300,11 +314,12 @@ async function clockCard(el, { jobId } = {}) {
   const myJobs = await GET('/jobs' + qs({ mine: 1, status: 'scheduled,dispatched,in_progress,on_hold,unscheduled' }));
   const draw = () => {
     el.innerHTML = `<div class="card clock">
-      ${open ? `<div class="muted">Clocked in${open.job_number ? ` on <a href="#/jobs/${open.job_id}">${esc(open.job_number)} ${esc(open.job_title)}</a>` : ` — ${esc(label(open.kind))}`} since ${fmtTime(open.clock_in)}</div>
+      ${open ? `<div class="muted">Clocked in${open.job_number ? ` on <a href="#/jobs/${open.job_id}">${esc(open.job_number)} ${esc(open.job_title)}</a>` : ` — ${esc(label(open.kind))}`}${open.cost_code ? ` · ${esc(open.cost_code)} ${esc(open.cost_code_name)}` : ''} since ${fmtTime(open.clock_in)}</div>
         <div class="timer" id="timer">${elapsed(open.clock_in)}</div>` : `<div class="muted">You are off the clock</div><div class="timer">0:00:00</div>`}
       <div class="row" style="justify-content:center">
         <select id="ck_job" style="max-width:320px"><option value="">— No job (shop/training) —</option>${myJobs.map(j => `<option value="${j.id}" ${String(jobId || '') === String(j.id) ? 'selected' : ''}>${esc(j.number)} · ${esc(j.title)}</option>`).join('')}</select>
         <select id="ck_kind" style="max-width:140px">${['job', 'travel', 'shop', 'training'].map(k => `<option value="${k}">${label(k)}</option>`).join('')}</select>
+        <select id="ck_cc" style="max-width:260px"><option value="">Cost code…</option>${ccOptions('labor').map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
       </div>
       <div class="row" style="justify-content:center;margin-top:12px">
         <button class="btn big go" id="ck_in">${open ? 'Switch job' : 'Clock in'}</button>
@@ -313,7 +328,7 @@ async function clockCard(el, { jobId } = {}) {
     $('#ck_in', el).onclick = async () => {
       const job_id = $('#ck_job', el).value || null; let kind = $('#ck_kind', el).value;
       if (!job_id && (kind === 'job' || kind === 'travel')) kind = 'shop';
-      await act(() => POST('/time/clock-in', { job_id, kind }), 'Clocked in'); route();
+      await act(() => POST('/time/clock-in', { job_id, kind, cost_code_id: $('#ck_cc', el).value || null }), 'Clocked in'); route();
     };
     if (open) $('#ck_out', el).onclick = async () => { await act(() => POST('/time/clock-out'), 'Clocked out'); route(); };
   };
@@ -454,7 +469,8 @@ async function viewJob(id) {
   const addr = [loc.address, loc.city, loc.state, loc.zip].filter(Boolean).join(', ');
   const c = j.costing;
   const tabs = [['overview', 'Overview'], ['time', `Time (${j.time.length})`], ['materials', `Materials (${j.materials.length})`], ['permits', `Permits (${j.permits.length})`]];
-  if (isOffice()) tabs.push(['billing', 'Estimates & Invoices'], ['costs', 'Other costs'], ['costing', 'Job costing']);
+  if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Estimates & Invoices'], ['costs', 'Other costs'], ['costing', 'Job costing']);
+  else if (j.pick_lists.length) tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
   const statusOpts = isOffice() ? JOB_STATUSES : ['dispatched', 'in_progress', 'on_hold', 'completed'];
   $('#view').innerHTML = setTop(`${esc(j.number)} · ${esc(j.title)}`,
     `<select id="status" style="width:auto">${(statusOpts.includes(j.status) ? statusOpts : [j.status, ...statusOpts]).map(s => `<option value="${s}" ${s === j.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
@@ -490,30 +506,32 @@ async function viewJob(id) {
         ${isOffice() && j.contract_amount ? `<dt>Contract</dt><dd>${money(j.contract_amount)}</dd>` : ''}
         ${j.budget_hours ? `<dt>Budget</dt><dd>${num(j.budget_hours)} hrs${isOffice() && j.budget_materials ? ` · ${money(j.budget_materials)} materials` : ''}</dd>` : ''}
       </dl>
+      <div id="appts"></div>
       <h2>Scope</h2><div style="white-space:pre-wrap">${esc(j.description || '—')}</div>
       ${j.completion_notes ? `<h2>Completion notes</h2><div style="white-space:pre-wrap">${esc(j.completion_notes)}</div>` : ''}
     </div><div class="card"><h2>Notes & activity</h2>
       <form id="note" class="row"><input name="body" class="grow" placeholder="Add a note (visible to the team)"><button class="btn primary">Add</button></form>
       <div style="margin-top:10px">${j.notes.map(n => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="small muted">${esc(n.user_name || '')} · ${fmtDT(n.created_at)}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('') || '<div class="empty">No notes yet</div>'}</div>
     </div></div>`;
+    jobAppointmentsCard(j);
     $('#note').onsubmit = async e => { e.preventDefault(); if (!e.target.body.value.trim()) return; await act(() => POST(`/jobs/${j.id}/notes`, { body: e.target.body.value })); route(); };
   }
   if (tab === 'time') {
     const total = j.time.reduce((s, t) => s + (new Date(t.clock_out || Date.now()) - new Date(t.clock_in)) / 3600000, 0);
     T.innerHTML = `<div class="card"><div class="row spread"><h2>Time on this job — ${num(total)} hrs${j.budget_hours ? ` of ${num(j.budget_hours)} budgeted` : ''}</h2>${isOffice() ? '<button class="btn" id="addtime">+ Add time</button>' : ''}</div>
       ${j.budget_hours && total > j.budget_hours ? `<div class="alert">⚠ Over budget by ${num(total - j.budget_hours)} hours</div>` : ''}
-      ${table([{ label: 'Tech', key: 'user_name' }, { label: 'Type', get: t => label(t.kind) }, { label: 'In', get: t => fmtDT(t.clock_in) }, { label: 'Out', get: t => t.clock_out ? fmtDT(t.clock_out) : 'On the clock' },
+      ${table([{ label: 'Tech', key: 'user_name' }, { label: 'Type', get: t => label(t.kind) }, { label: 'Cost code', get: t => t.cost_code || '—' }, { label: 'In', get: t => fmtDT(t.clock_in) }, { label: 'Out', get: t => t.clock_out ? fmtDT(t.clock_out) : 'On the clock' },
         { label: 'Hours', num: 1, get: t => num((new Date(t.clock_out || Date.now()) - new Date(t.clock_in)) / 3600000) }, { label: 'Notes', key: 'notes' }], j.time, { empty: 'No time logged yet', onClick: isOffice() ? t => timeForm(t) : null })}</div>`;
     if (isOffice()) $('#addtime').onclick = () => timeForm({ job_id: j.id });
   }
   if (tab === 'materials') {
     const totCost = j.materials.reduce((s, m) => s + m.qty * (m.unit_cost || 0), 0);
     T.innerHTML = `<div class="card"><div class="row spread"><h2>Materials used</h2><button class="btn primary" id="addmat">+ Log material</button></div>
-      ${table([{ label: 'Date', get: m => fmtDate(m.used_on) }, { label: 'Item', key: 'description' }, { label: 'Qty', num: 1, get: m => num(m.qty) }, { label: 'Source', get: m => label(m.source) },
+      ${table([{ label: 'Date', get: m => fmtDate(m.used_on) }, { label: 'Item', key: 'description' }, { label: 'Code', get: m => m.cost_code || '—' }, { label: 'Qty', num: 1, get: m => num(m.qty) }, { label: 'Source', get: m => label(m.source) },
         ...(isOffice() ? [{ label: 'Unit cost', num: 1, get: m => money(m.unit_cost) }, { label: 'Ext. cost', num: 1, get: m => money(m.qty * m.unit_cost) }] : []),
         { label: 'Bill price', num: 1, get: m => m.billable ? money(m.unit_price * m.qty) : 'No charge' }, { label: 'By', key: 'user_name' },
         ...(isOffice() ? [{ label: '', html: m => `<button class="btn sm danger" data-delmat="${m.id}">✕</button>` }] : [])],
-      j.materials, { empty: 'No materials logged', foot: isOffice() ? ['', 'Total', '', '', '', { v: money(totCost), num: 1 }, '', '', ''] : null })}</div>`;
+      j.materials, { empty: 'No materials logged', foot: isOffice() ? ['', 'Total', '', '', '', '', { v: money(totCost), num: 1 }, '', '', ''] : null })}</div>`;
     $('#addmat').onclick = () => materialForm(j.id);
     $$('[data-delmat]').forEach(b => b.onclick = async () => { if (confirm('Remove this material line? Stock will be returned to inventory.')) { await act(() => DEL('/materials/' + b.dataset.delmat)); route(); } });
   }
@@ -522,6 +540,8 @@ async function viewJob(id) {
       ${table(permitCols(false), j.permits, { empty: 'No permits on this job', onClick: isOffice() ? p => permitForm(p) : null })}</div>`;
     if (isOffice()) $('#addp').onclick = () => permitForm({ job_id: j.id });
   }
+  if (tab === 'budget') jobBudgetTab(j, T);
+  if (tab === 'purchasing') jobPurchasingTab(j, T);
   if (tab === 'billing') {
     T.innerHTML = `<div class="grid g2"><div class="card"><div class="row spread"><h2>Estimates</h2><a class="btn sm" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">+ Estimate</a></div>
       ${table([{ label: '#', key: 'number' }, { label: 'Title', key: 'title' }, { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }], j.estimates, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>
@@ -554,6 +574,7 @@ function timeForm(t) {
       { name: 'user_id', label: 'Employee', type: 'select', options: techOptions(), required: true },
       { name: 'job_id', label: 'Job', type: 'select', options: jobs, blank: '— No job —' },
       { name: 'kind', label: 'Type', type: 'select', options: ['job', 'travel', 'shop', 'training', 'pto'], blank: false, default: 'job' },
+      { name: 'cost_code_id', label: 'Cost code', type: 'select', options: ccOptions('labor') },
       { name: 'clock_in', label: 'Start', type: 'datetime', required: true }, { name: 'clock_out', label: 'End', type: 'datetime', required: !t.id },
       { name: 'notes', label: 'Notes', full: true },
     ],
@@ -569,6 +590,7 @@ async function materialForm(jobId) {
     { name: 'pricebook_id', label: 'From price book', type: 'select', options: mats.map(p => [p.id, `${p.code ? p.code + ' · ' : ''}${p.name}${isOffice() ? ` (${num(p.qty_on_hand)} on hand)` : ''}`]), blank: '— Custom item —', full: true },
     { name: 'description', label: 'Description (custom items)', full: true },
     { name: 'qty', label: 'Quantity', type: 'number', default: 1, required: true },
+    { name: 'cost_code_id', label: 'Cost code (blank = item default)', type: 'select', options: ccOptions('material') },
     { name: 'source', label: 'Came from', type: 'select', options: [['stock', 'Truck / shop stock'], ['supply_house', 'Supply house (bought for job)'], ['customer', 'Customer supplied']], blank: false },
     { name: 'unit_cost', label: 'Unit cost (custom / override)', type: 'number' },
     { name: 'unit_price', label: 'Unit sell price (custom)', type: 'number' },
@@ -694,6 +716,7 @@ async function viewDoc(kind, id) {
     <td><input class="n" type="number" step="any" data-k="qty" value="${esc(it.qty)}" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="unit_price" value="${esc(it.unit_price)}" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="unit_cost" value="${esc(it.unit_cost)}" title="Your cost — never shown to the customer" ${locked ? 'disabled' : ''}></td>
+    <td><select data-k="cost_code_id" style="width:110px" ${locked ? 'disabled' : ''}><option value="">—</option>${S.costCodes.map(c => `<option value="${c.id}" ${String(c.id) === String(it.cost_code_id) ? 'selected' : ''}>${esc(c.code)} ${esc(c.name)}</option>`).join('')}</select></td>
     <td style="text-align:center"><input type="checkbox" data-k="taxable" ${it.taxable ? 'checked' : ''} ${locked ? 'disabled' : ''} style="width:auto"></td>
     <td class="num" data-line>${money((+it.qty || 0) * (+it.unit_price || 0))}</td>
     <td>${locked ? '' : `<button class="btn sm danger" data-rm="${i}" type="button">✕</button>`}</td></tr>`;
@@ -715,7 +738,7 @@ async function viewDoc(kind, id) {
     </div></div>
     <div class="card"><div class="row spread"><h2>Line items</h2>${locked ? `<span class="muted small">${isEst ? 'Approved estimates are locked — create a new estimate for change orders.' : 'Locked: invoice is void or has payments.'}</span>` : ''}</div>
       <datalist id="pblist">${pb.map(p => `<option value="${esc(p.name)}">${esc(p.code || '')} · ${money(p.unit_price)}</option>`).join('')}</datalist>
-      <div class="table-wrap"><table class="items"><thead><tr><th>Description (type to search price book)</th><th>Qty</th><th>Price</th><th>Your cost</th><th>Tax</th><th class="num">Amount</th><th></th></tr></thead><tbody id="items"></tbody></table></div>
+      <div class="table-wrap"><table class="items"><thead><tr><th>Description (type to search price book)</th><th>Qty</th><th>Price</th><th>Your cost</th><th>Cost code</th><th>Tax</th><th class="num">Amount</th><th></th></tr></thead><tbody id="items"></tbody></table></div>
       ${locked ? '' : '<div class="row" style="margin-top:8px"><button type="button" class="btn" id="addline">+ Line</button><button type="button" class="btn" id="addlabor">+ Labor hours</button></div>'}
       <div class="row" style="align-items:flex-start;margin-top:14px">
         <div class="grow form-grid" style="max-width:520px">
@@ -734,7 +757,7 @@ async function viewDoc(kind, id) {
 
   const form = $('#docform');
   const tbody = $('#items');
-  const draw = () => { tbody.innerHTML = doc.items.map(itemRow).join('') || '<tr><td colspan="7" class="empty">No line items — add one below</td></tr>'; totals(); };
+  const draw = () => { tbody.innerHTML = doc.items.map(itemRow).join('') || '<tr><td colspan="8" class="empty">No line items — add one below</td></tr>'; totals(); };
   const totals = () => {
     doc.tax_rate = form.tax_rate.value; doc.discount = form.discount.value;
     const t = calcTotals(doc);
@@ -749,11 +772,14 @@ async function viewDoc(kind, id) {
     it[k] = e.target.type === 'checkbox' ? (e.target.checked ? 1 : 0) : e.target.value;
     if (k === 'description') {
       const p = pb.find(x => x.name === e.target.value);
-      if (p) { Object.assign(it, { pricebook_id: p.id, unit_price: p.unit_price, unit_cost: p.unit_cost ?? 0, taxable: p.taxable }); draw(); $(`tr[data-i="${tr.dataset.i}"] [data-k=qty]`).focus(); return; }
+      if (p) { Object.assign(it, { pricebook_id: p.id, unit_price: p.unit_price, unit_cost: p.unit_cost ?? 0, taxable: p.taxable, cost_code_id: p.cost_code_id || it.cost_code_id }); draw(); $(`tr[data-i="${tr.dataset.i}"] [data-k=qty]`).focus(); return; }
     }
     $('[data-line]', tr).textContent = money((+it.qty || 0) * (+it.unit_price || 0)); totals();
   });
-  tbody.addEventListener('change', e => { if (e.target.type === 'checkbox') totals(); });
+  tbody.addEventListener('change', e => {
+    if (e.target.type === 'checkbox') totals();
+    if (e.target.dataset.k === 'cost_code_id') doc.items[e.target.closest('tr').dataset.i].cost_code_id = e.target.value || null;
+  });
   tbody.addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { doc.items.splice(+b.dataset.rm, 1); draw(); } });
   form.tax_rate.oninput = totals; form.discount.oninput = totals;
   if (!locked) {
@@ -814,10 +840,12 @@ async function viewDoc(kind, id) {
   on('#toinv', async () => { const r = await act(() => POST(`${base}/${id}/convert-to-invoice`), 'Invoice created'); go('#/invoices/' + r.id); });
   on('#del', async () => { if (confirm(`Delete this ${kind}?`)) { await act(() => DEL(`${base}/${id}`), 'Deleted'); go('#' + base); } });
   on('#void', async () => { if (confirm('Void this invoice? It will be excluded from revenue and receivables.')) { await act(() => PUT(`${base}/${id}`, { status: 'void' }), 'Voided'); route(); } });
+  if (isAdmin()) await loadAccounts();
   on('#pay', () => formModal({
     title: 'Record payment', values: { amount: doc.balance, paid_at: todayStr() },
     fields: [{ name: 'amount', label: 'Amount', type: 'number', required: true }, { name: 'paid_at', label: 'Date', type: 'date', required: true },
-      { name: 'method', label: 'Method', type: 'select', options: ['check', 'card', 'cash', 'ach', 'financing', 'other'], blank: false }, { name: 'reference', label: 'Check # / reference' }],
+      { name: 'method', label: 'Method', type: 'select', options: ['check', 'card', 'cash', 'ach', 'financing', 'other'], blank: false }, { name: 'reference', label: 'Check # / reference' },
+      ...(isAdmin() ? [{ name: 'deposit_account_id', label: 'Deposit to', type: 'select', options: acctOptions('bank'), blank: 'Default (Settings)' }] : [])],
     submit: async d => { await POST(`${base}/${id}/payments`, d); toast('Payment recorded'); route(); },
   }));
   $$('[data-delpay]').forEach(b => b.onclick = async () => { if (confirm('Delete this payment?')) { await act(() => DEL('/payments/' + b.dataset.delpay)); route(); } });
@@ -843,9 +871,9 @@ async function viewTime() {
   $('#sheet').innerHTML = (isOffice() && Object.keys(byUser).length > 1 ? `<div class="row" style="margin-bottom:10px">${Object.entries(byUser).map(([n, h]) => `<span class="pill accent">${esc(n)}: ${num(h)} h</span>`).join('')}</div>` : '') +
     table([{ label: 'Date', get: t => fmtDate(localDate(new Date(t.clock_in))) }, ...(isOffice() ? [{ label: 'Employee', key: 'user_name' }] : []),
       { label: 'Job', html: t => t.job_id ? `<a href="#/jobs/${t.job_id}">${esc(t.job_number)}</a> ${esc(t.job_title)}` : '—' }, { label: 'Type', get: t => label(t.kind) },
-      { label: 'In', get: t => fmtTime(t.clock_in) }, { label: 'Out', html: t => t.clock_out ? fmtTime(t.clock_out) : '<span class="pill good">On the clock</span>' },
+      { label: 'Code', get: t => t.cost_code || '—' }, { label: 'In', get: t => fmtTime(t.clock_in) }, { label: 'Out', html: t => t.clock_out ? fmtTime(t.clock_out) : '<span class="pill good">On the clock</span>' },
       { label: 'Hours', num: 1, get: t => num(t.hours) }, { label: 'Notes', key: 'notes' }], rows,
-    { onClick: isOffice() ? t => timeForm(t) : null, empty: 'No time in this range', foot: rows.length ? ['Total', ...(isOffice() ? [''] : []), '', '', '', '', { v: num(total), num: 1 }, ''] : null });
+    { onClick: isOffice() ? t => timeForm(t) : null, empty: 'No time in this range', foot: rows.length ? ['Total', ...(isOffice() ? [''] : []), '', '', '', '', '', { v: num(total), num: 1 }, ''] : null });
 }
 
 // ============================================================ price book & inventory
@@ -854,20 +882,28 @@ async function viewPricebook() {
   const { params } = hashParams(); const cat = params.get('cat') || '';
   const cats = [...new Set(list.map(p => p.category).filter(Boolean))].sort();
   const rows = list.filter(p => !cat || p.category === cat);
-  $('#view').innerHTML = setTop('Price Book & Inventory', `<button class="btn" id="csv">Export CSV</button><button class="btn primary" id="new">+ Item</button>`,
+  $('#view').innerHTML = setTop('Price Book & Inventory', `<button class="btn" id="csv">Export CSV</button><button class="btn" id="reorder">Create reorder POs</button><button class="btn primary" id="new">+ Item</button>`,
     'Flat-rate tasks, materials, and stock levels. Costs are hidden from techs and customers.') + `<div class="card">
     <div class="tabs"><button class="${!cat ? 'on' : ''}" data-c="">All</button>${cats.map(c => `<button class="${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>
     ${table(PB_COLS, rows, { onClick: p => pbForm(p), empty: 'Price book is empty' })}</div>`;
   $$('[data-c]').forEach(b => b.onclick = () => go('#/pricebook' + qs({ cat: b.dataset.c })));
   $('#new').onclick = () => pbForm({});
   $('#csv').onclick = () => toCSV(PB_COLS, rows, 'pricebook.csv');
+  $('#reorder').onclick = async () => {
+    const r = await act(() => POST('/purchase-orders/reorder'));
+    toast(r.created.length ? `Created ${r.created.length} draft PO(s)` : 'Nothing at or below its reorder point has a preferred vendor', !r.created.length);
+    if (r.skipped_without_vendor) toast(`${r.skipped_without_vendor} low item(s) skipped — set a preferred vendor on them`, true);
+    if (r.created.length) go('#/purchasing');
+  };
 }
 const PB_COLS = [{ label: 'Code', key: 'code' }, { label: 'Name', html: p => `${esc(p.name)}${p.active ? '' : ' <span class="pill">Inactive</span>'}`, csv: p => p.name }, { label: 'Category', key: 'category' }, { label: 'Kind', get: p => label(p.kind) },
+  { label: 'Cost code', get: p => (S.costCodes.find(c => c.id === p.cost_code_id) || {}).code || '' },
   { label: 'Cost', num: 1, get: p => money(p.unit_cost) }, { label: 'Price', num: 1, get: p => money(p.unit_price) },
   { label: 'Markup', num: 1, get: p => p.unit_cost ? pct((p.unit_price - p.unit_cost) / p.unit_cost * 100) : '—' },
   { label: 'Labor hrs', num: 1, get: p => p.labor_hours ? num(p.labor_hours) : '' },
   { label: 'On hand', num: 1, html: p => p.kind === 'material' ? `${num(p.qty_on_hand)}${p.reorder_point && p.qty_on_hand <= p.reorder_point ? ' <span class="pill warn">Reorder</span>' : ''}` : '', csv: p => p.qty_on_hand }];
-function pbForm(p) {
+async function pbForm(p) {
+  await loadVendors();
   formModal({
     title: p.id ? 'Edit item' : 'New price book item', values: p, wide: true,
     fields: [{ name: 'code', label: 'Code / SKU' }, { name: 'name', label: 'Name', required: true }, { name: 'category', label: 'Category' },
@@ -876,6 +912,9 @@ function pbForm(p) {
       { name: 'unit_cost', label: 'Unit cost $', type: 'number', default: 0 }, { name: 'unit_price', label: 'Unit sell price $', type: 'number', default: 0 },
       { name: 'labor_hours', label: 'Labor hours (flat-rate tasks)', type: 'number', default: 0 }, { name: 'qty_on_hand', label: 'Qty on hand', type: 'number', default: 0 },
       { name: 'reorder_point', label: 'Reorder at', type: 'number', default: 0 },
+      { name: 'cost_code_id', label: 'Default cost code', type: 'select', options: ccOptions() },
+      { name: 'vendor_id', label: 'Preferred vendor (for reorders)', type: 'select', options: (S.vendors || []).map(v => [v.id, v.name]) },
+      { name: 'ply_item_id', label: 'Ply item ID' },
       { name: 'description', label: 'Customer-facing description', type: 'textarea', full: true },
       { name: 'taxable', label: 'Taxable', type: 'checkbox', default: 1 }, { name: 'active', label: 'Active', type: 'checkbox', default: 1 }],
     submit: async d => { if (p.id) await PUT('/pricebook/' + p.id, d); else await POST('/pricebook', d); S.pricebook = null; toast('Saved'); route(); },
@@ -888,12 +927,16 @@ const expenseCols = showJob => [{ label: 'Date', get: e => fmtDate(e.date) }, { 
   { label: 'Amount', num: 1, get: e => money(e.amount), csv: e => e.amount }];
 async function expenseForm(e) {
   const jobs = await jobPicker();
+  if (isAdmin()) await loadAccounts();
   if (e.job_id && !jobs.some(([id]) => id === e.job_id)) jobs.unshift([e.job_id, e.job_number || `Job #${e.job_id}`]);
   formModal({
     title: e.id ? 'Edit expense' : 'Add expense', values: e,
     fields: [{ name: 'date', label: 'Date', type: 'date', required: true }, { name: 'amount', label: 'Amount $', type: 'number', required: true },
       { name: 'category', label: 'Category', type: 'select', options: EXPENSE_CATS, required: true }, { name: 'vendor', label: 'Vendor' },
       { name: 'job_id', label: 'Job (blank = company overhead)', type: 'select', options: jobs, blank: '— Overhead —', full: true },
+      { name: 'cost_code_id', label: 'Cost code (job costs)', type: 'select', options: ccOptions() },
+      ...(isAdmin() ? [{ name: 'account_id', label: 'GL account (blank = by category)', type: 'select', options: acctOptions('expense', 'cogs', 'asset') },
+        { name: 'paid_from_account_id', label: 'Paid from', type: 'select', options: acctOptions('bank', 'credit_card'), blank: 'Default (Settings)' }] : []),
       { name: 'description', label: 'Description', full: true }],
     extra: e.id ? '<div style="margin-top:12px"><button type="button" class="btn danger" id="delexp">Delete</button></div>' : '',
     submit: async d => { if (e.id) await PUT('/expenses/' + e.id, d); else await POST('/expenses', d); toast('Saved'); route(); },
@@ -988,7 +1031,7 @@ async function viewReports() {
   const r = params.get('r') || 'pl';
   const [defFrom, defTo] = presetRange('mtd');
   const from = params.get('from') || defFrom, to = params.get('to') || defTo;
-  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources']];
+  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes']];
   $('#view').innerHTML = setTop('Reports', '<button class="btn" id="csv">Export CSV</button><button class="btn" onclick="print()">Print</button>') + `
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === r ? 'on' : ''}" data-r="${k}">${l}</button>`).join('')}</div>
     ${r === 'ar' ? '' : `<form id="rng" class="row no-print" style="margin-bottom:14px"><input type="date" name="from" value="${from}" style="width:auto"> to <input type="date" name="to" value="${to}" style="width:auto"><button class="btn">Run</button>
@@ -1083,6 +1126,7 @@ async function viewReports() {
     R.innerHTML = `<div class="grid g4">${kpi('Close rate', pct(e.close_rate_pct), `${e.approved} won of ${e.sent} sent`)}${kpi('Won value', money0(e.approved_value))}${kpi('Still open', money0(e.open_value), `${e.open} estimates`)}${kpi('Avg. won ticket', money0(e.avg_ticket))}</div>
       <div class="card" style="margin-top:14px"><p>Estimates created ${sub}: <b>${e.count}</b> · sent <b>${e.sent}</b> (${money0(e.sent_value)}) · approved <b>${e.approved}</b> · declined/expired <b>${e.declined}</b>.</p><a href="#/estimates?status=sent">Follow up on open estimates →</a></div>`;
   }
+  if (r === 'cc') csv = await costCodeReportView(R, from, to, sub);
   if (r === 'source') {
     const rows = await GET('/reports/lead-sources' + qs({ from, to }));
     const cols = [{ label: 'Source', key: 'source' }, { label: 'Jobs', num: 1, key: 'jobs' }, { label: 'Invoiced revenue', num: 1, get: r => money0(r.revenue), csv: r => r.revenue }, { label: 'Rev / job', num: 1, get: r => money0(r.jobs ? r.revenue / r.jobs : 0), csv: r => r.jobs ? r.revenue / r.jobs : 0 }];
@@ -1127,7 +1171,9 @@ async function viewSettings() {
     <div class="stack"><div class="card"><h2>Change my password</h2><form id="pw" class="stack">${fieldHtml({ name: 'current', label: 'Current password', type: 'password', required: true })}${fieldHtml({ name: 'next', label: 'New password (8+)', type: 'password', required: true })}<button class="btn">Change password</button></form></div>
     <div class="card"><h2>Email delivery</h2>${outbox.some(o => o.status === 'not_configured') || !outbox.length ? `<div class="alert info">To email estimates and invoices directly, set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> and <code>SMTP_FROM</code> on the server (see README). Until then, "Send" marks the document as sent and copies the customer link for you to text or email.</div>` : ''}
       <h3 style="margin-top:12px">Recent messages</h3>${table([{ label: 'When', get: o => fmtDT(o.created_at) }, { label: 'To', key: 'to_email' }, { label: 'Subject', key: 'subject' }, { label: 'Status', html: o => pill(o.status) }], outbox.slice(0, 15), { empty: 'Nothing sent yet' })}</div>
-    <div class="card"><h2>Appearance</h2><div class="row"><button class="btn" data-theme="">System</button><button class="btn" data-theme="light">Light</button><button class="btn" data-theme="dark">Dark</button></div></div></div></div>`;
+    <div class="card"><h2>Appearance</h2><div class="row"><button class="btn" data-theme="">System</button><button class="btn" data-theme="light">Light</button><button class="btn" data-theme="dark">Dark</button></div></div></div></div>
+    <div id="settings-ext" class="stack" style="margin-top:14px"></div>`;
+  settingsExtras($('#settings-ext'));
   if (isAdmin()) $('#sf').onsubmit = async e => { e.preventDefault(); S.settings = await act(() => PUT('/settings', readForm(e.target, fields)), 'Settings saved'); renderShell(); route(); };
   else $$('#sf input, #sf textarea').forEach(i => i.disabled = true);
   $('#pw').onsubmit = async e => { e.preventDefault(); await act(() => POST('/me/password', { current: e.target.current.value, next: e.target.next.value }), 'Password changed'); e.target.reset(); };
@@ -1136,4 +1182,4 @@ async function viewSettings() {
 function applyTheme() { const t = localStorage.getItem('fo_theme'); if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
 
 applyTheme();
-boot();
+// boot() runs from ext.js once all views are defined

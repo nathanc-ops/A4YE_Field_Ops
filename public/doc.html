@@ -9,7 +9,7 @@
     body { background: var(--bg); }
     .doc { max-width: 820px; margin: 24px auto; padding: 0 16px 60px; }
     .doc .card { padding: 28px; }
-    .head { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; border-bottom: 2px solid var(--border); padding-bottom: 16px; margin-bottom: 16px; }
+    .head { border-top: 6px solid var(--brand); padding-top: 14px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; border-bottom: 2px solid var(--border); padding-bottom: 16px; margin-bottom: 16px; }
     .co { font-size: 20px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
     .bolt { background: var(--brand); color: #111; width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; }
     .big { font-size: 26px; font-weight: 800; text-align: right; }
@@ -40,6 +40,9 @@ async function load(method = 'GET', body) {
 function render(d) {
   const doc = d.doc, isEst = d.kind === 'estimate';
   document.title = `${isEst ? 'Estimate' : 'Invoice'} ${doc.number} — ${d.company.name}`;
+  const root = document.documentElement.style, ok = h => /^#[0-9a-f]{6}$/i.test(h || '');
+  if (ok(d.company.brand_primary)) root.setProperty('--accent', d.company.brand_primary);
+  if (ok(d.company.brand_accent)) root.setProperty('--brand', d.company.brand_accent);
   const loc = d.location;
   const cust = d.customer;
   const canRespond = isEst && ['sent', 'viewed'].includes(doc.status);
@@ -47,7 +50,7 @@ function render(d) {
     ? { approved: `✓ Approved by ${esc(doc.signature_name)} — thank you! We'll be in touch to schedule.`, declined: 'This estimate was declined.', expired: 'This estimate has expired — please contact us for an updated price.' }[doc.status]
     : doc.status === 'paid' ? '✓ Paid in full — thank you!' : doc.status === 'void' ? 'This invoice has been voided.' : '';
   document.getElementById('doc').innerHTML = `<div class="card">
-    <div class="head"><div><div class="co"><span class="bolt">⚡</span>${esc(d.company.name)}</div>
+    <div class="head"><div><div class="co">${d.company.logo_url ? `<img src="${esc(d.company.logo_url)}" alt="" style="height:44px;max-width:160px;object-fit:contain">` : '<span class="bolt">⚡</span>'}${esc(d.company.name)}</div>
       <div class="muted small">${[d.company.address, d.company.phone, d.company.email].filter(Boolean).map(esc).join(' · ')}${d.company.license ? `<br>License ${esc(d.company.license)}` : ''}</div></div>
       <div><div class="big">${isEst ? 'ESTIMATE' : 'INVOICE'}</div><div class="num">#${esc(doc.number)}</div>
       <div class="num muted small">${isEst ? (doc.valid_until ? `Valid until ${fmtDate(doc.valid_until)}` : '') : `Issued ${fmtDate(doc.issue_date)}<br>Due ${fmtDate(doc.due_date) || 'on receipt'}`}</div></div></div>

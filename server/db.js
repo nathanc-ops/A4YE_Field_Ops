@@ -313,6 +313,7 @@ function open(file) {
   db.exec(SCHEMA);
   const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
+  require('./migrations').migrate(db);
   return db;
 }
 
@@ -321,10 +322,23 @@ function all(db, sql, ...p) { return db.prepare(sql).all(...p).map(r => ({ ...r 
 function get(db, sql, ...p) { const r = db.prepare(sql).get(...p); return r ? { ...r } : null; }
 function run(db, sql, ...p) { return db.prepare(sql).run(...p); }
 
+// Nestable transactions (outer BEGIN, inner SAVEPOINTs).
+const txDepth = new WeakMap();
 function tx(db, fn) {
-  db.exec('BEGIN');
-  try { const r = fn(); db.exec('COMMIT'); return r; }
-  catch (e) { db.exec('ROLLBACK'); throw e; }
+  const d = txDepth.get(db) || 0;
+  const sp = `sp${d}`;
+  db.exec(d ? `SAVEPOINT ${sp}` : 'BEGIN');
+  txDepth.set(db, d + 1);
+  try {
+    const r = fn();
+    txDepth.set(db, d);
+    db.exec(d ? `RELEASE ${sp}` : 'COMMIT');
+    return r;
+  } catch (e) {
+    txDepth.set(db, d);
+    db.exec(d ? `ROLLBACK TO ${sp}; RELEASE ${sp}` : 'ROLLBACK');
+    throw e;
+  }
 }
 
 function nextNumber(db, table, prefix) {

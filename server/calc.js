@@ -61,7 +61,10 @@ function jobCosting(db, jobId) {
   }
   const mat = get(db, `SELECT COALESCE(SUM(qty*unit_cost),0) cost, COALESCE(SUM(CASE WHEN billable THEN qty*unit_price ELSE 0 END),0) price
                        FROM job_materials WHERE job_id = ?`, jobId);
-  const other = get(db, 'SELECT COALESCE(SUM(amount),0) v FROM expenses WHERE job_id = ?', jobId).v;
+  // other job costs: quick expenses + vendor bill lines (bill lines that created material rows are counted as materials)
+  const other = get(db, 'SELECT COALESCE(SUM(amount),0) v FROM expenses WHERE job_id = ?', jobId).v
+    + get(db, `SELECT COALESCE(SUM(bl.amount),0) v FROM bill_lines bl JOIN bills b ON b.id = bl.bill_id
+               WHERE bl.job_id = ? AND b.status != 'void' AND bl.job_material_id IS NULL AND b.po_id IS NULL`, jobId).v;
   const permitFees = get(db, 'SELECT COALESCE(SUM(fee),0) v FROM permits WHERE job_id = ?', jobId).v;
   const invoices = all(db, "SELECT * FROM invoices WHERE job_id = ? AND status != 'void'", jobId).map(i => invoiceWithTotals(db, i));
   // revenue excludes sales tax (tax is a pass-through liability, not income)
@@ -83,8 +86,8 @@ function jobCosting(db, jobId) {
 // Time entries overlapping [from, to) — hours are clipped to the range.
 function timeInRange(db, from, to, extraWhere = '', ...params) {
   const now = new Date().toISOString();
-  const rows = all(db, `SELECT t.*, u.name user_name, j.number job_number, j.title job_title
-    FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id
+  const rows = all(db, `SELECT t.*, u.name user_name, j.number job_number, j.title job_title, cc.code cost_code, cc.name cost_code_name
+    FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id
     WHERE t.clock_in < ? AND COALESCE(t.clock_out, ?) > ? ${extraWhere}
     ORDER BY t.clock_in`, to, now, from, ...params);
   for (const t of rows) {
@@ -290,7 +293,59 @@ function revenueBySource(db, from, to) {
     });
 }
 
+// Budget vs actual for each cost code on a job.
+function jobCostCodes(db, jobId) {
+  const now = new Date().toISOString();
+  const map = new Map();
+  const row = (id, code, name) => {
+    const k = id || 0;
+    if (!map.has(k)) map.set(k, { cost_code_id: id || null, code: code || '—', name: name || 'Uncoded', budget_hours: 0, budget_material: 0, budget_other: 0, hours: 0, labor_cost: 0, material_cost: 0, other_cost: 0 });
+    return map.get(k);
+  };
+  for (const b of all(db, 'SELECT jb.*, cc.code, cc.name FROM job_budgets jb JOIN cost_codes cc ON cc.id = jb.cost_code_id WHERE jb.job_id = ?', jobId))
+    Object.assign(row(b.cost_code_id, b.code, b.name), { budget_hours: b.budget_hours, budget_material: b.budget_material, budget_other: b.budget_other });
+  for (const t of all(db, 'SELECT t.*, cc.code, cc.name FROM time_entries t LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.job_id = ?', jobId)) {
+    const h = Math.max(0, hoursBetween(t.clock_in, t.clock_out || now)); const r = row(t.cost_code_id, t.code, t.name);
+    r.hours += h; r.labor_cost += h * t.hourly_cost;
+  }
+  for (const m of all(db, 'SELECT m.*, cc.code, cc.name FROM job_materials m LEFT JOIN cost_codes cc ON cc.id = m.cost_code_id WHERE m.job_id = ?', jobId))
+    row(m.cost_code_id, m.code, m.name).material_cost += m.qty * m.unit_cost;
+  for (const e of all(db, 'SELECT e.amount, e.cost_code_id, cc.code, cc.name FROM expenses e LEFT JOIN cost_codes cc ON cc.id = e.cost_code_id WHERE e.job_id = ?', jobId))
+    row(e.cost_code_id, e.code, e.name).other_cost += e.amount;
+  for (const l of all(db, `SELECT bl.amount, bl.cost_code_id, cc.code, cc.name FROM bill_lines bl JOIN bills b ON b.id = bl.bill_id LEFT JOIN cost_codes cc ON cc.id = bl.cost_code_id
+      WHERE bl.job_id = ? AND b.status != 'void' AND bl.job_material_id IS NULL AND b.po_id IS NULL`, jobId))
+    row(l.cost_code_id, l.code, l.name).other_cost += l.amount;
+  const permitCode = get(db, "SELECT id, code, name FROM cost_codes WHERE code = '980'");
+  for (const p of all(db, 'SELECT fee FROM permits WHERE job_id = ? AND fee > 0', jobId))
+    row(permitCode && permitCode.id, permitCode && permitCode.code, permitCode && permitCode.name).other_cost += p.fee;
+  return [...map.values()].map(r => {
+    const budget = r.budget_material + r.budget_other;
+    const cost = r.labor_cost + r.material_cost + r.other_cost;
+    return { ...r, hours: r2(r.hours), labor_cost: r2(r.labor_cost), material_cost: r2(r.material_cost), other_cost: r2(r.other_cost), total_cost: r2(cost),
+      hours_variance: r2(r.budget_hours - r.hours), material_variance: r2(r.budget_material - r.material_cost), pct_hours_used: r.budget_hours ? r2(r.hours / r.budget_hours * 100) : null, budget_cost: r2(budget) };
+  }).sort((a, b) => String(a.code).localeCompare(String(b.code)));
+}
+
+// Cost-code totals across all jobs for a date range (labor by clock-in date, materials by use date).
+function costCodeReport(db, from, to) {
+  const map = new Map();
+  const row = (id, code, name) => { const k = id || 0; if (!map.has(k)) map.set(k, { cost_code_id: id || null, code: code || '—', name: name || 'Uncoded', hours: 0, labor_cost: 0, material_cost: 0, other_cost: 0, jobs: new Set() }); return map.get(k); };
+  for (const t of timeInRange(db, startOfDay(from), endOfDay(to))) {
+    if (!t.job_id) continue;
+    const r = row(t.cost_code_id, t.cost_code, t.cost_code_name); r.hours += t.hours; r.labor_cost += t.hours * t.hourly_cost; r.jobs.add(t.job_id);
+  }
+  for (const m of all(db, 'SELECT m.*, cc.code, cc.name FROM job_materials m LEFT JOIN cost_codes cc ON cc.id = m.cost_code_id WHERE m.used_on BETWEEN ? AND ?', from, to)) {
+    const r = row(m.cost_code_id, m.code, m.name); r.material_cost += m.qty * m.unit_cost; r.jobs.add(m.job_id);
+  }
+  for (const e of all(db, 'SELECT e.*, cc.code, cc.name FROM expenses e LEFT JOIN cost_codes cc ON cc.id = e.cost_code_id WHERE e.job_id IS NOT NULL AND e.date BETWEEN ? AND ?', from, to)) {
+    const r = row(e.cost_code_id, e.code, e.name); r.other_cost += e.amount; r.jobs.add(e.job_id);
+  }
+  return [...map.values()].map(r => ({ ...r, jobs: r.jobs.size, hours: r2(r.hours), labor_cost: r2(r.labor_cost), material_cost: r2(r.material_cost), other_cost: r2(r.other_cost),
+    total_cost: r2(r.labor_cost + r.material_cost + r.other_cost) })).sort((a, b) => String(a.code).localeCompare(String(b.code)));
+}
+
 module.exports = {
+  jobCostCodes, costCodeReport,
   r2, docTotals, invoiceWithTotals, estimateWithTotals, refreshInvoiceStatus, jobCosting,
   profitAndLoss, monthlyTrend, hoursByJob, payroll, arAging, techPerformance, estimateConversion,
   jobCostingReport, revenueBySource, timeInRange, startOfDay, endOfDay,
