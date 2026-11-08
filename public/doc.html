@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your Document</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body { background: var(--bg); }
+    .doc { max-width: 820px; margin: 24px auto; padding: 0 16px 60px; }
+    .doc .card { padding: 28px; }
+    .head { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; border-bottom: 2px solid var(--border); padding-bottom: 16px; margin-bottom: 16px; }
+    .co { font-size: 20px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+    .bolt { background: var(--brand); color: #111; width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; }
+    .big { font-size: 26px; font-weight: 800; text-align: right; }
+    .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
+    .terms { white-space: pre-wrap; font-size: 12px; color: var(--muted); margin-top: 18px; }
+    .respond { margin-top: 20px; border-top: 2px solid var(--border); padding-top: 18px; }
+    @media (max-width: 560px) { .parties { grid-template-columns: 1fr; } .doc .card { padding: 18px; } }
+  </style>
+</head>
+<body>
+  <div class="doc" id="doc"><div class="empty">Loading…</div></div>
+  <div id="toast"></div>
+<script>
+'use strict';
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = n => (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+const fmtDate = s => s ? new Date(s.length === 10 ? s + 'T00:00:00' : s).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : '';
+const [, , kind, token] = location.pathname.split('/');
+
+async function load(method = 'GET', body) {
+  const url = `/api/public/${kind}/${token}${body ? '/respond' : ''}`;
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Not found');
+  return data;
+}
+
+function render(d) {
+  const doc = d.doc, isEst = d.kind === 'estimate';
+  document.title = `${isEst ? 'Estimate' : 'Invoice'} ${doc.number} — ${d.company.name}`;
+  const loc = d.location;
+  const cust = d.customer;
+  const canRespond = isEst && ['sent', 'viewed'].includes(doc.status);
+  const statusMsg = isEst
+    ? { approved: `✓ Approved by ${esc(doc.signature_name)} — thank you! We'll be in touch to schedule.`, declined: 'This estimate was declined.', expired: 'This estimate has expired — please contact us for an updated price.' }[doc.status]
+    : doc.status === 'paid' ? '✓ Paid in full — thank you!' : doc.status === 'void' ? 'This invoice has been voided.' : '';
+  document.getElementById('doc').innerHTML = `<div class="card">
+    <div class="head"><div><div class="co"><span class="bolt">⚡</span>${esc(d.company.name)}</div>
+      <div class="muted small">${[d.company.address, d.company.phone, d.company.email].filter(Boolean).map(esc).join(' · ')}${d.company.license ? `<br>License ${esc(d.company.license)}` : ''}</div></div>
+      <div><div class="big">${isEst ? 'ESTIMATE' : 'INVOICE'}</div><div class="num">#${esc(doc.number)}</div>
+      <div class="num muted small">${isEst ? (doc.valid_until ? `Valid until ${fmtDate(doc.valid_until)}` : '') : `Issued ${fmtDate(doc.issue_date)}<br>Due ${fmtDate(doc.due_date) || 'on receipt'}`}</div></div></div>
+    ${statusMsg ? `<div class="alert ${doc.status === 'approved' || doc.status === 'paid' ? 'info' : ''}" style="margin-bottom:16px">${statusMsg}</div>` : ''}
+    <div class="parties"><div><h3>${isEst ? 'Prepared for' : 'Bill to'}</h3><b>${esc(cust.company || cust.name)}</b>${cust.company ? `<br>${esc(cust.name)}` : ''}<br>${esc(cust.billing_address || '')}</div>
+      ${loc ? `<div><h3>Job site</h3>${esc([loc.address, loc.city, loc.state, loc.zip].filter(Boolean).join(', '))}${d.job ? `<br><span class="muted">Job ${esc(d.job.number)}</span>` : ''}</div>` : ''}</div>
+    ${doc.title ? `<h2>${esc(doc.title)}</h2>` : ''}
+    <div class="table-wrap"><table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+      <tbody>${doc.items.map(it => `<tr><td>${esc(it.description)}</td><td class="num">${Number(it.qty).toLocaleString()}</td><td class="num">${money(it.unit_price)}</td><td class="num">${money(it.qty * it.unit_price)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="totals" style="margin-top:14px">
+      <div><span>Subtotal</span><span>${money(doc.subtotal)}</span></div>
+      ${doc.discount ? `<div><span>Discount</span><span>−${money(doc.discount)}</span></div>` : ''}
+      <div><span>Tax (${doc.tax_rate}%)</span><span>${money(doc.tax)}</span></div>
+      <div class="grand"><span>Total</span><span>${money(doc.total)}</span></div>
+      ${!isEst && doc.paid ? `<div><span>Paid</span><span>−${money(doc.paid)}</span></div><div class="grand"><span>Balance due</span><span>${money(doc.balance)}</span></div>` : ''}
+    </div>
+    ${doc.notes ? `<div style="white-space:pre-wrap;margin-top:18px">${esc(doc.notes)}</div>` : ''}
+    ${doc.terms ? `<div class="terms">${esc(doc.terms)}</div>` : ''}
+    ${!isEst && doc.balance > 0 && doc.status !== 'void' ? `<div class="respond"><h2>How to pay</h2><p>Call ${esc(d.company.phone || 'our office')} to pay by card, or mail a check payable to <b>${esc(d.company.name)}</b>${d.company.address ? ` at ${esc(d.company.address)}` : ''}. Please reference invoice #${esc(doc.number)}.</p></div>` : ''}
+    ${canRespond ? `<div class="respond no-print"><h2>Approve this estimate</h2>
+      <p class="muted small">By typing your name and clicking Approve, you authorize ${esc(d.company.name)} to perform the work described above for the total shown, subject to the terms.</p>
+      <form id="ap" class="row"><input name="sig" placeholder="Type your full name to sign" required style="max-width:320px"><button class="btn primary">Approve</button><button type="button" class="btn danger" id="decline">Decline</button></form></div>` : ''}
+    <div class="row no-print" style="margin-top:20px;justify-content:flex-end"><button class="btn" onclick="print()">Print / Save PDF</button></div>
+  </div>`;
+  if (canRespond) {
+    document.getElementById('ap').onsubmit = async e => { e.preventDefault(); try { render(await load('POST', { decision: 'approve', signature_name: e.target.sig.value })); } catch (err) { alert(err.message); } };
+    document.getElementById('decline').onclick = async () => { if (confirm('Decline this estimate?')) try { render(await load('POST', { decision: 'decline' })); } catch (err) { alert(err.message); } };
+  }
+}
+load().then(render).catch(e => { document.getElementById('doc').innerHTML = `<div class="card empty">${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

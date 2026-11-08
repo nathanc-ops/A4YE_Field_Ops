@@ -1,0 +1,29 @@
+{
+  "name": "a4ye-field-ops",
+  "version": "0.1.0",
+  "description": "Field service management for electrical contractors: scheduling, estimates, invoices, time tracking, job costing, P&L.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "dev": "node --no-warnings --watch server/index.js",
+    "seed": "node --no-warnings server/seed.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nathanc-ops/A4YE_Field_Ops.git"
+  },
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/nathanc-ops/A4YE_Field_Ops/issues"
+  },
+  "homepage": "https://github.com/nathanc-ops/A4YE_Field_Ops#readme",
+  "dependencies": {
+    "express": "^4.22.3",
+    "nodemailer": "^6.10.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
