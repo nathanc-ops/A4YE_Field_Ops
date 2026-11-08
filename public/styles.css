@@ -4,7 +4,7 @@
   --accent: #1d4ed8; --accent-ink: #ffffff; --accent-soft: #e0e9ff;
   --good: #047857; --good-soft: #d1fae5; --warn: #b45309; --warn-soft: #fef3c7;
   --bad: #b91c1c; --bad-soft: #fee2e2; --info-soft: #e0f2fe; --info: #0369a1;
-  --series-1: #2a78d6; --brand: #d0332c; --brand-ink: #ffffff; --sidebar: #000000; --dispatched: #475569;
+  --series-1: #2a78d6; --brand: #fa001c; --brand-ink: #ffffff; --sidebar: #000000; --dispatched: #475569;
   --radius: 10px; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
   color-scheme: light;
 }
@@ -50,7 +50,7 @@ h3 { font-size: 14px; margin: 0 0 8px; color: var(--text-2); text-transform: upp
 .brand .bolt { background: var(--brand); color: #111; width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; }
 .side a { display: block; color: #cbd5e1; padding: 8px 10px; border-radius: 7px; margin: 1px 0; }
 .side a:hover { background: rgba(255,255,255,.08); text-decoration: none; }
-.side a.active { background: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.side a.active { background: var(--btn, var(--brand)); color: var(--btn-ink, var(--brand-ink)); font-weight: 600; }
 .side .sect { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #64748b; padding: 12px 10px 4px; }
 .side .me { border-top: 1px solid rgba(255,255,255,.1); margin-top: 14px; padding: 12px 10px 0; font-size: 12px; }
 .main { padding: 22px 26px 60px; min-width: 0; }
@@ -259,23 +259,23 @@ input[type="color"] { height: 40px; padding: 3px; cursor: pointer; }
 /* ---------- All 4 You brand touches ---------- */
 :root[data-theme="dark"] .pill.accent { background: #2c2c2c; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill.accent { background: #2c2c2c; } }
-.side .sect { font-family: "Barlow Condensed", sans-serif; font-weight: 700; letter-spacing: .18em; color: var(--brand-text, #e05a4c); }
+.side .sect { font-family: "Barlow Condensed", sans-serif; font-weight: 700; letter-spacing: .18em; color: var(--brand-text, #fa001c); }
 .side { border-right: 3px solid var(--brand); }
 .tabs button.on { border-color: var(--brand); }
 .kpi { border-top: 3px solid var(--brand); }
 .auth { background: #000; color: #fff; }
 .auth-box { width: min(420px, 100%); text-align: center; }
 .auth-box .logo { width: min(340px, 90%); margin: 0 auto 26px; display: block; }
-.auth-box .label { font-family: "Barlow Condensed", sans-serif; font-weight: 700; letter-spacing: .22em; color: #de5243; font-size: 18px; margin-bottom: 18px; }
+.auth-box .label { font-family: "Barlow Condensed", sans-serif; font-weight: 700; letter-spacing: .22em; color: #fa001c; font-size: 18px; margin-bottom: 18px; }
 .tagline { font-family: "Barlow Condensed", sans-serif; font-weight: 800; text-transform: uppercase; line-height: .95; margin-bottom: 26px; }
 .tagline .sm { letter-spacing: .3em; font-size: 20px; }
 .tagline .lg { font-size: 54px; }
-.tagline .red { color: #d0332c; }
-.tagline .rule { display: flex; align-items: center; justify-content: center; gap: 10px; color: #d0332c; margin: 10px 0 12px; }
-.tagline .rule i { height: 2px; width: 90px; background: #d0332c; display: block; border-radius: 2px; }
+.tagline .red { color: #fa001c; }
+.tagline .rule { display: flex; align-items: center; justify-content: center; gap: 10px; color: #fa001c; margin: 10px 0 12px; }
+.tagline .rule i { height: 2px; width: 90px; background: #fa001c; display: block; border-radius: 2px; }
 .auth-box form { text-align: left; }
 .auth-box label.f > span { color: #9a9a9a; }
 .auth-box input { background: #1c1c1c; border: 2px solid #333; color: #fff; padding: 12px 14px; font-size: 17px; border-radius: 12px; }
-.auth-box input:focus { outline: 2px solid #de5243; }
-.auth-box .btn.primary { background: #d0332c; border-color: #d0332c; color: #fff; width: 100%; justify-content: center; padding: 14px; font-size: 18px; border-radius: 12px; }
+.auth-box input:focus { outline: 2px solid #fa001c; }
+.auth-box .btn.primary { background: #e0001a; border-color: #e0001a; color: #fff; width: 100%; justify-content: center; padding: 14px; font-size: 18px; border-radius: 12px; }
 .auth-box .hint { color: #9a9a9a; font-size: 14px; margin: 0 0 12px; }

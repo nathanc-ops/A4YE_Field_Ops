@@ -375,6 +375,12 @@ const MIGRATIONS = [
       ['LOWES', '5100', 'Materials (supply house)', "Lowe's"], ['VERIZON', '6400', 'Software & phones', 'Verizon'], ['GOOGLE ADS', '6500', 'Marketing', 'Google Ads'], ['SERVICE FEE', '6800', 'Bank & card fees', 'Bank']])
       r.run(t, 'out', cat, v, acct);
   },
+  // 4: exact logo red from the original artwork (#FA001C); buttons use #E0001A so white text stays readable
+  db => {
+    const swap = (k, from, to) => db.prepare('UPDATE settings SET value = ? WHERE key = ? AND lower(value) = ?').run(to, k, from);
+    swap('brand_primary', '#d0332c', '#e0001a');
+    swap('brand_accent', '#d0332c', '#fa001c');
+  },
 ];
 
 function migrate(db) {

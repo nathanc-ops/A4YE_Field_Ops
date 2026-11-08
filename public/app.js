@@ -151,7 +151,7 @@ async function renderAuth() {
   // "Powered by people. Built All 4 You." → two stacked lines (small word + big words)
   const tl = String(brand.tagline || '').match(/^\s*(\S+\s+\S+)\s+(.+?)\.\s*(\S+)\s+(.+?)\.?\s*$/);
   const tagline = tl ? `<div class="tagline"><div class="sm">${esc(tl[1])}</div><div class="lg red">${esc(tl[2])}.</div>
-      <div class="rule"><i></i><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="#d0332c" d="M14 2 4 14h7l-1 8 10-12h-7z"/></svg><i></i></div><div class="sm">${esc(tl[3])}</div><div class="lg">${esc(tl[4])}.</div></div>` : '';
+      <div class="rule"><i></i><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fa001c" d="M14 2 4 14h7l-1 8 10-12h-7z"/></svg><i></i></div><div class="sm">${esc(tl[3])}</div><div class="lg">${esc(tl[4])}.</div></div>` : '';
   root.innerHTML = `<div class="auth"><div class="auth-box">
     ${brand.logo_url ? `<img class="logo" src="${esc(brand.logo_url)}" alt="${esc(brand.company_name || '')}">` : `<h1>${esc(brand.company_name || 'Field Ops')}</h1>`}
     <div class="label">FIELD OPS</div>${tagline}

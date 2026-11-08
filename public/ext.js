@@ -24,7 +24,7 @@ function isDarkMode() { const t = localStorage.getItem('fo_theme'); return t ? t
 function applyBrand(s = S.settings) {
   const r = document.documentElement.style;
   const primary = hexToRgb(s.brand_primary) ? s.brand_primary : null;
-  const accent = hexToRgb(s.brand_accent) ? s.brand_accent : '#f5b400';
+  const accent = hexToRgb(s.brand_accent) ? s.brand_accent : '#fa001c';
   const side = hexToRgb(s.brand_sidebar) ? s.brand_sidebar : '#0b1f36';
   r.setProperty('--brand', accent); r.setProperty('--brand-ink', inkFor(accent)); r.setProperty('--sidebar', side);
   // sidebar section labels in a red that reads on the sidebar
@@ -794,8 +794,8 @@ async function settingsExtras(el) {
   const cards = [];
   if (isAdmin()) cards.push(`<div class="card"><h2>Branding</h2><p class="small muted">Colors and logo used across the app and on estimates/invoices customers see.</p>
     <form id="brand"><div class="form-grid">
-      ${fieldHtml({ name: 'brand_primary', label: 'Primary (buttons, links)', type: 'color' }, s.brand_primary || '#d0332c')}
-      ${fieldHtml({ name: 'brand_accent', label: 'Accent (highlights)', type: 'color' }, s.brand_accent || '#d0332c')}
+      ${fieldHtml({ name: 'brand_primary', label: 'Primary (buttons, links)', type: 'color' }, s.brand_primary || '#e0001a')}
+      ${fieldHtml({ name: 'brand_accent', label: 'Accent (highlights)', type: 'color' }, s.brand_accent || '#fa001c')}
       ${fieldHtml({ name: 'brand_sidebar', label: 'Sidebar', type: 'color' }, s.brand_sidebar || '#000000')}
       <label class="f"><span>Logo (PNG/JPG/SVG, under 300 KB)</span><input type="file" id="logo" accept="image/*"></label>
       ${fieldHtml({ name: 'logo_url', label: '…or logo URL', full: true }, s.logo_url && !s.logo_url.startsWith('data:') ? s.logo_url : '')}
@@ -844,7 +844,7 @@ async function settingsExtras(el) {
     } else if (bf.logo_url.value) body.logo_url = bf.logo_url.value;
     saveSettings(body, 'Branding saved');
   };
-  $('#brandreset').onclick = () => saveSettings({ brand_primary: '#d0332c', brand_accent: '#d0332c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
+  $('#brandreset').onclick = () => saveSettings({ brand_primary: '#e0001a', brand_accent: '#fa001c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
   $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
   const pf = $('#plyf');
