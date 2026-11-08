@@ -20,6 +20,21 @@
     .parties { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
     .terms { white-space: pre-wrap; font-size: 12px; color: var(--muted); margin-top: 18px; }
     .respond { margin-top: 20px; border-top: 2px solid var(--border); padding-top: 18px; }
+    .opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 8px 0 14px; }
+    .opt-card { position: relative; text-align: left; font: inherit; color: inherit; background: var(--surface); border: 2px solid var(--border); border-radius: 14px; padding: 18px 16px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+    .opt-card.rec { border-color: color-mix(in srgb, var(--brand) 45%, var(--border)); }
+    .opt-card.sel { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 25%, transparent); }
+    .opt-card.dim { opacity: .45; }
+    .opt-card[disabled] { cursor: default; }
+    .opt-card .ribbon { position: absolute; top: -11px; left: 14px; background: var(--brand); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; }
+    .opt-card .oname { font-family: "Barlow Condensed", sans-serif; font-weight: 700; font-size: 22px; text-transform: uppercase; }
+    .opt-card .oprice { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .opt-card .odesc { margin: 6px 0 0; }
+    .opt-card ul, .shared ul { margin: 8px 0 4px; padding-left: 18px; }
+    .opt-card li { margin: 3px 0; }
+    .opt-card .pickmark { margin-top: auto; padding-top: 8px; font-weight: 700; color: var(--brand); }
+    .shared { background: var(--surface-2); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+    @media print { .opt-card { break-inside: avoid; } }
     @media (max-width: 560px) { .parties { grid-template-columns: 1fr; } .doc .card { padding: 18px; } }
   </style>
 </head>
@@ -50,8 +65,26 @@ function render(d) {
   const loc = d.location;
   const cust = d.customer;
   const canRespond = isEst && ['sent', 'viewed'].includes(doc.status);
+  const opts = isEst ? (doc.options || []) : [];
+  const chosen = opts.find(o => o.id === doc.approved_option_id);
+  let pick = chosen ? chosen.id : canRespond && opts.length ? (opts.find(o => o.recommended) || opts[0]).id : null;
+  const optLines = id => doc.items.filter(i => i.option_id === id);
+  const shared = doc.items.filter(i => !i.option_id);
+  const lineLi = i => `<li>${esc(i.description)}${Number(i.qty) !== 1 ? ` <span class="muted">× ${Number(i.qty).toLocaleString()}</span>` : ''}</li>`;
+  const optionsHtml = !opts.length ? '' : `
+    <h3 style="margin-top:6px">${canRespond ? 'Choose your option' : chosen ? 'Your choice' : 'Options'}</h3>
+    <div class="opt-grid">${opts.map(o => `<button type="button" class="opt-card ${o.recommended ? 'rec' : ''} ${o.id === pick ? 'sel' : ''} ${chosen && o.id !== chosen.id ? 'dim' : ''}" data-pick="${o.id}" ${canRespond ? '' : 'disabled'}>
+        ${o.recommended ? '<div class="ribbon">Recommended</div>' : ''}
+        <div class="oname">${esc(o.name)}</div><div class="oprice">${money(o.total)}</div>
+        <div class="small muted">${o.tax ? `includes ${money(o.tax)} tax` : 'no tax'}${o.discount ? ` · ${money(o.discount)} discount` : ''}</div>
+        ${o.description ? `<p class="odesc">${esc(o.description)}</p>` : ''}
+        <ul>${optLines(o.id).map(lineLi).join('')}</ul>
+        ${chosen && o.id === chosen.id ? '<div class="pill good">✓ Selected</div>' : canRespond ? `<div class="pickmark">${o.id === pick ? '● Selected' : '○ Select'}</div>` : ''}
+      </button>`).join('')}</div>
+    ${shared.length ? `<div class="shared"><b>Included with every option:</b><ul>${shared.map(lineLi).join('')}</ul></div>` : ''}`;
+  const pickLabel = () => { const o = opts.find(x => x.id === pick); return o ? `Approve “${esc(o.name)}” — ${money(o.total)}` : 'Approve'; };
   const statusMsg = isEst
-    ? { approved: `✓ Approved by ${esc(doc.signature_name)} — thank you! We'll be in touch to schedule.`, declined: 'This estimate was declined.', expired: 'This estimate has expired — please contact us for an updated price.' }[doc.status]
+    ? { approved: `✓ ${chosen ? `“${esc(chosen.name)}” approved` : 'Approved'} by ${esc(doc.signature_name)} — thank you! We'll be in touch to schedule.`, declined: 'This estimate was declined.', expired: 'This estimate has expired — please contact us for an updated price.' }[doc.status]
     : doc.status === 'paid' ? '✓ Paid in full — thank you!' : doc.status === 'void' ? 'This invoice has been voided.' : '';
   document.getElementById('doc').innerHTML = `<div class="card">
     <div class="head"><div><div class="co">${d.company.logo_url ? `<img src="${esc(d.company.logo_url)}" alt="${esc(d.company.name)}" style="height:72px;max-width:240px;object-fit:contain">` : `<span class="bolt">⚡</span>${esc(d.company.name)}`}</div>
@@ -62,7 +95,8 @@ function render(d) {
     <div class="parties"><div><h3>${isEst ? 'Prepared for' : 'Bill to'}</h3><b>${esc(cust.company || cust.name)}</b>${cust.company ? `<br>${esc(cust.name)}` : ''}<br>${esc(cust.billing_address || '')}</div>
       ${loc ? `<div><h3>Job site</h3>${esc([loc.address, loc.city, loc.state, loc.zip].filter(Boolean).join(', '))}${d.job ? `<br><span class="muted">Job ${esc(d.job.number)}</span>` : ''}</div>` : ''}</div>
     ${doc.title ? `<h2>${esc(doc.title)}</h2>` : ''}
-    <div class="table-wrap"><table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
+    ${optionsHtml}
+    ${opts.length ? '' : `<div class="table-wrap"><table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
       <tbody>${doc.items.map(it => `<tr><td>${esc(it.description)}</td><td class="num">${Number(it.qty).toLocaleString()}</td><td class="num">${money(it.unit_price)}</td><td class="num">${money(it.qty * it.unit_price)}</td></tr>`).join('')}</tbody></table></div>
     <div class="totals" style="margin-top:14px">
       <div><span>Subtotal</span><span>${money(doc.subtotal)}</span></div>
@@ -70,18 +104,23 @@ function render(d) {
       <div><span>Tax (${doc.tax_rate}%)</span><span>${money(doc.tax)}</span></div>
       <div class="grand"><span>Total</span><span>${money(doc.total)}</span></div>
       ${!isEst && doc.paid ? `<div><span>Paid</span><span>−${money(doc.paid)}</span></div><div class="grand"><span>Balance due</span><span>${money(doc.balance)}</span></div>` : ''}
-    </div>
+    </div>`}
     ${doc.notes ? `<div style="white-space:pre-wrap;margin-top:18px">${esc(doc.notes)}</div>` : ''}
     ${!isEst && d.job && d.job.signoff_name ? `<div class="alert info" style="margin-top:16px">✍ Work accepted by <b>${esc(d.job.signoff_name)}</b> on ${fmtDate(d.job.signoff_at)}.</div>` : ''}
     ${doc.terms ? `<div class="terms">${esc(doc.terms)}</div>` : ''}
     ${!isEst && doc.balance > 0 && doc.status !== 'void' ? `<div class="respond"><h2>How to pay</h2><p>Call ${esc(d.company.phone || 'our office')} to pay by card, or mail a check payable to <b>${esc(d.company.name)}</b>${d.company.address ? ` at ${esc(d.company.address)}` : ''}. Please reference invoice #${esc(doc.number)}.</p></div>` : ''}
     ${canRespond ? `<div class="respond no-print"><h2>Approve this estimate</h2>
-      <p class="muted small">By typing your name and clicking Approve, you authorize ${esc(d.company.name)} to perform the work described above for the total shown, subject to the terms.</p>
-      <form id="ap" class="row"><input name="sig" placeholder="Type your full name to sign" required style="max-width:320px"><button class="btn primary">Approve</button><button type="button" class="btn danger" id="decline">Decline</button></form></div>` : ''}
+      <p class="muted small">By typing your name and clicking Approve, you authorize ${esc(d.company.name)} to perform the work described${opts.length ? ' in the option you selected' : ' above'} for the total shown, subject to the terms.</p>
+      <form id="ap" class="row"><input name="sig" placeholder="Type your full name to sign" required style="max-width:320px"><button class="btn primary" id="apbtn">${pickLabel()}</button><button type="button" class="btn danger" id="decline">Decline</button></form></div>` : ''}
     <div class="row no-print" style="margin-top:20px;justify-content:flex-end"><button class="btn" onclick="print()">Print / Save PDF</button></div>
   </div>`;
   if (canRespond) {
-    document.getElementById('ap').onsubmit = async e => { e.preventDefault(); try { render(await load('POST', { decision: 'approve', signature_name: e.target.sig.value })); } catch (err) { alert(err.message); } };
+    document.getElementById('ap').onsubmit = async e => { e.preventDefault(); try { render(await load('POST', { decision: 'approve', signature_name: e.target.sig.value, option_id: pick })); } catch (err) { alert(err.message); } };
+    document.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => {
+      pick = Number(b.dataset.pick);
+      document.querySelectorAll('[data-pick]').forEach(x => { const on = Number(x.dataset.pick) === pick; x.classList.toggle('sel', on); const m = x.querySelector('.pickmark'); if (m) m.textContent = on ? '● Selected' : '○ Select'; });
+      document.getElementById('apbtn').innerHTML = pickLabel();
+    });
     document.getElementById('decline').onclick = async () => { if (confirm('Decline this estimate?')) try { render(await load('POST', { decision: 'decline' })); } catch (err) { alert(err.message); } };
   }
 }

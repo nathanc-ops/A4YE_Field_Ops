@@ -527,6 +527,10 @@ async function viewJob(id) {
       </dl>
       ${!isOffice() ? (j.billing_type === 'fixed' ? '<div class="alert info">💲 <b>Quoted-price job.</b> Extra work outside the quote needs a signed change order. Call the office before doing it.</div>'
         : '<div class="alert info">⏱ <b>Time &amp; material job.</b> Every hour and part is billed to the customer. Log all your time and materials accurately.</div>') : ''}
+      ${!isOffice() && (j.present || []).length ? `<div class="card" style="margin:10px 0;padding:12px"><h3>Present to customer</h3>${j.present.map(e => `<div class="row spread" style="padding:6px 0">
+          <span><b>${esc(e.change_order ? 'Change order' : 'Estimate')} ${esc(e.number)}</b> ${esc(e.title || '')}<br><span class="muted small">${e.options ? `${e.options} options · ${money(e.price_min)}–${money(e.price_max)}` : money(e.price_max)} · ${esc(label(e.status))}</span></span>
+          <a class="btn primary" href="${esc(e.url)}" target="_blank" rel="noopener">Show customer</a></div>`).join('')}
+        <p class="small muted">Opens the customer page. They pick an option and sign on your screen.${j.present.some(e => e.status === 'draft') ? ' Drafts must be sent by the office before the customer can approve.' : ''}</p></div>` : ''}
       <div id="appts"></div>
       <h2>Scope</h2><div style="white-space:pre-wrap">${esc(j.description || '—')}</div>
       ${j.completion_notes ? `<h2>Completion notes</h2><div style="white-space:pre-wrap">${esc(j.completion_notes)}</div>` : ''}
@@ -697,7 +701,8 @@ async function viewEstimates() {
   $('#view').innerHTML = setTop('Estimates', '<a class="btn primary" href="#/estimates/new">+ New estimate</a>') + `<div class="card">
     <div class="tabs">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
     ${table([{ label: '#', key: 'number' }, { label: 'Customer', key: 'customer_name' }, { label: 'Title', key: 'title' }, { label: 'Created', get: e => fmtDate(e.created_at.slice(0, 10)) },
-      { label: 'Status', html: e => pill(e.status) }, { label: 'Margin', num: 1, get: e => pct(e.est_margin_pct) }, { label: 'Total', num: 1, get: e => money(e.total) }], list, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>`;
+      { label: 'Status', html: e => pill(e.status) }, { label: 'Margin', num: 1, get: e => pct(e.est_margin_pct) },
+      { label: 'Total', num: 1, html: e => e.options && e.options.length && e.status !== 'approved' ? `${money(e.price_min)}–${money(e.price_max)}<div class="small muted">${e.options.length} options</div>` : money(e.total) }], list, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>`;
   $$('[data-s]').forEach(b => b.onclick = () => go('#/estimates' + qs({ status: b.dataset.s })));
 }
 async function viewInvoices() {
@@ -736,6 +741,11 @@ async function viewDoc(kind, id) {
   const locked = isEst ? doc.status === 'approved' : (doc.status === 'void' || (doc.payments || []).length > 0);
   const st = S.settings;
   if (doc.tax_rate == null) doc.tax_rate = Number(st.default_tax_rate) || 0;
+  // good / better / best: doc.opts holds the options; each line's .opt is an option index, or null = in every option
+  doc.opts = (doc.options || []).map(o => ({ name: o.name, description: o.description || '', recommended: !!o.recommended, _id: o.id }));
+  for (const it of doc.items) { const k = doc.opts.findIndex(o => o._id === it.option_id); it.opt = k < 0 ? null : k; }
+  let optTab = doc.opts.length ? (doc.opts.findIndex(o => o._id === doc.approved_option_id) >= 0 ? doc.opts.findIndex(o => o._id === doc.approved_option_id) : 0) : null;
+  const optItems = k => doc.items.filter(it => it.opt == null || it.opt === k);
 
   const itemRow = (it, i) => `<tr data-i="${i}">
     <td><input class="desc" data-k="description" value="${esc(it.description)}" list="pblist" ${locked ? 'disabled' : ''}></td>
@@ -764,6 +774,7 @@ async function viewDoc(kind, id) {
     </div></div>
     <div class="card"><div class="row spread"><h2>Line items</h2>${locked ? `<span class="muted small">${isEst ? 'Approved estimates are locked — create a new estimate for change orders.' : 'Locked: invoice is void or has payments.'}</span>` : ''}</div>
       <datalist id="pblist">${pb.map(p => `<option value="${esc(p.name)}">${esc(p.code || '')} · ${money(p.unit_price)}</option>`).join('')}</datalist>
+      ${isEst ? '<div id="optbar"></div>' : ''}
       <div class="table-wrap"><table class="items"><thead><tr><th>Description (type to search price book)</th><th>Qty</th><th>Price</th><th>Your cost</th><th>Cost code</th><th>Tax</th><th class="num">Amount</th><th></th></tr></thead><tbody id="items"></tbody></table></div>
       ${locked ? '' : '<div class="row" style="margin-top:8px"><button type="button" class="btn" id="addline">+ Line</button><button type="button" class="btn" id="addlabor">+ Labor hours</button></div>'}
       <div class="row" style="align-items:flex-start;margin-top:14px">
@@ -779,13 +790,78 @@ async function viewDoc(kind, id) {
     </form>
     ${!isEst && id !== 'new' ? `<div class="card" style="margin-top:14px"><h2>Payments</h2>${table([{ label: 'Date', get: p => fmtDate(p.paid_at) }, { label: 'Method', get: p => label(p.method) }, { label: 'Reference', key: 'reference' }, { label: 'Amount', num: 1, get: p => money(p.amount) },
       ...(isAdmin() ? [{ label: '', html: p => `<button class="btn sm danger" data-delpay="${p.id}">✕</button>` }] : [])], doc.payments, { empty: 'No payments recorded' })}</div>` : ''}
-    ${isEst && doc.signature_name ? `<div class="card" style="margin-top:14px"><h2>Customer approval</h2>Signed by <b>${esc(doc.signature_name)}</b> on ${fmtDT(doc.approved_at)}</div>` : ''}`;
+    ${isEst && (doc.signature_name || doc.approved_option_id) ? `<div class="card" style="margin-top:14px"><h2>Customer approval</h2>${doc.approved_option_id ? `Chose <b>${esc((doc.options.find(o => o.id === doc.approved_option_id) || {}).name || '')}</b> — ${money(doc.total)}. ` : ''}${doc.signature_name ? `Signed by <b>${esc(doc.signature_name)}</b> on ${fmtDT(doc.approved_at)}` : ''}</div>` : ''}`;
 
   const form = $('#docform');
   const tbody = $('#items');
-  const draw = () => { tbody.innerHTML = doc.items.map(itemRow).join('') || '<tr><td colspan="8" class="empty">No line items — add one below</td></tr>'; totals(); };
+  const draw = () => {
+    const rows = doc.items.map((it, i) => ({ it, i })).filter(x => !doc.opts.length || x.it.opt === optTab);
+    tbody.innerHTML = rows.map(x => itemRow(x.it, x.i)).join('') || `<tr><td colspan="8" class="empty">${doc.opts.length ? (optTab == null ? 'No shared lines. Add things every option includes, like the permit or trip charge.' : 'No lines in this option yet') : 'No line items — add one below'}</td></tr>`;
+    drawOpts(); totals();
+  };
+  const drawOpts = () => {
+    const bar = $('#optbar'); if (!bar) return;
+    if (!doc.opts.length) {
+      bar.innerHTML = locked ? '' : '<div class="row" style="margin-bottom:10px"><button type="button" class="btn" id="mkopts">⭐ Offer Good / Better / Best</button><span class="small muted">Let the customer pick between 2–4 packages. Lines already entered stay in every option.</span></div>';
+      if ($('#mkopts')) $('#mkopts').onclick = () => {
+        doc.opts = [{ name: 'Good', description: '' }, { name: 'Better', description: '', recommended: true }, { name: 'Best', description: '' }];
+        optTab = 0; draw();
+      };
+      return;
+    }
+    const tabs = [[null, 'In every option'], ...doc.opts.map((o, k) => [k, o.name])];
+    bar.innerHTML = `<div class="opt-tabs">${tabs.map(([k, l]) => `<button type="button" class="${k === optTab ? 'on' : ''}" data-opt="${k == null ? '' : k}">${esc(l)}${k != null && doc.opts[k].recommended ? ' ★' : ''}${k != null && doc.opts[k]._id && doc.opts[k]._id === doc.approved_option_id ? ' ✓' : ''}
+        ${k != null ? `<span class="small">${money(calcTotals({ ...doc, items: optItems(k) }).total)}</span>` : ''}</button>`).join('')}
+      ${locked ? '' : '<button type="button" class="btn sm" id="editopts">Edit options</button>'}</div>
+      <p class="small muted" style="margin:6px 0 10px">${optTab == null ? 'Lines on this tab are included in every option.' : `${esc(doc.opts[optTab].description || 'No description — add one under Edit options; customers read it.')}${locked ? '' : ' · <a href="#" id="copyopt">Copy these lines to another option</a>'}`}</p>`;
+    $$('[data-opt]', bar).forEach(b => b.onclick = () => { optTab = b.dataset.opt === '' ? null : Number(b.dataset.opt); draw(); });
+    if ($('#copyopt')) $('#copyopt').onclick = e => {
+      e.preventDefault();
+      const others = doc.opts.map((o, k) => [k, o.name]).filter(([k]) => k !== optTab);
+      formModal({ title: `Copy “${doc.opts[optTab].name}” lines`, okLabel: 'Copy', fields: [{ name: 'to', label: 'Copy to', type: 'select', options: others, blank: false }],
+        submit: async d => { const to = Number(d.to); doc.items.push(...doc.items.filter(it => it.opt === optTab).map(it => ({ ...it, id: undefined, opt: to }))); optTab = to; draw(); } });
+    };
+    if ($('#editopts')) $('#editopts').onclick = () => {
+      const row = (o, k) => `<tr data-k="${k}"><td><input data-f="name" value="${esc(o.name)}" maxlength="60"></td><td><input data-f="description" value="${esc(o.description || '')}" placeholder="What makes this option different"></td>
+        <td style="text-align:center"><input type="radio" name="rec" ${o.recommended ? 'checked' : ''} style="width:auto"></td><td><button type="button" class="btn sm danger" data-rmopt>✕</button></td></tr>`;
+      const m = modal(`<form><h2>Options</h2><p class="small muted">2–4 options. The recommended option is highlighted for the customer and is the default price on lists.</p>
+        <div class="table-wrap"><table class="items"><thead><tr><th>Name</th><th>Description (customer sees this)</th><th>Recommended</th><th></th></tr></thead><tbody id="optrows">${doc.opts.map(row).join('')}</tbody></table></div>
+        <div class="row" style="margin-top:8px"><button type="button" class="btn" id="addopt">+ Option</button><button type="button" class="btn danger" id="noopts" style="margin-left:auto">Stop offering options</button></div>
+        <div class="actions"><button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Apply</button></div></form>`, { wide: true });
+      $('[data-x]', m.el).onclick = m.close;
+      $('#addopt', m.el).onclick = () => { if ($$('#optrows tr', m.el).length >= 4) return toast('Up to four options', true); $('#optrows', m.el).insertAdjacentHTML('beforeend', row({ name: 'Option', description: '' }, 'new')); };
+      $('#optrows', m.el).addEventListener('click', e => { if (e.target.closest('[data-rmopt]')) e.target.closest('tr').remove(); });
+      $('#noopts', m.el).onclick = () => {
+        // keep the shared lines and the recommended option's lines as a single price
+        const keep = Math.max(0, doc.opts.findIndex(o => o.recommended));
+        if (!confirm(`Quote a single price? Lines in “${doc.opts[keep].name}” are kept; other options' lines are removed.`)) return;
+        doc.items = doc.items.filter(it => it.opt == null || it.opt === keep).map(it => ({ ...it, opt: null }));
+        doc.opts = []; optTab = null; m.close(); draw();
+      };
+      $('form', m.el).onsubmit = e => {
+        e.preventDefault();
+        const rows = $$('#optrows tr', m.el);
+        if (rows.length < 2) return toast('Keep at least two options, or choose “Stop offering options”', true);
+        const map = {}; // old index → new index
+        const next = rows.map((tr, n) => { if (tr.dataset.k !== 'new') map[tr.dataset.k] = n;
+          return { name: $('[data-f=name]', tr).value.trim() || `Option ${n + 1}`, description: $('[data-f=description]', tr).value.trim(), recommended: $('[name=rec]', tr).checked, _id: tr.dataset.k !== 'new' ? doc.opts[tr.dataset.k]._id : null }; });
+        const dropped = doc.items.filter(it => it.opt != null && map[it.opt] == null).length;
+        if (dropped && !confirm(`${dropped} line(s) in removed options will be deleted. Continue?`)) return;
+        doc.items = doc.items.filter(it => it.opt == null || map[it.opt] != null).map(it => ({ ...it, opt: it.opt == null ? null : map[it.opt] }));
+        doc.opts = next; optTab = optTab == null ? null : (map[optTab] ?? 0); m.close(); draw();
+      };
+    };
+  };
   const totals = () => {
     doc.tax_rate = form.tax_rate.value; doc.discount = form.discount.value;
+    if (doc.opts.length) {
+      // one row per option: customer price + internal margin
+      $('#totals').innerHTML = doc.opts.map((o, k) => { const t = calcTotals({ ...doc, items: optItems(k) });
+        return `<div class="${k === optTab ? 'grand' : ''}"><span>${esc(o.name)}${o.recommended ? ' ★' : ''}</span><span>${money(t.total)}</span></div>
+          <div class="muted small" style="justify-content:flex-end">tax ${money(t.tax)} · cost ${money(t.cost)} · margin ${pct(t.margin)}${t.margin < Number(st.target_gross_margin) ? ' ⚠' : ''}</div>`; }).join('')
+        + '<div class="muted small" style="margin-top:8px;border-top:1px dashed var(--border);padding-top:6px">Costs and margins are internal only.</div>';
+      return;
+    }
     const t = calcTotals(doc);
     $('#totals').innerHTML = `<div><span>Subtotal</span><span>${money(t.sub)}</span></div>${t.disc ? `<div><span>Discount</span><span>−${money(t.disc)}</span></div>` : ''}
       <div><span>Tax</span><span>${money(t.tax)}</span></div><div class="grand"><span>Total</span><span>${money(t.total)}</span></div>
@@ -809,11 +885,11 @@ async function viewDoc(kind, id) {
   tbody.addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { doc.items.splice(+b.dataset.rm, 1); draw(); } });
   form.tax_rate.oninput = totals; form.discount.oninput = totals;
   if (!locked) {
-    $('#addline').onclick = () => { doc.items.push({ description: '', qty: 1, unit_price: 0, unit_cost: 0, taxable: 1 }); draw(); $$('#items .desc').pop().focus(); };
+    $('#addline').onclick = () => { doc.items.push({ description: '', qty: 1, unit_price: 0, unit_cost: 0, taxable: 1, opt: optTab }); draw(); $$('#items .desc').pop().focus(); };
     $('#addlabor').onclick = () => {
       const rate = Math.max(...S.users.map(u => u.bill_rate || 0), 0) || 125;
       const loaded = S.users.filter(u => u.role === 'tech' && u.hourly_wage).map(u => u.hourly_wage * (1 + u.burden_pct / 100));
-      doc.items.push({ description: 'Electrical labor', qty: 1, unit_price: rate, unit_cost: loaded.length ? Math.round(loaded.reduce((a, b) => a + b, 0) / loaded.length * 100) / 100 : 0, taxable: 0 }); draw();
+      doc.items.push({ description: 'Electrical labor', qty: 1, unit_price: rate, unit_cost: loaded.length ? Math.round(loaded.reduce((a, b) => a + b, 0) / loaded.length * 100) / 100 : 0, taxable: 0, opt: optTab }); draw();
     };
   }
   const loadSub = async () => {
@@ -839,7 +915,13 @@ async function viewDoc(kind, id) {
     const body = { customer_id: Number(form.customer_id.value), title: form.title.value, tax_rate: Number(form.tax_rate.value) || 0, discount: Number(form.discount.value) || 0, notes: form.notes.value, terms: form.terms.value };
     if (isEst) Object.assign(body, { location_id: form.location_id.value || null, valid_until: form.valid_until.value || null, job_id: doc.job_id || null });
     else Object.assign(body, { job_id: form.job_id.value || null, issue_date: form.issue_date.value || undefined, due_date: form.due_date.value || undefined });
-    if (!locked) body.items = doc.items.filter(it => it.description);
+    if (!locked) {
+      body.items = doc.items.filter(it => it.description).map(it => ({ ...it, option_index: it.opt }));
+      if (isEst && (doc.opts.length || (doc.options || []).length)) {
+        if (doc.opts.length) for (let k = 0; k < doc.opts.length; k++) if (!body.items.some(it => it.option_index === k)) return toast(`“${doc.opts[k].name}” has no lines yet`, true);
+        body.options = doc.opts.map(o => ({ name: o.name, description: o.description, recommended: !!o.recommended }));
+      }
+    }
     if (id === 'new') { const r = await act(() => POST(base, body), 'Saved'); go(`#${base}/${r.id}`); }
     else { await act(() => PUT(`${base}/${id}`, body), 'Saved'); route(); }
   };
@@ -860,7 +942,12 @@ async function viewDoc(kind, id) {
       },
     });
   });
-  on('#mark-approved', async () => { await act(() => PUT(`${base}/${id}`, { status: 'approved' }), 'Marked approved'); route(); });
+  on('#mark-approved', async () => {
+    if (!(doc.options || []).length) { await act(() => PUT(`${base}/${id}`, { status: 'approved' }), 'Marked approved'); return route(); }
+    formModal({ title: 'Which option did the customer choose?', okLabel: 'Mark approved', values: { option: doc.chosen_option_id },
+      fields: [{ name: 'option', label: 'Option', type: 'select', options: doc.options.map(o => [o.id, `${o.name} — ${money(o.total)}`]), blank: false, full: true }],
+      submit: async d => { await PUT(`${base}/${id}`, { status: 'approved', approved_option_id: Number(d.option) }); toast('Marked approved'); route(); } });
+  });
   on('#mark-declined', async () => { await act(() => PUT(`${base}/${id}`, { status: 'declined' }), 'Marked declined'); route(); });
   on('#tojob', async () => { const r = await act(() => POST(`${base}/${id}/convert-to-job`), 'Job created — schedule it'); go('#/jobs/' + r.id); });
   on('#toinv', async () => { const r = await act(() => POST(`${base}/${id}/convert-to-invoice`), 'Invoice created'); go('#/invoices/' + r.id); });

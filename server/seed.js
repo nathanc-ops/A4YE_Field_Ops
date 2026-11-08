@@ -214,6 +214,24 @@ function seed(db) {
   for (const [jid, rows] of [[j4, [['850', 4, 260], ['500', 1, 95], ['980', 0, 0, 175]]], [j5, [['400', 6, 300], ['500', 2, 120], ['980', 0, 0, 225]]]])
     for (const [code, h, m, o = 0] of rows) ins('job_budgets', { job_id: jid, cost_code_id: cc(code), budget_hours: h, budget_material: m, budget_other: o });
 
+  // Good / better / best: service upgrade for the Smiths, sent and waiting on the customer
+  const gbb = ins('estimates', { number: D.nextNumber(db, 'estimates', 'EST'), public_token: D.token(), customer_id: smith.id, location_id: smith.lid, title: 'Garage EV charging', status: 'sent',
+    tax_rate: 7, sent_at: day(-1), created_at: day(-1), valid_until: date(29), created_by: users[0].id, notes: 'All options include permit, inspection and a 1-year workmanship warranty.' });
+  const opt = (name, description, recommended, sort) => ins('estimate_options', { estimate_id: gbb, name, description, recommended, sort });
+  const oGood = opt('Good', 'Level 2 charging up to 32 A — adds about 25 miles of range per hour.', 0, 0);
+  const oBetter = opt('Better', '48 A hardwired charger — about 37 miles per hour, ready for your next EV too.', 1, 1);
+  const oBest = opt('Best', 'Fastest charging plus load management and surge protection — no panel upgrade needed.', 0, 2);
+  const line = (code, qty, optionId, sort, override) => { const pr = get(db, 'SELECT * FROM pricebook WHERE id = ?', pb[code]);
+    ins('estimate_items', { estimate_id: gbb, pricebook_id: pr.id, description: override || pr.name, qty, unit_price: pr.unit_price, unit_cost: pr.unit_cost, taxable: pr.taxable, cost_code_id: pr.cost_code_id, option_id: optionId, sort }); };
+  line('PERMIT', 1, null, 0);
+  line('EV-L2', 1, oGood, 1, '40 A EV charger circuit + NEMA 14-50 outlet (up to 50 ft)');
+  line('EV-L2', 1, oBetter, 2, '60 A EV charger circuit, hardwired (up to 50 ft)');
+  ins('estimate_items', { estimate_id: gbb, description: 'Install customer-supplied 48 A wall charger, commission & app setup', qty: 1, unit_price: 295, unit_cost: 40, taxable: 0, option_id: oBetter, sort: 3 });
+  line('EV-L2', 1, oBest, 4, '60 A EV charger circuit, hardwired (up to 50 ft)');
+  ins('estimate_items', { estimate_id: gbb, description: 'Load-management module (avoids 200 A service upgrade)', qty: 1, unit_price: 850, unit_cost: 390, taxable: 1, option_id: oBest, sort: 5 });
+  ins('estimate_items', { estimate_id: gbb, description: 'Install customer-supplied 48 A wall charger, commission & app setup', qty: 1, unit_price: 295, unit_cost: 40, taxable: 0, option_id: oBest, sort: 6 });
+  line('SURGE-WH', 1, oBest, 7);
+
   // Shop time & overhead
   time(sam, null, day(-2, 7), 3, 'shop');
   time(mike, null, day(-7, 7), 4, 'training');

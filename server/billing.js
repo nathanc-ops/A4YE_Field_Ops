@@ -130,7 +130,7 @@ function billFixed(db, jobId, b) {
     const ests = [base.id, ...sm.change_orders.filter(c => c.status === 'approved').map(c => c.id)];
     for (const eid of ests) {
       const est = get(db, 'SELECT * FROM estimates WHERE id = ?', eid);
-      for (const it of all(db, 'SELECT * FROM estimate_items WHERE estimate_id = ? ORDER BY sort, id', eid))
+      for (const it of C.estimateChosenItems(db, eid))
         inv.line({ ...it, description: est.change_order ? `${est.number} change order — ${it.description}` : it.description });
     }
     if (base.discount) run(db, 'UPDATE invoices SET discount = ? WHERE id = ?', base.discount, inv.id);
@@ -179,7 +179,8 @@ function tmSummary(db, jobId, through) {
     byTech.set(key, g);
   }
   const labor = [...byTech.values()].map(g => {
-    const billHours = Math.ceil(g.hours / inc - 1e-9) * inc; // round each tech's total up to the increment
+    // round each tech's total up to the increment, with 30 s grace so 4:00:02 bills as 4.00 h, not 4.25
+    const billHours = Math.ceil(Math.max(0, g.hours - 0.5 / 60) / inc - 1e-9) * inc;
     return { ...g, hours: r2(g.hours), bill_hours: r2(billHours), amount: r2(billHours * g.rate), unit_cost: g.hours ? r2(g.cost / g.hours) : 0 };
   });
   const mk = markupPct(db, job);

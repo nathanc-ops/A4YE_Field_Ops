@@ -535,6 +535,20 @@ const MIGRATIONS = [
     const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
     for (const [k, v] of Object.entries({ tm_default_markup_pct: '', tm_billing_increment_minutes: '15', tm_material_taxable: '1', fixed_lines_taxable: '0' })) ins.run(k, v);
   },
+  // 7: good / better / best options on estimates
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS estimate_options (
+      id INTEGER PRIMARY KEY,
+      estimate_id INTEGER NOT NULL REFERENCES estimates(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      recommended INTEGER NOT NULL DEFAULT 0,
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_estopt ON estimate_options(estimate_id);`);
+    addColumn(db, 'estimate_items', 'option_id', 'INTEGER');          // null = included in every option
+    addColumn(db, 'estimates', 'approved_option_id', 'INTEGER');
+  },
 ];
 
 function migrate(db) {

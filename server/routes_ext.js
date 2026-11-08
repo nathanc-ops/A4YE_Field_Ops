@@ -150,7 +150,8 @@ module.exports = function routesExt(app, db, X) {
   }
   // Approved estimate → budget per cost code (flat-rate labor hours and material cost from the price book).
   H.budgetsFromEstimate = (jobId, estimateId) => {
-    const items = all(db, `SELECT ei.*, pb.labor_hours, pb.kind, pb.cost_code_id pb_code FROM estimate_items ei LEFT JOIN pricebook pb ON pb.id = ei.pricebook_id WHERE estimate_id = ?`, estimateId);
+    const chosen = new Set(C.estimateChosenItems(db, estimateId).map(i => i.id));
+    const items = all(db, `SELECT ei.*, pb.labor_hours, pb.kind, pb.cost_code_id pb_code FROM estimate_items ei LEFT JOIN pricebook pb ON pb.id = ei.pricebook_id WHERE estimate_id = ?`, estimateId).filter(i => chosen.has(i.id));
     const fallback = get(db, "SELECT id FROM cost_codes WHERE code = '400'");
     const rows = items.map(it => {
       const code = it.cost_code_id || it.pb_code || (fallback && fallback.id);
@@ -336,8 +337,9 @@ module.exports = function routesExt(app, db, X) {
     if (req.body.from_estimate) {
       const est = get(db, "SELECT id FROM estimates WHERE job_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1", job.id);
       if (!est) throw bad('This job has no approved estimate to pull materials from');
-      lines = all(db, `SELECT ei.pricebook_id, ei.description, ei.qty, COALESCE(ei.cost_code_id, pb.cost_code_id) cost_code_id FROM estimate_items ei
-        JOIN pricebook pb ON pb.id = ei.pricebook_id WHERE ei.estimate_id = ? AND pb.kind = 'material'`, est.id);
+      const chosen = new Set(C.estimateChosenItems(db, est.id).map(i => i.id));
+      lines = all(db, `SELECT ei.id, ei.pricebook_id, ei.description, ei.qty, COALESCE(ei.cost_code_id, pb.cost_code_id) cost_code_id FROM estimate_items ei
+        JOIN pricebook pb ON pb.id = ei.pricebook_id WHERE ei.estimate_id = ? AND pb.kind = 'material'`, est.id).filter(l => chosen.has(l.id));
       if (!lines.length) throw bad('The approved estimate has no stocked material lines — add lines manually');
     }
     for (const l of lines) if (l.description) insert('pick_list_lines', { pick_list_id: id, pricebook_id: l.pricebook_id || null, description: l.description, qty: Number(l.qty) || 1, cost_code_id: l.cost_code_id || null });

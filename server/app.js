@@ -94,7 +94,8 @@ function createApp(db) {
       if (!e) throw bad('Not found', 404);
       if (e.status === 'sent') { run(db, "UPDATE estimates SET status = 'viewed', viewed_at = datetime('now') WHERE id = ?", e.id); e.status = 'viewed'; }
       const full = C.estimateWithTotals(db, e);
-      for (const it of full.items) delete it.unit_cost;
+      for (const it of [...full.items, ...full.chosen_items]) delete it.unit_cost;
+      for (const o of full.options) { delete o.est_cost; delete o.est_margin_pct; }
       delete full.est_cost; delete full.est_margin_pct;
       return { kind, company, doc: full, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', e.customer_id),
         location: e.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', e.location_id) : null };
@@ -116,7 +117,10 @@ function createApp(db) {
     if (req.body.decision === 'approve') {
       const sig = String(req.body.signature_name || '').trim();
       if (!sig) throw bad('Please type your name to sign');
-      run(db, "UPDATE estimates SET status = 'approved', approved_at = datetime('now'), signature_name = ? WHERE id = ?", sig, e.id);
+      const opts = all(db, 'SELECT id FROM estimate_options WHERE estimate_id = ?', e.id).map(o => o.id);
+      const optionId = opts.length ? Number(req.body.option_id) : null;
+      if (opts.length && !opts.includes(optionId)) throw bad('Please choose an option');
+      run(db, "UPDATE estimates SET status = 'approved', approved_at = datetime('now'), signature_name = ?, approved_option_id = ? WHERE id = ?", sig, optionId, e.id);
     } else if (req.body.decision === 'decline') {
       run(db, "UPDATE estimates SET status = 'declined', declined_at = datetime('now') WHERE id = ?", e.id);
     } else throw bad('Unknown decision');
@@ -285,6 +289,12 @@ function createApp(db) {
       job.cost_codes = C.jobCostCodes(db, job.id);
       job.purchase_orders = all(db, 'SELECT p.*, v.name vendor_name FROM purchase_orders p JOIN vendors v ON v.id = p.vendor_id WHERE p.job_id = ? ORDER BY p.id DESC', job.id).map(H.poTotals);
     } else {
+      // techs can present the job's estimates to the customer (customer-facing link only, no costs)
+      job.present = all(db, "SELECT * FROM estimates WHERE job_id = ? AND status IN ('draft','sent','viewed','approved') ORDER BY id DESC", job.id).map(e => {
+        const t = C.estimateWithTotals(db, e);
+        return { number: e.number, title: e.title, status: e.status, change_order: e.change_order, options: t.options.length, price_min: t.price_min ?? t.total, price_max: t.price_max ?? t.total,
+          url: `${baseUrl(req)}/p/estimate/${e.public_token}` };
+      });
       for (const m of job.materials) delete m.unit_cost;
       for (const t of job.time) { delete t.hourly_cost; delete t.hourly_wage; }
     }
@@ -435,14 +445,26 @@ function createApp(db) {
 
   // ------------------------------------------------------------ estimates
   const DOC_FIELDS = ['customer_id', 'title', 'tax_rate', 'discount', 'notes', 'terms'];
-  function saveItems(table, fk, id, items) {
+  function saveItems(table, fk, id, items, optionIds) {
     if (!Array.isArray(items)) return;
     run(db, `DELETE FROM ${table} WHERE ${fk} = ?`, id);
     items.forEach((it, i) => {
       if (!it.description) return;
+      const option = optionIds ? (it.option_index != null && it.option_index !== '' ? optionIds[Number(it.option_index)] ?? null : null) : undefined;
       insert(table, { [fk]: id, pricebook_id: it.pricebook_id || null, description: it.description, qty: Number(it.qty) || 0,
-        unit_price: Number(it.unit_price) || 0, unit_cost: Number(it.unit_cost) || 0, taxable: it.taxable ? 1 : 0, cost_code_id: it.cost_code_id || null, sort: i });
+        unit_price: Number(it.unit_price) || 0, unit_cost: Number(it.unit_cost) || 0, taxable: it.taxable ? 1 : 0, cost_code_id: it.cost_code_id || null, sort: i,
+        ...(option !== undefined ? { option_id: option } : it.option_id ? { option_id: it.option_id } : {}) });
     });
+  }
+  // Replace an estimate's options; returns new ids in order so items can refer to them by index.
+  function saveOptions(estimateId, options) {
+    if (!Array.isArray(options)) return null;
+    run(db, 'DELETE FROM estimate_options WHERE estimate_id = ?', estimateId);
+    if (options.length === 1) throw bad('Offer at least two options, or remove options to quote a single price');
+    if (options.length > 4) throw bad('Up to four options');
+    const rec = options.findIndex(o => o.recommended);
+    return options.map((o, i) => insert('estimate_options', { estimate_id: estimateId, name: String(o.name || `Option ${i + 1}`).slice(0, 60),
+      description: o.description || null, recommended: i === (rec < 0 ? Math.min(1, options.length - 1) : rec) ? 1 : 0, sort: i }));
   }
   app.get('/api/estimates', office, wrap((req, res) => {
     const p = [], where = [];
@@ -471,7 +493,7 @@ function createApp(db) {
         tax_rate: b.tax_rate ?? (cust.tax_exempt ? 0 : Number(s.default_tax_rate)), terms: b.terms ?? s.estimate_terms,
         valid_until: b.valid_until || addDays(today(), Number(s.estimate_valid_days) || 30),
       });
-      saveItems('estimate_items', 'estimate_id', eid, b.items);
+      saveItems('estimate_items', 'estimate_id', eid, b.items, saveOptions(eid, b.options) || []);
       return eid;
     });
     res.json({ id });
@@ -479,9 +501,19 @@ function createApp(db) {
   app.put('/api/estimates/:id', office, wrap((req, res) => {
     const e = mustGet('estimates', req.params.id);
     if (e.status === 'approved' && req.body.items) throw bad('Approved estimates cannot be edited — create a change order (new estimate) instead');
+    if (req.body.options && e.status === 'approved') throw bad('Approved estimates cannot be edited');
     tx(db, () => {
       update('estimates', e.id, { ...pick(req.body, [...DOC_FIELDS, 'valid_until', 'location_id', 'job_id']), ...(req.body.status ? { status: req.body.status } : {}) });
-      saveItems('estimate_items', 'estimate_id', e.id, req.body.items);
+      if (req.body.items) saveItems('estimate_items', 'estimate_id', e.id, req.body.items, saveOptions(e.id, req.body.options) || (req.body.options ? [] : undefined));
+      // approving an estimate with options records which option the customer chose
+      if (req.body.status === 'approved') {
+        const opts = all(db, 'SELECT id FROM estimate_options WHERE estimate_id = ?', e.id).map(o => o.id);
+        if (opts.length) {
+          const pickId = Number(req.body.approved_option_id);
+          if (!opts.includes(pickId)) throw bad('Choose which option the customer approved');
+          run(db, "UPDATE estimates SET approved_option_id = ?, approved_at = COALESCE(approved_at, datetime('now')) WHERE id = ?", pickId, e.id);
+        } else run(db, "UPDATE estimates SET approved_at = COALESCE(approved_at, datetime('now')) WHERE id = ?", e.id);
+      }
     });
     res.json({ ok: true });
   }));
@@ -508,11 +540,12 @@ function createApp(db) {
   app.post('/api/estimates/:id/convert-to-job', office, wrap((req, res) => {
     const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id));
     if (e.job_id) return res.json({ id: e.job_id });
-    const labor = e.items.reduce((s, it) => {
+    if (e.options.length && !e.approved_option_id) throw bad('Record which option the customer chose (approve the estimate) before converting');
+    const labor = e.chosen_items.reduce((s, it) => {
       const pb = it.pricebook_id ? get(db, 'SELECT labor_hours, kind FROM pricebook WHERE id = ?', it.pricebook_id) : null;
       return s + (pb ? pb.labor_hours * it.qty : 0);
     }, 0);
-    const mats = e.items.reduce((s, it) => {
+    const mats = e.chosen_items.reduce((s, it) => {
       const pb = it.pricebook_id ? get(db, 'SELECT kind FROM pricebook WHERE id = ?', it.pricebook_id) : null;
       return s + (pb && pb.kind === 'material' ? it.unit_cost * it.qty : 0);
     }, 0);
@@ -534,7 +567,8 @@ function createApp(db) {
       const iid = insert('invoices', { number: D.nextNumber(db, 'invoices', 'INV'), customer_id: e.customer_id, job_id: e.job_id, estimate_id: e.id,
         issue_date: today(), due_date: addDays(today(), cust.payment_terms_days ?? Number(s.invoice_terms_days)), tax_rate: e.tax_rate, discount: e.discount,
         notes: e.notes, terms: s.invoice_terms, public_token: D.token() });
-      all(db, 'SELECT * FROM estimate_items WHERE estimate_id = ? ORDER BY sort, id', e.id).forEach((it, i) =>
+      if (all(db, 'SELECT 1 FROM estimate_options WHERE estimate_id = ?', e.id).length && !e.approved_option_id) throw bad('Record which option the customer chose before invoicing');
+      C.estimateChosenItems(db, e.id).forEach((it, i) =>
         insert('invoice_items', { invoice_id: iid, pricebook_id: it.pricebook_id, description: it.description, qty: it.qty, unit_price: it.unit_price, unit_cost: it.unit_cost, taxable: it.taxable, cost_code_id: it.cost_code_id, sort: i }));
       return iid;
     });

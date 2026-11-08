@@ -34,9 +34,27 @@ function invoiceWithTotals(db, inv) {
   return { ...inv, items, payments, ...t, paid, balance: r2(t.total - paid) };
 }
 
+// Estimates may offer options (good / better / best). Lines with no option are included in every option.
+// Top-level totals are for the chosen option: the one the customer approved, else the recommended one.
 function estimateWithTotals(db, est) {
   const items = all(db, 'SELECT * FROM estimate_items WHERE estimate_id = ? ORDER BY sort, id', est.id);
-  return { ...est, items, ...docTotals(est, items) };
+  const options = all(db, 'SELECT * FROM estimate_options WHERE estimate_id = ? ORDER BY sort, id', est.id);
+  if (!options.length) return { ...est, items, options: [], chosen_option_id: null, chosen_items: items, ...docTotals(est, items) };
+  const common = items.filter(i => !i.option_id);
+  const opts = options.map(o => {
+    const its = common.concat(items.filter(i => i.option_id === o.id));
+    return { ...o, ...docTotals(est, its), line_count: its.length };
+  });
+  const chosen = options.find(o => o.id === est.approved_option_id) || options.find(o => o.recommended) || options[0];
+  const chosenItems = items.filter(i => !i.option_id || i.option_id === chosen.id);
+  const totals = opts.map(o => o.total);
+  return { ...est, items, options: opts, chosen_option_id: chosen.id, chosen_items: chosenItems, ...docTotals(est, chosenItems),
+    price_min: Math.min(...totals), price_max: Math.max(...totals) };
+}
+// Lines that belong to the option the customer picked (all lines when there are no options).
+function estimateChosenItems(db, estimateId) {
+  const est = get(db, 'SELECT * FROM estimates WHERE id = ?', estimateId);
+  return est ? estimateWithTotals(db, est).chosen_items : [];
 }
 
 // Recompute invoice status from payments (never touches draft/void).
@@ -346,7 +364,7 @@ function costCodeReport(db, from, to) {
 }
 
 module.exports = {
-  jobCostCodes, costCodeReport,
+  estimateChosenItems, jobCostCodes, costCodeReport,
   r2, docTotals, invoiceWithTotals, estimateWithTotals, refreshInvoiceStatus, jobCosting,
   profitAndLoss, monthlyTrend, hoursByJob, payroll, arAging, techPerformance, estimateConversion,
   jobCostingReport, revenueBySource, timeInRange, startOfDay, endOfDay,

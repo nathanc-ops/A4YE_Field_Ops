@@ -104,6 +104,8 @@ test('equipment records at the location; customer sign-off completes the job', a
   assert.ok(sig);
   assert.equal((await call('admin', 'DELETE', `/attachments/${sig.id}`)).status, 400, 'signatures are permanent');
   // shows on the customer's invoice page
+  const t0 = Date.now() - 3 * 3600e3;
+  await call('admin', 'POST', '/time', { user_id: ids.tech, job_id: ids.job, clock_in: new Date(t0).toISOString(), clock_out: new Date(t0 + 3600e3).toISOString() });
   const inv = (await call('admin', 'POST', `/jobs/${ids.job}/invoice`, {})).data.id;
   await call('admin', 'POST', `/invoices/${inv}/send`, {});
   const token = (await call('admin', 'GET', `/invoices/${inv}`)).data.public_token;

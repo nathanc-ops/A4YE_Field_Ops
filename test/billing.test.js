@@ -11,7 +11,8 @@ async function call(who, method, p, body) {
   const res = await fetch(base + '/api' + p, { method, headers: { 'Content-Type': 'application/json', ...(tok[who] ? { Authorization: 'Bearer ' + tok[who] } : {}) }, body: body ? JSON.stringify(body) : undefined });
   return { status: res.status, data: await res.json() };
 }
-const hoursAgo = h => new Date(Date.now() - h * 3600e3).toISOString();
+const NOW = Date.now(); // one clock for the whole file so durations are exact
+const hoursAgo = h => new Date(NOW - h * 3600e3).toISOString();
 
 before(async () => {
   db = D.open(':memory:');
@@ -87,7 +88,7 @@ test('T&M job: rates, rounding, markup, trip charge, billed once, locked, NTE, v
   ids.tm = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Troubleshoot tripping breakers', job_type: 'service', tech_ids: [ids.tech],
     billing_type: 'tm', material_markup_pct: 50, trip_charge: 95, nte_amount: 800 })).data.id;
   // 1h 05m of time → billed 1.25 h at 120
-  await call('admin', 'POST', '/time', { user_id: ids.tech, job_id: ids.tm, clock_in: hoursAgo(3), clock_out: new Date(Date.now() - 3 * 3600e3 + 65 * 60e3).toISOString() });
+  await call('admin', 'POST', '/time', { user_id: ids.tech, job_id: ids.tm, clock_in: hoursAgo(3), clock_out: new Date(NOW - 3 * 3600e3 + 65 * 60e3).toISOString() });
   await call('tech', 'POST', `/jobs/${ids.tm}/materials`, { pricebook_id: ids.mat, qty: 2 });
   await call('admin', 'POST', '/expenses', { date: new Date().toISOString().slice(0, 10), category: 'Equipment rental', vendor: 'Sunbelt', amount: 100, job_id: ids.tm, billable: 1 });
   let b = (await call('admin', 'GET', `/jobs/${ids.tm}/billing`)).data;
