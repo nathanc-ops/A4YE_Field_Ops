@@ -299,7 +299,8 @@ async function viewDashboard() {
         <div class="small muted" style="margin-top:8px">Hover a bar for net profit. Full detail in <a href="#/reports">Reports</a>.</div></div>
     </div>
     <div class="grid g3" style="margin-top:14px">
-      <div class="card"><h2>Ready to invoice</h2>${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b> ${esc(j.title)}<div class="muted small">${esc(j.customer_name)}</div>` },
+      <div class="card"><h2>Ready to invoice</h2>
+        ${d.wip && (d.wip.unbilled_tm || d.wip.under_billed) ? `<div class="alert info" style="margin-bottom:8px">${money0(d.wip.unbilled_tm)} unbilled T&amp;M · ${money0(d.wip.under_billed)} under-billed on quoted jobs. <a href="#/reports?r=wip">WIP report →</a></div>` : ''}${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b> ${esc(j.title)}<div class="muted small">${esc(j.customer_name)}</div>` },
         { label: '', html: j => `<button class="btn sm primary" data-inv="${j.id}">Invoice</button>` }], d.to_invoice, { onClick: j => go('#/jobs/' + j.id), empty: 'All completed jobs are invoiced' })}</div>
       <div class="card"><h2>On the clock now</h2>${table([{ label: 'Who', key: 'user_name' }, { label: 'On', get: t => t.job_number ? `${t.job_number} ${t.job_title}` : label(t.kind) }, { label: 'Since', get: t => fmtTime(t.clock_in) }], d.clocked_in, { empty: 'Nobody is clocked in' })}</div>
       <div class="card"><h2>Watch list</h2>
@@ -420,7 +421,12 @@ async function jobForm(job, { customerId } = {}) {
     { name: 'scheduled_start', label: 'Start', type: 'datetime' }, { name: 'scheduled_end', label: 'End', type: 'datetime' },
     { name: 'status', label: 'Status', type: 'select', options: JOB_STATUSES, blank: 'Auto' },
     { name: 'lead_source', label: 'Lead source', type: 'select', options: LEAD_SOURCES },
-    { name: 'contract_amount', label: 'Fixed-bid amount ($, optional)', type: 'number' }, { name: 'po_number', label: 'Customer PO #' },
+    { name: 'billing_type', label: 'How is this job priced?', type: 'select', options: [['tm', 'Time & material — bill hours and parts'], ['fixed', 'Quoted price — bill the contract']], blank: false, default: 'tm', full: true },
+    { name: 'contract_amount', label: 'Contract / quoted price $', type: 'number', bt: 'fixed' }, { name: 'retainage_pct', label: 'Retainage % (commercial)', type: 'number', bt: 'fixed' },
+    { name: 'labor_rate', label: 'Labor rate $/h (blank = tech bill rates)', type: 'number', bt: 'tm' }, { name: 'material_markup_pct', label: 'Material markup % (blank = price book)', type: 'number', bt: 'tm' },
+    { name: 'trip_charge', label: 'Trip / service charge $', type: 'number', bt: 'tm' }, { name: 'nte_amount', label: 'Not-to-exceed $ (optional)', type: 'number', bt: 'tm' },
+    { name: 'bill_travel', label: 'Bill travel time', type: 'checkbox', default: 1, bt: 'tm' },
+    { name: 'po_number', label: 'Customer PO #' },
     { name: 'budget_hours', label: 'Budgeted labor hours', type: 'number' }, { name: 'budget_materials', label: 'Budgeted material cost ($)', type: 'number' },
     { name: 'description', label: 'Scope / description', type: 'textarea', full: true },
   ];
@@ -433,11 +439,16 @@ async function jobForm(job, { customerId } = {}) {
       data.tech_ids = $$('input[name=tech]:checked', form).map(i => Number(i.value));
       if (data.scheduled_start && !data.scheduled_end) data.scheduled_end = new Date(new Date(data.scheduled_start).getTime() + 2 * 3600000).toISOString();
       if (!data.status) delete data.status;
+      // clear the other model's fields so a job isn't half fixed, half T&M
+      for (const f of fields.filter(x => x.bt && x.bt !== data.billing_type)) data[f.name] = f.type === 'checkbox' ? 1 : null;
       if (job.id) { await PUT('/jobs/' + job.id, data); toast('Job saved'); route(); }
       else { const r = await POST('/jobs', data); toast('Job booked'); go('#/jobs/' + r.id); }
     },
   });
   const form = $('form', m.el);
+  // show only the pricing fields for the chosen billing type
+  const showBT = () => fields.filter(f => f.bt).forEach(f => { const el = form.elements[f.name]; const box = el && el.closest('label'); if (box) box.style.display = form.billing_type.value === f.bt ? '' : 'none'; });
+  form.billing_type.onchange = showBT; showBT();
   const loadLocs = async () => {
     const cid = form.customer_id.value; const sel = form.location_id;
     if (!cid) { sel.innerHTML = '<option value="">—</option>'; return; }
@@ -461,7 +472,7 @@ async function viewJobs() {
     <form id="srch" class="row"><input name="q" placeholder="Search job #, customer, address" value="${esc(q)}" style="width:260px"></form></div>
     ${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b>${j.priority === 'emergency' ? ' <span class="pill bad">Emergency</span>' : ''}<div>${esc(j.title)}</div>` },
       { label: 'Customer', html: j => `${esc(j.customer_name)} <span class="muted small">${esc(label(j.customer_type))}</span><div class="muted small">${esc(j.address || '')}</div>` },
-      { label: 'Type', get: j => label(j.job_type) }, { label: 'Scheduled', get: j => fmtDT(j.scheduled_start) },
+      { label: 'Type', html: j => `${esc(label(j.job_type))}<div>${billingPill(j.billing_type)}</div>` }, { label: 'Scheduled', get: j => fmtDT(j.scheduled_start) },
       { label: 'Techs', get: j => j.tech_names || '—' }, { label: 'Status', html: j => pill(j.status) }], jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs match' })}</div>`;
   $$('[data-s]').forEach(b => b.onclick = () => go('#/jobs' + qs({ status: b.dataset.s, q })));
   $('#srch').onsubmit = e => { e.preventDefault(); go('#/jobs' + qs({ status, q: e.target.q.value })); };
@@ -478,14 +489,14 @@ async function viewJob(id) {
   const formsDone = j.forms.filter(f => f.completed_at).length;
   const tabs = [['overview', 'Overview'], ['forms', `Checklists (${formsDone}/${j.forms.length})`], ['photos', `Photos & files (${j.attachments.length})`], ['time', `Time (${j.time.length})`],
     ['materials', `Materials (${j.materials.length})`], ['equipment', `Equipment (${j.equipment.length})`], ['permits', `Permits (${j.permits.length})`]];
-  if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Estimates & Invoices'], ['costs', 'Other costs'], ['costing', 'Job costing']);
+  if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Billing'], ['costs', 'Other costs'], ['costing', 'Job costing']);
   else if (j.pick_lists.length) tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
   const statusOpts = isOffice() ? JOB_STATUSES : ['dispatched', 'in_progress', 'on_hold', 'completed'];
   $('#view').innerHTML = setTop(`${esc(j.number)} · ${esc(j.title)}`,
     `<select id="status" style="width:auto">${(statusOpts.includes(j.status) ? statusOpts : [j.status, ...statusOpts]).map(s => `<option value="${s}" ${s === j.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
      ${!['completed', 'invoiced', 'cancelled'].includes(j.status) ? '<button class="btn go" id="completejob">✓ Complete job</button>' : ''}
-     ${isOffice() ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">+ Estimate</a><button class="btn primary" id="invoice">Create invoice</button>` : `<button class="btn go" id="clockhere">Clock in here</button>`}`,
-    `${pill(j.status)} ${j.priority !== 'normal' ? pill(j.priority) : ''} · ${esc(label(j.job_type))} · ${isOffice() ? `<a href="#/customers/${j.customer_id}">${esc(j.customer_name)}</a>` : esc(j.customer_name)}`) + `
+     ${isOffice() ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a><button class="btn primary" id="invoice">Bill job</button>` : `<button class="btn go" id="clockhere">Clock in here</button>`}`,
+    `${pill(j.status)} ${j.priority !== 'normal' ? pill(j.priority) : ''} ${billingPill(j.billing_type)} · ${esc(label(j.job_type))} · ${isOffice() ? `<a href="#/customers/${j.customer_id}">${esc(j.customer_name)}</a>` : esc(j.customer_name)}`) + `
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div><div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => go(`#/jobs/${j.id}?tab=${b.dataset.tab}`));
   if ($('#completejob')) $('#completejob').onclick = () => completeJobModal(j);
@@ -497,11 +508,7 @@ async function viewJob(id) {
   };
   if (isOffice()) {
     $('#edit').onclick = () => jobForm(j);
-    $('#invoice').onclick = async () => {
-      const approved = (j.estimates || []).find(e => e.status === 'approved');
-      if (!confirm(approved ? `Create an invoice from approved estimate ${approved.number}?` : 'Create an invoice from logged labor (at each tech\'s bill rate) and billable materials?')) return;
-      const r = await act(() => POST(`/jobs/${j.id}/invoice`), 'Invoice created'); go('#/invoices/' + r.id);
-    };
+    $('#invoice').onclick = () => go(`#/jobs/${j.id}?tab=billing`);
   } else $('#clockhere').onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job', ...loc }), 'Clocked in on ' + j.number); route(); };
 
   const T = $('#tab');
@@ -518,6 +525,8 @@ async function viewJob(id) {
         ${isOffice() && j.contract_amount ? `<dt>Contract</dt><dd>${money(j.contract_amount)}</dd>` : ''}
         ${j.budget_hours ? `<dt>Budget</dt><dd>${num(j.budget_hours)} hrs${isOffice() && j.budget_materials ? ` · ${money(j.budget_materials)} materials` : ''}</dd>` : ''}
       </dl>
+      ${!isOffice() ? (j.billing_type === 'fixed' ? '<div class="alert info">💲 <b>Quoted-price job.</b> Extra work outside the quote needs a signed change order. Call the office before doing it.</div>'
+        : '<div class="alert info">⏱ <b>Time &amp; material job.</b> Every hour and part is billed to the customer. Log all your time and materials accurately.</div>') : ''}
       <div id="appts"></div>
       <h2>Scope</h2><div style="white-space:pre-wrap">${esc(j.description || '—')}</div>
       ${j.completion_notes ? `<h2>Completion notes</h2><div style="white-space:pre-wrap">${esc(j.completion_notes)}</div>` : ''}
@@ -561,11 +570,7 @@ async function viewJob(id) {
   if (tab === 'equipment') fieldEquipmentTab(j, T);
   if (tab === 'budget') jobBudgetTab(j, T);
   if (tab === 'purchasing') jobPurchasingTab(j, T);
-  if (tab === 'billing') {
-    T.innerHTML = `<div class="grid g2"><div class="card"><div class="row spread"><h2>Estimates</h2><a class="btn sm" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">+ Estimate</a></div>
-      ${table([{ label: '#', key: 'number' }, { label: 'Title', key: 'title' }, { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }], j.estimates, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>
-      <div class="card"><h2>Invoices</h2>${table([{ label: '#', key: 'number' }, { label: 'Date', get: i => fmtDate(i.issue_date) }, { label: 'Status', html: i => pill(i.status) }, { label: 'Total', num: 1, get: i => money(i.total) }, { label: 'Balance', num: 1, get: i => money(i.balance) }], j.invoices, { onClick: i => go('#/invoices/' + i.id), empty: 'No invoices yet' })}</div></div>`;
-  }
+  if (tab === 'billing') jobBillingTab(j, T);
   if (tab === 'costs') {
     T.innerHTML = `<div class="card"><div class="row spread"><h2>Other job costs</h2><button class="btn primary" id="addexp">+ Job cost</button></div>
       <p class="muted small">Subcontractors, equipment rental, supply-house runs not logged as materials, disposal, etc. These count as cost of goods on this job.</p>
@@ -596,6 +601,7 @@ function timeForm(t) {
       { name: 'cost_code_id', label: 'Cost code', type: 'select', options: ccOptions('labor') },
       { name: 'clock_in', label: 'Start', type: 'datetime', required: true }, { name: 'clock_out', label: 'End', type: 'datetime', required: !t.id },
       { name: 'notes', label: 'Notes', full: true },
+      { name: 'billable', label: 'Billable (T&M jobs)', type: 'checkbox', default: 1 },
     ],
     extra: t.id ? '<div style="margin-top:12px"><button type="button" class="btn danger" id="deltime">Delete entry</button></div>' : '',
     submit: async d => { if (t.id) await PUT('/time/' + t.id, d); else await POST('/time', d); toast('Time saved'); route(); },
@@ -741,7 +747,7 @@ async function viewDoc(kind, id) {
     <td class="num" data-line>${money((+it.qty || 0) * (+it.unit_price || 0))}</td>
     <td>${locked ? '' : `<button class="btn sm danger" data-rm="${i}" type="button">✕</button>`}</td></tr>`;
 
-  $('#view').innerHTML = setTop(id === 'new' ? `New ${kind}` : `${isEst ? 'Estimate' : 'Invoice'} ${esc(doc.number)}`,
+  $('#view').innerHTML = setTop(id === 'new' ? `New ${kind}` : `${isEst ? (doc.change_order ? 'Change order' : 'Estimate') : 'Invoice'} ${esc(doc.number)}`,
     id === 'new' ? '' : `${pill(doc.status)}
       <a class="btn" target="_blank" href="${esc(doc.public_url)}">Customer view ↗</a>
       ${isEst ? `${['sent', 'viewed', 'draft'].includes(doc.status) ? '<button class="btn" id="mark-approved">Mark approved</button><button class="btn" id="mark-declined">Mark declined</button>' : ''}
@@ -956,6 +962,7 @@ async function expenseForm(e) {
       { name: 'category', label: 'Category', type: 'select', options: EXPENSE_CATS, required: true }, { name: 'vendor', label: 'Vendor' },
       { name: 'job_id', label: 'Job (blank = company overhead)', type: 'select', options: jobs, blank: '— Overhead —', full: true },
       { name: 'cost_code_id', label: 'Cost code (job costs)', type: 'select', options: ccOptions() },
+      { name: 'billable', label: 'Bill to customer (T&M jobs, at the job markup)', type: 'checkbox' },
       ...(isAdmin() ? [{ name: 'account_id', label: 'GL account (blank = by category)', type: 'select', options: acctOptions('expense', 'cogs', 'asset') },
         { name: 'paid_from_account_id', label: 'Paid from', type: 'select', options: acctOptions('bank', 'credit_card'), blank: 'Default (Settings)' }] : []),
       { name: 'description', label: 'Description', full: true }],
@@ -1052,10 +1059,10 @@ async function viewReports() {
   const r = params.get('r') || 'pl';
   const [defFrom, defTo] = presetRange('mtd');
   const from = params.get('from') || defFrom, to = params.get('to') || defTo;
-  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes']];
+  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled']];
   $('#view').innerHTML = setTop('Reports', '<button class="btn" id="csv">Export CSV</button><button class="btn" onclick="print()">Print</button>') + `
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === r ? 'on' : ''}" data-r="${k}">${l}</button>`).join('')}</div>
-    ${r === 'ar' ? '' : `<form id="rng" class="row no-print" style="margin-bottom:14px"><input type="date" name="from" value="${from}" style="width:auto"> to <input type="date" name="to" value="${to}" style="width:auto"><button class="btn">Run</button>
+    ${r === 'ar' || r === 'wip' ? '' : `<form id="rng" class="row no-print" style="margin-bottom:14px"><input type="date" name="from" value="${from}" style="width:auto"> to <input type="date" name="to" value="${to}" style="width:auto"><button class="btn">Run</button>
       ${[['mtd', 'This month'], ['last_month', 'Last month'], ['qtd', 'Quarter'], ['ytd', 'Year to date'], ['12m', 'Last 12 mo'], ['last_year', 'Last year']].map(([k, l]) => `<button type="button" class="btn sm" data-p="${k}">${l}</button>`).join('')}</form>`}
     <div id="rep"></div>`;
   $$('[data-r]').forEach(b => b.onclick = () => go('#/reports' + qs({ r: b.dataset.r, from, to })));
@@ -1148,6 +1155,7 @@ async function viewReports() {
       <div class="card" style="margin-top:14px"><p>Estimates created ${sub}: <b>${e.count}</b> · sent <b>${e.sent}</b> (${money0(e.sent_value)}) · approved <b>${e.approved}</b> · declined/expired <b>${e.declined}</b>.</p><a href="#/estimates?status=sent">Follow up on open estimates →</a></div>`;
   }
   if (r === 'cc') csv = await costCodeReportView(R, from, to, sub);
+  if (r === 'wip') await wipReportView(R);
   if (r === 'source') {
     const rows = await GET('/reports/lead-sources' + qs({ from, to }));
     const cols = [{ label: 'Source', key: 'source' }, { label: 'Jobs', num: 1, key: 'jobs' }, { label: 'Invoiced revenue', num: 1, get: r => money0(r.revenue), csv: r => r.revenue }, { label: 'Rev / job', num: 1, get: r => money0(r.jobs ? r.revenue / r.jobs : 0), csv: r => r.jobs ? r.revenue / r.jobs : 0 }];

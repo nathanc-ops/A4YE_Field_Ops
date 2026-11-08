@@ -494,6 +494,47 @@ const MIGRATIONS = [
       ['Walkthrough completed with customer', 'check', 0],
     ], 9);
   },
+  // 6: separate billing for quoted (fixed-price) jobs and time & material jobs
+  db => {
+    addColumn(db, 'jobs', 'billing_type', "TEXT NOT NULL DEFAULT 'tm' CHECK (billing_type IN ('fixed','tm'))");
+    // fixed price
+    addColumn(db, 'jobs', 'retainage_pct', 'REAL NOT NULL DEFAULT 0');
+    addColumn(db, 'jobs', 'percent_complete', 'REAL');          // office estimate; null = use cost-to-cost
+    // time & material
+    addColumn(db, 'jobs', 'labor_rate', 'REAL');                // null = each tech's bill rate
+    addColumn(db, 'jobs', 'material_markup_pct', 'REAL');       // null = price book sell price
+    addColumn(db, 'jobs', 'trip_charge', 'REAL');
+    addColumn(db, 'jobs', 'trip_invoice_id', 'INTEGER');
+    addColumn(db, 'jobs', 'nte_amount', 'REAL');                // not-to-exceed cap
+    addColumn(db, 'jobs', 'bill_travel', 'INTEGER NOT NULL DEFAULT 1');
+    // what got billed where (so nothing is billed twice and billed items are locked)
+    addColumn(db, 'time_entries', 'invoice_id', 'INTEGER');
+    addColumn(db, 'time_entries', 'billable', 'INTEGER NOT NULL DEFAULT 1');
+    addColumn(db, 'job_materials', 'invoice_id', 'INTEGER');
+    addColumn(db, 'expenses', 'billable', 'INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'expenses', 'invoice_id', 'INTEGER');
+    addColumn(db, 'invoices', 'billing_kind', "TEXT NOT NULL DEFAULT 'standard'");   // standard|deposit|milestone|progress|final|tm
+    addColumn(db, 'invoices', 'retainage', 'REAL NOT NULL DEFAULT 0');                // retainage withheld on this invoice (positive)
+    addColumn(db, 'invoices', 'period_to', 'TEXT');
+    addColumn(db, 'estimates', 'change_order', 'INTEGER NOT NULL DEFAULT 0');
+    db.exec(`CREATE TABLE IF NOT EXISTS billing_milestones (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      pct REAL,                 -- share of contract, or…
+      amount REAL,              -- …a fixed amount
+      invoice_id INTEGER,
+      sort INTEGER NOT NULL DEFAULT 0
+    )`);
+    // existing data: jobs with a contract amount are quoted jobs; materials already flagged invoiced stay billed
+    db.exec("UPDATE jobs SET billing_type = 'fixed' WHERE contract_amount IS NOT NULL AND contract_amount > 0");
+    db.exec("UPDATE job_materials SET invoice_id = -1 WHERE invoiced = 1 AND invoice_id IS NULL");
+    // T&M time already invoiced the old way (any non-void invoice on the job before this upgrade) counts as billed
+    db.exec(`UPDATE time_entries SET invoice_id = -1 WHERE invoice_id IS NULL AND job_id IN
+      (SELECT j.id FROM jobs j WHERE j.billing_type = 'tm' AND EXISTS (SELECT 1 FROM invoices i WHERE i.job_id = j.id AND i.status != 'void'))`);
+    const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
+    for (const [k, v] of Object.entries({ tm_default_markup_pct: '', tm_billing_increment_minutes: '15', tm_material_taxable: '1', fixed_lines_taxable: '0' })) ins.run(k, v);
+  },
 ];
 
 function migrate(db) {

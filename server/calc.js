@@ -71,11 +71,12 @@ function jobCosting(db, jobId) {
   const revenue = invoices.reduce((s, i) => s + i.subtotal - i.discount, 0);
   const collected = invoices.reduce((s, i) => s + i.paid, 0);
   const totalCost = laborCost + mat.cost + other + permitFees;
-  const basis = revenue || job.contract_amount || 0;
+  const contract = job.billing_type === 'fixed' ? require('./billing').contractValue(db, job).total : (job.contract_amount || 0);
+  const basis = job.billing_type === 'fixed' ? (contract || revenue) : (revenue || contract);
   return {
     hours: r2(hours), labor_cost: r2(laborCost), materials_cost: r2(mat.cost), materials_billable: r2(mat.price),
     other_cost: r2(other), permit_fees: r2(permitFees), total_cost: r2(totalCost),
-    revenue: r2(revenue), collected: r2(collected), contract_amount: job.contract_amount,
+    revenue: r2(revenue), collected: r2(collected), contract_amount: contract || null, billing_type: job.billing_type,
     profit: r2(basis - totalCost), margin_pct: basis > 0 ? r2((basis - totalCost) / basis * 100) : null,
     budget_hours: job.budget_hours, hours_variance: job.budget_hours != null ? r2(job.budget_hours - hours) : null,
     budget_materials: job.budget_materials,

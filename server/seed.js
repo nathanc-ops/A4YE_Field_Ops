@@ -95,7 +95,7 @@ function seed(db) {
   };
 
   // 1. Completed & paid panel upgrade (residential)
-  const j1 = job({ customer_id: smith.id, location_id: smith.lid, title: '200A panel upgrade — replace FPE panel', job_type: 'install', status: 'invoiced',
+  const j1 = job({ customer_id: smith.id, location_id: smith.lid, title: '200A panel upgrade — replace FPE panel', job_type: 'install', status: 'invoiced', billing_type: 'fixed',
     scheduled_start: day(-12, 8), scheduled_end: day(-12, 17), completed_at: day(-12, 17), contract_amount: 3575, budget_hours: 10, lead_source: 'Google' }, [mike, sam]);
   const e1 = doc('estimates', 'estimate_items', 'estimate_id', { customer_id: smith.id, location_id: smith.lid, job_id: j1, title: '200A panel upgrade', status: 'approved', tax_rate: 7,
     created_at: day(-20), sent_at: day(-20), approved_at: day(-18), signature_name: 'Jordan Smith', created_by: users[0].id }, [['PNL-200', 1], ['PERMIT', 1]]);
@@ -106,7 +106,7 @@ function seed(db) {
   ins('payments', { invoice_id: i1, amount: C.invoiceWithTotals(db, get(db, 'SELECT * FROM invoices WHERE id = ?', i1)).total, method: 'card', paid_at: date(-9) });
 
   // 2. Commercial T&M job, invoiced, partially paid, past due
-  const j2 = job({ customer_id: plaza.id, location_id: plaza.lid, title: 'Parking lot pole lights — repair 6 fixtures', job_type: 'commercial', status: 'invoiced',
+  const j2 = job({ customer_id: plaza.id, location_id: plaza.lid, title: 'Parking lot pole lights — repair 6 fixtures', job_type: 'commercial', status: 'invoiced', billing_type: 'tm', labor_rate: 125,
     scheduled_start: day(-40, 7), scheduled_end: day(-39, 16), completed_at: day(-39, 16), budget_hours: 16, po_number: 'NP-5521', lead_source: 'Repeat' }, [mike, dana]);
   time(mike, j2, day(-40, 7), 8.5); time(dana, j2, day(-40, 7), 8.5); time(mike, j2, day(-39, 7), 6); time(dana, j2, day(-39, 7), 6);
   ins('expenses', { date: date(-40), category: 'Equipment rental', vendor: 'Sunbelt Rentals', description: '45ft bucket truck, 2 days', amount: 780, job_id: j2 });
@@ -115,9 +115,11 @@ function seed(db) {
   ins('invoice_items', { invoice_id: i2, description: 'Bucket truck rental', qty: 2, unit_price: 520, unit_cost: 390, taxable: 0, sort: 1 });
   ins('invoice_items', { invoice_id: i2, description: 'LED retrofit kits, 150W', qty: 6, unit_price: 289, unit_cost: 145, taxable: 1, sort: 2 });
   ins('payments', { invoice_id: i2, amount: 2000, method: 'ach', reference: 'ACH 88123', paid_at: date(-20) });
+  run(db, "UPDATE invoices SET billing_kind = 'tm' WHERE id = ?", i2);
+  run(db, 'UPDATE time_entries SET invoice_id = ? WHERE job_id = ?', i2, j2); // this T&M work is already billed
 
   // 3. Completed, ready to invoice (T&M service call)
-  const j3 = job({ customer_id: garcia.id, location_id: garcia.lid, title: 'Kitchen GFCI tripping — troubleshoot & replace', job_type: 'service', status: 'completed',
+  const j3 = job({ customer_id: garcia.id, location_id: garcia.lid, title: 'Kitchen GFCI tripping — troubleshoot & replace', job_type: 'service', status: 'completed', billing_type: 'tm', trip_charge: 89,
     scheduled_start: day(-1, 9), scheduled_end: day(-1, 11), completed_at: day(-1, 11, 30), lead_source: 'Referral', completion_notes: 'Replaced 2 failed GFCIs, found loose neutral at counter box.' }, [dana]);
   time(dana, j3, day(-1, 9), 2.25);
   ins('job_materials', { job_id: j3, pricebook_id: pb['MAT-GFCI'], description: '20A GFCI receptacle', qty: 2, unit_cost: 17.5, unit_price: 32, user_id: dana.id, used_on: date(-1) });
@@ -125,13 +127,13 @@ function seed(db) {
   // 4. Today: EV charger install (in progress) & tomorrow commercial
   const e4 = doc('estimates', 'estimate_items', 'estimate_id', { customer_id: garcia.id, location_id: garcia.lid, title: 'Tesla wall connector circuit', status: 'approved', tax_rate: 7,
     created_at: day(-6), sent_at: day(-6), approved_at: day(-5), signature_name: 'Ana Garcia', created_by: users[0].id }, [['EV-L2', 1], ['SURGE-WH', 1], ['PERMIT', 1]]);
-  const j4 = job({ customer_id: garcia.id, location_id: garcia.lid, title: 'Level 2 EV charger + whole-home surge', job_type: 'install', status: 'in_progress',
+  const j4 = job({ customer_id: garcia.id, location_id: garcia.lid, title: 'Level 2 EV charger + whole-home surge', job_type: 'install', status: 'in_progress', billing_type: 'fixed',
     scheduled_start: day(0, 8), scheduled_end: day(0, 14), contract_amount: 1850, budget_hours: 5, budget_materials: 355 }, [mike]);
   run(db, 'UPDATE estimates SET job_id = ? WHERE id = ?', j4, e4);
   time(mike, j4, day(0, 8), 2.5, 'job', '850');
   ins('permits', { job_id: j4, permit_number: 'E-24-1240', jurisdiction: 'City of Springfield', permit_type: 'EVSE circuit', status: 'issued', applied_date: date(-4), issued_date: date(-2), inspection_date: date(2), fee: 175 });
 
-  const j5 = job({ customer_id: cafe.id, location_id: cafe.lid, title: 'Add 3 dedicated circuits for new espresso line', job_type: 'commercial', status: 'scheduled',
+  const j5 = job({ customer_id: cafe.id, location_id: cafe.lid, title: 'Add 3 dedicated circuits for new espresso line', job_type: 'commercial', status: 'scheduled', billing_type: 'tm', nte_amount: 2500, material_markup_pct: 35, trip_charge: 0,
     scheduled_start: day(1, 7), scheduled_end: day(1, 15), budget_hours: 8, lead_source: 'Yelp' }, [dana, sam]);
   ins('permits', { job_id: j5, jurisdiction: 'City of Springfield', permit_type: 'Commercial alteration', status: 'applied', applied_date: date(-1), fee: 225 });
   job({ customer_id: smith.id, location_id: smith.lid, title: 'Install 4 recessed lights in living room', job_type: 'service', status: 'scheduled',
@@ -155,6 +157,7 @@ function seed(db) {
     const tech = [mike, dana, sam][k % 3];
     const p = get(db, 'SELECT * FROM pricebook WHERE id = ?', pb[code]);
     const jid = job({ customer_id: c.id, location_id: c.lid, title, job_type: c === plaza || c === cafe ? 'commercial' : 'service', status: 'invoiced',
+      billing_type: 'fixed', contract_amount: p.unit_price * qty, // flat-rate price book work = quoted price
       scheduled_start: day(offset, 8), scheduled_end: day(offset, 12), completed_at: day(offset, 12), lead_source: LEADS[k % LEADS.length] }, [tech]);
     time(tech, jid, day(offset, 8), Math.max(1, p.labor_hours * qty * (0.85 + (k % 5) * 0.08)), 'job', itemCodes[code]);
     ins('job_materials', { job_id: jid, pricebook_id: p.id, description: p.name, qty, unit_cost: p.unit_cost, unit_price: 0, billable: 0, user_id: tech.id, used_on: date(offset), invoiced: 1 });
@@ -163,6 +166,23 @@ function seed(db) {
     ins('payments', { invoice_id: iid, amount: inv.total, method: ['card', 'check', 'ach'][k % 3], paid_at: date(offset + 5) });
     run(db, "UPDATE invoices SET status = 'paid' WHERE id = ?", iid);
   }
+
+  // Commercial tenant improvement on a quoted price with 10% retainage, partly billed
+  const tiEst = doc('estimates', 'estimate_items', 'estimate_id', { customer_id: plaza.id, location_id: plaza.lid, title: 'Suite 12 tenant improvement — electrical', status: 'approved', tax_rate: 0,
+    created_at: day(-35), sent_at: day(-35), approved_at: day(-33), signature_name: 'Ray Patel', created_by: users[0].id }, [['CKT-20', 12], ['CAN-6', 24], ['PNL-SUB100', 1], ['PERMIT', 1]]);
+  const tiTotal = C.estimateWithTotals(db, get(db, 'SELECT * FROM estimates WHERE id = ?', tiEst)).subtotal;
+  const ti = job({ customer_id: plaza.id, location_id: plaza.lid, title: 'Suite 12 tenant improvement', job_type: 'commercial', status: 'in_progress', billing_type: 'fixed',
+    contract_amount: tiTotal, retainage_pct: 10, scheduled_start: day(-20, 7), scheduled_end: day(5, 15.5), budget_hours: 170, budget_materials: 2400 }, [mike, sam]);
+  run(db, 'UPDATE estimates SET job_id = ? WHERE id = ?', ti, tiEst);
+  for (let k = 0; k < 6; k++) { time(mike, ti, day(-18 + k * 2, 7), 7.5, 'job', '400'); time(sam, ti, day(-18 + k * 2, 7), 7.5, 'job', '400'); }
+  mat(ti, 'MAT-122', 6, mike, -17); mat(ti, 'MAT-EMT34', 30, mike, -15); mat(ti, 'MAT-BOX', 40, sam, -15);
+  const ms = [['Deposit / mobilization', 20], ['Rough-in complete', 40], ['Trim & final', 40]].map(([name, pct], i) => ins('billing_milestones', { job_id: ti, name, pct, sort: i }));
+  const tiInv = ins('invoices', { number: D.nextNumber(db, 'invoices', 'INV'), public_token: D.token(), customer_id: plaza.id, job_id: ti, estimate_id: tiEst, status: 'paid', issue_date: date(-30), due_date: date(15),
+    tax_rate: 0, sent_at: day(-30), billing_kind: 'milestone', retainage: Math.round(tiTotal * 0.2 * 0.1 * 100) / 100 });
+  ins('invoice_items', { invoice_id: tiInv, description: 'Progress billing — Deposit / mobilization (20%)', qty: 1, unit_price: Math.round(tiTotal * 0.2 * 100) / 100, taxable: 0, sort: 0 });
+  ins('invoice_items', { invoice_id: tiInv, description: 'Less retainage withheld (10%)', qty: 1, unit_price: -Math.round(tiTotal * 0.2 * 0.1 * 100) / 100, taxable: 0, sort: 1 });
+  ins('payments', { invoice_id: tiInv, amount: Math.round(tiTotal * 0.2 * 0.9 * 100) / 100, method: 'ach', paid_at: date(-25) });
+  run(db, 'UPDATE billing_milestones SET invoice_id = ? WHERE id = ?', tiInv, ms[0]);
 
   // More of today's work so the hourly board shows several visits per tech
   const quick = (c, title, techs, h0, h1, type = 'service', status = 'scheduled') => job({ customer_id: c.id, location_id: c.lid, title, job_type: type, status,

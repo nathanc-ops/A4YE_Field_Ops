@@ -5,6 +5,7 @@ const D = require('./db');
 const C = require('./calc');
 const mailer = require('./mailer');
 const A = require('./accounting');
+const Bill = require('./billing');
 
 const { all, get, run, tx } = D;
 
@@ -235,7 +236,8 @@ function createApp(db) {
 
   // ------------------------------------------------------------ jobs
   const JOB_FIELDS = ['customer_id', 'location_id', 'title', 'description', 'job_type', 'priority', 'status', 'scheduled_start', 'scheduled_end',
-    'lead_source', 'po_number', 'contract_amount', 'budget_hours', 'budget_materials', 'completion_notes'];
+    'lead_source', 'po_number', 'contract_amount', 'budget_hours', 'budget_materials', 'completion_notes',
+    'billing_type', 'retainage_pct', 'percent_complete', 'labor_rate', 'material_markup_pct', 'trip_charge', 'nte_amount', 'bill_travel'];
   const jobSelect = `SELECT j.*, c.name customer_name, c.type customer_type, c.phone customer_phone,
     l.address, l.city, l.state, l.zip,
     (SELECT GROUP_CONCAT(u.name, ', ') FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = j.id) tech_names,
@@ -292,6 +294,7 @@ function createApp(db) {
     const data = pick(req.body, JOB_FIELDS);
     if (!data.customer_id || !data.title) throw bad('Customer and job title are required');
     if (!data.status) data.status = data.scheduled_start ? 'scheduled' : 'unscheduled';
+    if (!data.billing_type) data.billing_type = data.contract_amount > 0 ? 'fixed' : 'tm';
     const id = tx(db, () => {
       const jid = insert('jobs', { ...data, number: D.nextNumber(db, 'jobs', 'J') });
       setTechs(jid, req.body.tech_ids);
@@ -357,45 +360,16 @@ function createApp(db) {
   }));
   app.delete('/api/materials/:id', office, wrap((req, res) => {
     const m = mustGet('job_materials', req.params.id);
+    Bill.assertUnbilled(db, 'job_materials', m.id);
     if (m.pricebook_id && m.source === 'stock') run(db, 'UPDATE pricebook SET qty_on_hand = qty_on_hand + ? WHERE id = ?', m.qty, m.pricebook_id);
     A.unpost(db, 'job_material', m.id);
     run(db, 'DELETE FROM job_materials WHERE id = ?', m.id); res.json({ ok: true });
   }));
 
-  // create an invoice from everything on a job
+  // invoice a job the way it's priced: quoted jobs bill the balance of the contract, T&M jobs bill everything unbilled
   app.post('/api/jobs/:id/invoice', office, wrap((req, res) => {
     const job = mustGet('jobs', req.params.id);
-    const s = D.settings(db);
-    const cust = mustGet('customers', job.customer_id);
-    const id = tx(db, () => {
-      const approved = get(db, "SELECT * FROM estimates WHERE job_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1", job.id);
-      const terms = cust.payment_terms_days ?? Number(s.invoice_terms_days);
-      const iid = insert('invoices', {
-        number: D.nextNumber(db, 'invoices', 'INV'), customer_id: job.customer_id, job_id: job.id, estimate_id: approved ? approved.id : null,
-        issue_date: today(), due_date: addDays(today(), terms), tax_rate: cust.tax_exempt ? 0 : (approved ? approved.tax_rate : Number(s.default_tax_rate)),
-        discount: approved ? approved.discount : 0, terms: s.invoice_terms, public_token: D.token(),
-      });
-      let sort = 0;
-      if (approved) {
-        for (const it of all(db, 'SELECT * FROM estimate_items WHERE estimate_id = ? ORDER BY sort, id', approved.id))
-          insert('invoice_items', { invoice_id: iid, pricebook_id: it.pricebook_id, description: it.description, qty: it.qty, unit_price: it.unit_price, unit_cost: it.unit_cost, taxable: it.taxable, cost_code_id: it.cost_code_id, sort: sort++ });
-      } else {
-        if (req.body.include_labor !== false) {
-          const rows = all(db, `SELECT t.user_id, u.name, u.bill_rate, SUM((julianday(COALESCE(t.clock_out, datetime('now'))) - julianday(t.clock_in)) * 24) hours, AVG(t.hourly_cost) cost
-            FROM time_entries t JOIN users u ON u.id = t.user_id WHERE t.job_id = ? AND t.kind IN ('job','travel') GROUP BY t.user_id`, job.id);
-          for (const r of rows) {
-            if (r.hours <= 0) continue;
-            insert('invoice_items', { invoice_id: iid, description: `Electrical labor — ${r.name}`, qty: C.r2(r.hours), unit_price: r.bill_rate, unit_cost: C.r2(r.cost), taxable: 0, sort: sort++ });
-          }
-        }
-        const mats = all(db, 'SELECT * FROM job_materials WHERE job_id = ? AND billable = 1 AND invoiced = 0', job.id);
-        for (const m of mats) insert('invoice_items', { invoice_id: iid, pricebook_id: m.pricebook_id, description: m.description, qty: m.qty, unit_price: m.unit_price, unit_cost: m.unit_cost, taxable: 1, cost_code_id: m.cost_code_id, sort: sort++ });
-        run(db, 'UPDATE job_materials SET invoiced = 1 WHERE job_id = ? AND billable = 1', job.id);
-      }
-      if (job.status === 'completed') run(db, "UPDATE jobs SET status = 'invoiced' WHERE id = ?", job.id);
-      return iid;
-    });
-    res.json({ id });
+    res.json({ id: job.billing_type === 'fixed' ? Bill.billFixed(db, job.id, { mode: 'final' }) : Bill.billTM(db, job.id, req.body || {}) });
   }));
 
   // ------------------------------------------------------------ time clock
@@ -450,13 +424,14 @@ function createApp(db) {
       hourly_cost: loadedRate(u), hourly_wage: u.hourly_wage, notes: req.body.notes || null, cost_code_id: req.body.cost_code_id || null }) });
   }));
   app.put('/api/time/:id', office, wrap((req, res) => {
-    const data = pick(req.body, ['job_id', 'kind', 'clock_in', 'clock_out', 'notes', 'cost_code_id', 'user_id']);
+    Bill.assertUnbilled(db, 'time_entries', Number(req.params.id));
+    const data = pick(req.body, ['job_id', 'kind', 'clock_in', 'clock_out', 'notes', 'cost_code_id', 'user_id', 'billable']);
     for (const k of ['clock_in', 'clock_out']) if (data[k]) data[k] = new Date(data[k]).toISOString();
     const te = mustGet('time_entries', req.params.id);
     if (data.user_id && Number(data.user_id) !== te.user_id) { const u = mustGet('users', data.user_id); data.hourly_cost = loadedRate(u); data.hourly_wage = u.hourly_wage; }
     update('time_entries', te.id, data); res.json({ ok: true });
   }));
-  app.delete('/api/time/:id', office, wrap((req, res) => { run(db, 'DELETE FROM time_entries WHERE id = ?', req.params.id); res.json({ ok: true }); }));
+  app.delete('/api/time/:id', office, wrap((req, res) => { Bill.assertUnbilled(db, 'time_entries', Number(req.params.id)); run(db, 'DELETE FROM time_entries WHERE id = ?', req.params.id); res.json({ ok: true }); }));
 
   // ------------------------------------------------------------ estimates
   const DOC_FIELDS = ['customer_id', 'title', 'tax_rate', 'discount', 'notes', 'terms'];
@@ -486,9 +461,12 @@ function createApp(db) {
     const b = req.body;
     if (!b.customer_id) throw bad('Customer is required');
     const cust = mustGet('customers', b.customer_id);
+    const forJob = b.job_id ? get(db, 'SELECT * FROM jobs WHERE id = ?', b.job_id) : null;
+    const changeOrder = b.change_order != null ? (b.change_order ? 1 : 0)
+      : forJob && forJob.billing_type === 'fixed' && (forJob.contract_amount > 0 || get(db, "SELECT 1 x FROM estimates WHERE job_id = ? AND status = 'approved'", forJob.id)) ? 1 : 0;
     const id = tx(db, () => {
       const eid = insert('estimates', {
-        ...pick(b, DOC_FIELDS), location_id: b.location_id || null, job_id: b.job_id || null,
+        ...pick(b, DOC_FIELDS), location_id: b.location_id || null, job_id: b.job_id || null, change_order: changeOrder,
         number: D.nextNumber(db, 'estimates', 'EST'), public_token: D.token(), created_by: req.user.id,
         tax_rate: b.tax_rate ?? (cust.tax_exempt ? 0 : Number(s.default_tax_rate)), terms: b.terms ?? s.estimate_terms,
         valid_until: b.valid_until || addDays(today(), Number(s.estimate_valid_days) || 30),
@@ -540,7 +518,7 @@ function createApp(db) {
     }, 0);
     const id = tx(db, () => {
       const jid = insert('jobs', { number: D.nextNumber(db, 'jobs', 'J'), customer_id: e.customer_id, location_id: e.location_id, title: e.title || `Work per ${e.number}`,
-        description: e.notes, job_type: req.body.job_type || 'install', status: 'unscheduled', contract_amount: C.r2(e.subtotal - e.discount),
+        description: e.notes, job_type: req.body.job_type || 'install', status: 'unscheduled', contract_amount: C.r2(e.subtotal - e.discount), billing_type: 'fixed',
         budget_hours: labor ? C.r2(labor) : null, budget_materials: mats ? C.r2(mats) : null });
       run(db, 'UPDATE estimates SET job_id = ? WHERE id = ?', jid, e.id);
       H.budgetsFromEstimate(jid, e.id);
@@ -597,7 +575,7 @@ function createApp(db) {
     tx(db, () => {
       update('invoices', inv.id, pick(req.body, [...DOC_FIELDS, 'issue_date', 'due_date', 'job_id']));
       saveItems('invoice_items', 'invoice_id', inv.id, req.body.items);
-      if (req.body.status === 'void') run(db, "UPDATE invoices SET status = 'void' WHERE id = ?", inv.id);
+      if (req.body.status === 'void') { run(db, "UPDATE invoices SET status = 'void' WHERE id = ?", inv.id); Bill.releaseInvoice(db, inv.id); }
     });
     C.refreshInvoiceStatus(db, inv.id);
     A.postInvoice(db, inv.id);
@@ -606,6 +584,7 @@ function createApp(db) {
   app.delete('/api/invoices/:id', admin, wrap((req, res) => {
     const inv = mustGet('invoices', req.params.id);
     if (inv.status !== 'draft') throw bad('Only drafts can be deleted — void it instead');
+    Bill.releaseInvoice(db, inv.id);
     run(db, 'DELETE FROM invoices WHERE id = ?', inv.id); res.json({ ok: true });
   }));
   app.post('/api/invoices/:id/send', office, wrap(async (req, res) => {
@@ -646,7 +625,7 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ expenses, permits, agreements
-  const EXP_FIELDS = ['date', 'category', 'vendor', 'description', 'amount', 'job_id', 'cost_code_id', 'account_id', 'paid_from_account_id'];
+  const EXP_FIELDS = ['date', 'category', 'vendor', 'description', 'amount', 'job_id', 'cost_code_id', 'account_id', 'paid_from_account_id', 'billable'];
   app.get('/api/expenses', office, wrap((req, res) => {
     const from = req.query.from || '0000', to = req.query.to || '9999';
     res.json(all(db, 'SELECT e.*, j.number job_number, cc.code cost_code, a.number account_number, a.name account_name FROM expenses e LEFT JOIN jobs j ON j.id = e.job_id LEFT JOIN cost_codes cc ON cc.id = e.cost_code_id LEFT JOIN accounts a ON a.id = e.account_id WHERE e.date >= ? AND e.date <= ? ORDER BY e.date DESC, e.id DESC LIMIT 1000', from, to));
@@ -660,9 +639,10 @@ function createApp(db) {
   app.put('/api/expenses/:id', office, wrap((req, res) => {
     const e = mustGet('expenses', req.params.id);
     A.assertOpen(db, e.date);
+    Bill.assertUnbilled(db, 'expenses', e.id);
     update('expenses', e.id, pick(req.body, EXP_FIELDS)); A.postExpense(db, e.id); res.json({ ok: true });
   }));
-  app.delete('/api/expenses/:id', office, wrap((req, res) => { A.unpost(db, 'expense', Number(req.params.id)); run(db, 'DELETE FROM expenses WHERE id = ?', req.params.id); res.json({ ok: true }); }));
+  app.delete('/api/expenses/:id', office, wrap((req, res) => { Bill.assertUnbilled(db, 'expenses', Number(req.params.id)); A.unpost(db, 'expense', Number(req.params.id)); run(db, 'DELETE FROM expenses WHERE id = ?', req.params.id); res.json({ ok: true }); }));
 
   const PERMIT_FIELDS = ['job_id', 'permit_number', 'jurisdiction', 'permit_type', 'status', 'applied_date', 'issued_date', 'inspection_date', 'expires_date', 'fee', 'inspector', 'notes'];
   app.get('/api/permits', wrap((req, res) => {
@@ -709,6 +689,7 @@ function createApp(db) {
       today_jobs: H.appointments("a.start < ? AND a.end >= ? AND a.status != 'cancelled'", [dayEnd, dayStart]),
       unscheduled: get(db, "SELECT COUNT(*) n FROM jobs WHERE status = 'unscheduled'").n,
       to_invoice: all(db, `${jobSelect} WHERE j.status = 'completed' ORDER BY j.completed_at`).map(fixTechs),
+      wip: Bill.wipReport(db).totals,
       clocked_in: all(db, 'SELECT t.*, u.name user_name, j.number job_number, j.title job_title FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE t.clock_out IS NULL'),
       open_estimates: C.estimateConversion(db, '0000-01-01', t),
       ar, mtd: pl,
@@ -733,6 +714,34 @@ function createApp(db) {
   require('./routes_ext').webhook(app, db, { H });
   require('./routes_bank')(app, db, { wrap, bad, admin, pick, insert, update });
   require('./routes_field')(app, db, { wrap, bad, office, admin, pick, insert, update, mustGet, H });
+  // ------------------------------------------------------------ job billing (fixed price vs T&M)
+  app.get('/api/jobs/:id/billing', office, wrap((req, res) => { mustGet('jobs', req.params.id); res.json(Bill.jobBilling(db, Number(req.params.id), req.query.through)); }));
+  app.post('/api/jobs/:id/bill-fixed', office, wrap((req, res) => res.json({ id: Bill.billFixed(db, Number(req.params.id), req.body) })));
+  app.post('/api/jobs/:id/bill-tm', office, wrap((req, res) => res.json({ id: Bill.billTM(db, Number(req.params.id), req.body) })));
+  const MS_TEMPLATES = { standard: [['Deposit', 30], ['Rough-in complete', 40], ['Final / trim complete', 30]], half: [['Deposit', 50], ['Completion', 50]],
+    commercial: [['Mobilization', 10], ['Underground / rough-in', 35], ['Service & distribution', 25], ['Trim & devices', 20], ['Final / punch list', 10]] };
+  app.post('/api/jobs/:id/milestones', office, wrap((req, res) => {
+    const job = mustGet('jobs', req.params.id);
+    if (job.billing_type !== 'fixed') throw bad('Milestones are for quoted-price jobs');
+    const rows = req.body.template ? (MS_TEMPLATES[req.body.template] || (() => { throw bad('Unknown template'); })()).map(([name, pct]) => ({ name, pct })) : [req.body];
+    const n = get(db, 'SELECT COUNT(*) n FROM billing_milestones WHERE job_id = ?', job.id).n;
+    rows.forEach((m, i) => {
+      if (!m.name || (m.pct == null && m.amount == null)) throw bad('Milestone needs a name and a percent or amount');
+      insert('billing_milestones', { job_id: job.id, name: m.name, pct: m.pct === '' ? null : m.pct ?? null, amount: m.amount === '' ? null : m.amount ?? null, sort: n + i });
+    });
+    res.json({ ok: true });
+  }));
+  app.put('/api/milestones/:id', office, wrap((req, res) => {
+    const m = mustGet('billing_milestones', req.params.id);
+    if (m.invoice_id) throw bad('Already billed — void the invoice to change it');
+    update('billing_milestones', m.id, pick(req.body, ['name', 'pct', 'amount', 'sort'])); res.json({ ok: true });
+  }));
+  app.delete('/api/milestones/:id', office, wrap((req, res) => {
+    const m = mustGet('billing_milestones', req.params.id);
+    if (m.invoice_id) throw bad('Already billed — void the invoice first');
+    run(db, 'DELETE FROM billing_milestones WHERE id = ?', m.id); res.json({ ok: true });
+  }));
+  app.get('/api/reports/wip', office, wrap((req, res) => res.json(Bill.wipReport(db))));
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static
