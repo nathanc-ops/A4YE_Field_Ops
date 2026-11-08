@@ -279,3 +279,5 @@ input[type="color"] { height: 40px; padding: 3px; cursor: pointer; }
 .auth-box input:focus { outline: 2px solid #fa001c; }
 .auth-box .btn.primary { background: #e0001a; border-color: #e0001a; color: #fff; width: 100%; justify-content: center; padding: 14px; font-size: 18px; border-radius: 12px; }
 .auth-box .hint { color: #9a9a9a; font-size: 14px; margin: 0 0 12px; }
+
+.seg button.on { background: var(--btn, var(--accent)); color: var(--btn-ink, var(--accent-ink)); font-weight: 600; }

@@ -1177,15 +1177,17 @@ async function viewSettings() {
     <div class="stack"><div class="card"><h2>Change my password</h2><form id="pw" class="stack">${fieldHtml({ name: 'current', label: 'Current password', type: 'password', required: true })}${fieldHtml({ name: 'next', label: 'New password (8+)', type: 'password', required: true })}<button class="btn">Change password</button></form></div>
     <div class="card"><h2>Email delivery</h2>${outbox.some(o => o.status === 'not_configured') || !outbox.length ? `<div class="alert info">To email estimates and invoices directly, set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> and <code>SMTP_FROM</code> on the server (see README). Until then, "Send" marks the document as sent and copies the customer link for you to text or email.</div>` : ''}
       <h3 style="margin-top:12px">Recent messages</h3>${table([{ label: 'When', get: o => fmtDT(o.created_at) }, { label: 'To', key: 'to_email' }, { label: 'Subject', key: 'subject' }, { label: 'Status', html: o => pill(o.status) }], outbox.slice(0, 15), { empty: 'Nothing sent yet' })}</div>
-    <div class="card"><h2>Appearance</h2><div class="row"><button class="btn" data-theme="">System</button><button class="btn" data-theme="light">Light</button><button class="btn" data-theme="dark">Dark</button></div></div></div></div>
+    <div class="card"><h2>Appearance</h2><p class="small muted">Applies to this device only.</p><div class="seg">${[['dark', 'Dark (default)'], ['light', 'Light'], ['system', 'Match device']].map(([k, l]) => `<button type="button" data-theme="${k}" class="${themePref() === k ? 'on' : ''}">${l}</button>`).join('')}</div></div></div></div>
     <div id="settings-ext" class="stack" style="margin-top:14px"></div>`;
   settingsExtras($('#settings-ext'));
   if (isAdmin()) $('#sf').onsubmit = async e => { e.preventDefault(); S.settings = await act(() => PUT('/settings', readForm(e.target, fields)), 'Settings saved'); renderShell(); route(); };
   else $$('#sf input, #sf textarea').forEach(i => i.disabled = true);
   $('#pw').onsubmit = async e => { e.preventDefault(); await act(() => POST('/me/password', { current: e.target.current.value, next: e.target.next.value }), 'Password changed'); e.target.reset(); };
-  $$('[data-theme]').forEach(b => b.onclick = () => { const t = b.dataset.theme; localStorage.setItem('fo_theme', t); applyTheme(); });
+  $$('[data-theme]').forEach(b => b.onclick = () => { try { localStorage.setItem('fo_theme', b.dataset.theme); } catch { /* private mode */ } applyTheme(); $$('[data-theme]').forEach(x => x.classList.toggle('on', x === b)); });
 }
-function applyTheme() { const t = localStorage.getItem('fo_theme'); if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
+// Dark is the company default (matches the black brand). Each person can pick Light or Match device.
+const themePref = () => { try { return localStorage.getItem('fo_theme') || 'dark'; } catch { return 'dark'; } };
+function applyTheme() { const t = themePref(); if (t === 'system') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t === 'light' ? 'light' : 'dark'; }
 
 applyTheme();
 // boot() runs from ext.js once all views are defined

@@ -20,7 +20,7 @@ function readableOn(color, surface) {
   for (let t = 0.05; contrast(c, surface) < 4.5 && t <= 0.9; t += 0.05) c = mix(color, toward, t);
   return c;
 }
-function isDarkMode() { const t = localStorage.getItem('fo_theme'); return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; }
+function isDarkMode() { const t = themePref(); return t === 'system' ? matchMedia('(prefers-color-scheme: dark)').matches : t === 'dark'; }
 function applyBrand(s = S.settings) {
   const r = document.documentElement.style;
   const primary = hexToRgb(s.brand_primary) ? s.brand_primary : null;
