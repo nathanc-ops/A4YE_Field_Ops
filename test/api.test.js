@@ -108,7 +108,15 @@ test('full workflow: estimate -> approve -> job -> time & materials -> invoice -
 
   // tech can't put job into invoiced state
   assert.equal((await call('tech', 'PUT', `/jobs/${jid}`, { status: 'invoiced' })).status, 403);
-  await call('tech', 'PUT', `/jobs/${jid}`, { status: 'completed', completion_notes: 'done' });
+  // required checklists (job-start safety, final walkthrough) gate completion for techs
+  const blocked = await call('tech', 'PUT', `/jobs/${jid}`, { status: 'completed', completion_notes: 'done' });
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.data.error, /checklist/);
+  for (const f of (await call('tech', 'GET', `/jobs/${jid}/forms`)).data.filter(x => x.required_for_completion)) {
+    const answers = Object.fromEntries(f.items.map((it, i) => [i, it.type === 'check' ? true : it.type === 'passfail' ? 'pass' : 'ok']));
+    assert.equal((await call('tech', 'PUT', `/job-forms/${f.id}`, { answers, complete: true })).status, 200);
+  }
+  assert.equal((await call('tech', 'PUT', `/jobs/${jid}`, { status: 'completed', completion_notes: 'done' })).status, 200);
 
   r = await call('admin', 'POST', `/jobs/${jid}/invoice`, {});
   const iid = r.data.id;

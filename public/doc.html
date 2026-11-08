@@ -72,6 +72,7 @@ function render(d) {
       ${!isEst && doc.paid ? `<div><span>Paid</span><span>−${money(doc.paid)}</span></div><div class="grand"><span>Balance due</span><span>${money(doc.balance)}</span></div>` : ''}
     </div>
     ${doc.notes ? `<div style="white-space:pre-wrap;margin-top:18px">${esc(doc.notes)}</div>` : ''}
+    ${!isEst && d.job && d.job.signoff_name ? `<div class="alert info" style="margin-top:16px">✍ Work accepted by <b>${esc(d.job.signoff_name)}</b> on ${fmtDate(d.job.signoff_at)}.</div>` : ''}
     ${doc.terms ? `<div class="terms">${esc(doc.terms)}</div>` : ''}
     ${!isEst && doc.balance > 0 && doc.status !== 'void' ? `<div class="respond"><h2>How to pay</h2><p>Call ${esc(d.company.phone || 'our office')} to pay by card, or mail a check payable to <b>${esc(d.company.name)}</b>${d.company.address ? ` at ${esc(d.company.address)}` : ''}. Please reference invoice #${esc(doc.number)}.</p></div>` : ''}
     ${canRespond ? `<div class="respond no-print"><h2>Approve this estimate</h2>

@@ -10,7 +10,10 @@ const { all, get, run, tx } = D;
 
 function createApp(db) {
   const app = express();
-  app.use(express.json({ limit: '2mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
+  // photo uploads arrive as base64 JSON (10 MB file ≈ 13.4 MB encoded); everything else stays small
+  const keepRaw = (req, res, buf) => { req.rawBody = buf; };
+  const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
+  app.use((req, res, next) => (req.path === '/api/attachments' ? bigJson : smallJson)(req, res, next));
 
   // ------------------------------------------------------------ helpers
   // Sync handlers run inside one transaction, so a failed ledger posting rolls back the whole change.
@@ -100,7 +103,7 @@ function createApp(db) {
     const full = C.invoiceWithTotals(db, i);
     for (const it of full.items) delete it.unit_cost;
     delete full.est_cost; delete full.est_margin_pct;
-    const job = i.job_id ? get(db, 'SELECT number, title, location_id FROM jobs WHERE id = ?', i.job_id) : null;
+    const job = i.job_id ? get(db, 'SELECT number, title, location_id, signoff_name, signoff_at FROM jobs WHERE id = ?', i.job_id) : null;
     return { kind, company, doc: full, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', i.customer_id),
       job, location: job && job.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', job.location_id) : null };
   }
@@ -181,7 +184,7 @@ function createApp(db) {
   }));
   app.get('/api/customers/:id', wrap((req, res) => {
     const c = mustGet('customers', req.params.id);
-    c.locations = all(db, 'SELECT * FROM locations WHERE customer_id = ? ORDER BY id', c.id);
+    c.locations = all(db, 'SELECT * FROM locations WHERE customer_id = ? ORDER BY id', c.id).map(l => ({ ...l, equipment: H.locationEquipment(l.id) }));
     c.jobs = all(db, 'SELECT id, number, title, status, scheduled_start, job_type FROM jobs WHERE customer_id = ? ORDER BY id DESC', c.id);
     c.estimates = all(db, 'SELECT * FROM estimates WHERE customer_id = ? ORDER BY id DESC', c.id).map(e => C.estimateWithTotals(db, e));
     c.invoices = all(db, 'SELECT * FROM invoices WHERE customer_id = ? ORDER BY id DESC', c.id).map(i => C.invoiceWithTotals(db, i));
@@ -265,6 +268,11 @@ function createApp(db) {
     job.notes = all(db, 'SELECT n.*, u.name user_name FROM job_notes n LEFT JOIN users u ON u.id = n.user_id WHERE job_id = ? ORDER BY n.id DESC', job.id);
     job.permits = all(db, 'SELECT * FROM permits WHERE job_id = ? ORDER BY id', job.id);
     job.appointments = H.appointments('a.job_id = ?', [job.id]);
+    H.ensureJobForms(job.id);
+    job.forms = H.jobForms(job.id);
+    job.completion_blockers = H.completionBlockers(job.id);
+    job.attachments = H.jobAttachments(job.id);
+    job.equipment = job.location_id ? H.locationEquipment(job.location_id) : [];
     job.pick_lists = all(db, 'SELECT * FROM pick_lists WHERE job_id = ? ORDER BY id DESC', job.id);
     job.budgets = all(db, 'SELECT jb.*, cc.code, cc.name FROM job_budgets jb JOIN cost_codes cc ON cc.id = jb.cost_code_id WHERE job_id = ? ORDER BY cc.code', job.id);
     if (req.user.role !== 'tech') {
@@ -300,6 +308,10 @@ function createApp(db) {
       if (!assigned) throw bad('Not assigned to this job', 403);
       data = pick(req.body, ['status', 'completion_notes']);
       if (data.status && !['dispatched', 'in_progress', 'on_hold', 'completed'].includes(data.status)) throw bad('Techs cannot set that status', 403);
+      if (data.status === 'completed' && job.status !== 'completed') {
+        const blockers = H.completionBlockers(job.id);
+        if (blockers.length) throw bad(`Finish the required checklist(s) first: ${blockers.join(', ')}`);
+      }
     }
     if (data.status === 'completed' && job.status !== 'completed') data.completed_at = new Date().toISOString();
     if (data.scheduled_start && job.status === 'unscheduled' && !data.status) data.status = 'scheduled';
@@ -388,6 +400,13 @@ function createApp(db) {
 
   // ------------------------------------------------------------ time clock
   function loadedRate(u) { return C.r2(u.hourly_wage * (1 + (u.burden_pct || 0) / 100)); }
+  // optional location from the phone; ignored unless it's a plausible coordinate
+  function gps(b) {
+    const lat = Number(b.lat), lng = Number(b.lng);
+    const ok = Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && (lat || lng);
+    return ok ? { lat, lng, acc: Number.isFinite(Number(b.acc)) ? Math.round(Number(b.acc)) : null } : { lat: null, lng: null, acc: null };
+  }
+  H.gps = gps;
   app.get('/api/time/status', wrap((req, res) => {
     res.json({ open: get(db, `SELECT t.*, j.number job_number, j.title job_title, cc.code cost_code, cc.name cost_code_name FROM time_entries t LEFT JOIN jobs j ON j.id = t.job_id LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.user_id = ? AND t.clock_out IS NULL ORDER BY id DESC LIMIT 1`, req.user.id) });
   }));
@@ -400,15 +419,18 @@ function createApp(db) {
     const kind = req.body.kind || (req.body.job_id ? 'job' : 'shop');
     tx(db, () => {
       // switching jobs closes the open entry automatically
-      run(db, 'UPDATE time_entries SET clock_out = ? WHERE user_id = ? AND clock_out IS NULL', now, u.id);
+      const g = gps(req.body);
+      run(db, 'UPDATE time_entries SET clock_out = ?, out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL', now, g.lat, g.lng, g.acc, u.id);
       insert('time_entries', { user_id: u.id, job_id: req.body.job_id || null, kind, clock_in: now, hourly_cost: loadedRate(u), hourly_wage: u.hourly_wage, notes: req.body.notes || null,
-        cost_code_id: req.body.cost_code_id || null, appointment_id: req.body.appointment_id || null });
+        cost_code_id: req.body.cost_code_id || null, appointment_id: req.body.appointment_id || null, in_lat: g.lat, in_lng: g.lng, in_acc: g.acc });
       if (req.body.job_id && kind === 'job') run(db, "UPDATE jobs SET status = 'in_progress' WHERE id = ? AND status IN ('scheduled','dispatched','unscheduled')", req.body.job_id);
     });
     res.json({ ok: true });
   }));
   app.post('/api/time/clock-out', wrap((req, res) => {
-    const info = run(db, 'UPDATE time_entries SET clock_out = ?, notes = COALESCE(?, notes) WHERE user_id = ? AND clock_out IS NULL', new Date().toISOString(), req.body.notes || null, req.user.id);
+    const g = gps(req.body);
+    const info = run(db, 'UPDATE time_entries SET clock_out = ?, notes = COALESCE(?, notes), out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL',
+      new Date().toISOString(), req.body.notes || null, g.lat, g.lng, g.acc, req.user.id);
     if (!info.changes) throw bad('You are not clocked in');
     res.json({ ok: true });
   }));
@@ -710,6 +732,7 @@ function createApp(db) {
 
   require('./routes_ext').webhook(app, db, { H });
   require('./routes_bank')(app, db, { wrap, bad, admin, pick, insert, update });
+  require('./routes_field')(app, db, { wrap, bad, office, admin, pick, insert, update, mustGet, H });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

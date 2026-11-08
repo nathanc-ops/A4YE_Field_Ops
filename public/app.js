@@ -334,9 +334,10 @@ async function clockCard(el, { jobId } = {}) {
     $('#ck_in', el).onclick = async () => {
       const job_id = $('#ck_job', el).value || null; let kind = $('#ck_kind', el).value;
       if (!job_id && (kind === 'job' || kind === 'travel')) kind = 'shop';
-      await act(() => POST('/time/clock-in', { job_id, kind, cost_code_id: $('#ck_cc', el).value || null }), 'Clocked in'); route();
+      const loc = await getLoc();
+      await act(() => POST('/time/clock-in', { job_id, kind, cost_code_id: $('#ck_cc', el).value || null, ...loc }), 'Clocked in'); route();
     };
-    if (open) $('#ck_out', el).onclick = async () => { await act(() => POST('/time/clock-out'), 'Clocked out'); route(); };
+    if (open) $('#ck_out', el).onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-out', loc), 'Clocked out'); route(); };
   };
   draw();
   if (open) S.timer = setInterval(() => { const t = $('#timer'); if (t) t.textContent = elapsed(open.clock_in); }, 1000);
@@ -474,17 +475,22 @@ async function viewJob(id) {
   const loc = j.location || {};
   const addr = [loc.address, loc.city, loc.state, loc.zip].filter(Boolean).join(', ');
   const c = j.costing;
-  const tabs = [['overview', 'Overview'], ['time', `Time (${j.time.length})`], ['materials', `Materials (${j.materials.length})`], ['permits', `Permits (${j.permits.length})`]];
+  const formsDone = j.forms.filter(f => f.completed_at).length;
+  const tabs = [['overview', 'Overview'], ['forms', `Checklists (${formsDone}/${j.forms.length})`], ['photos', `Photos & files (${j.attachments.length})`], ['time', `Time (${j.time.length})`],
+    ['materials', `Materials (${j.materials.length})`], ['equipment', `Equipment (${j.equipment.length})`], ['permits', `Permits (${j.permits.length})`]];
   if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Estimates & Invoices'], ['costs', 'Other costs'], ['costing', 'Job costing']);
   else if (j.pick_lists.length) tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
   const statusOpts = isOffice() ? JOB_STATUSES : ['dispatched', 'in_progress', 'on_hold', 'completed'];
   $('#view').innerHTML = setTop(`${esc(j.number)} · ${esc(j.title)}`,
     `<select id="status" style="width:auto">${(statusOpts.includes(j.status) ? statusOpts : [j.status, ...statusOpts]).map(s => `<option value="${s}" ${s === j.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
+     ${!['completed', 'invoiced', 'cancelled'].includes(j.status) ? '<button class="btn go" id="completejob">✓ Complete job</button>' : ''}
      ${isOffice() ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">+ Estimate</a><button class="btn primary" id="invoice">Create invoice</button>` : `<button class="btn go" id="clockhere">Clock in here</button>`}`,
     `${pill(j.status)} ${j.priority !== 'normal' ? pill(j.priority) : ''} · ${esc(label(j.job_type))} · ${isOffice() ? `<a href="#/customers/${j.customer_id}">${esc(j.customer_name)}</a>` : esc(j.customer_name)}`) + `
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div><div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => go(`#/jobs/${j.id}?tab=${b.dataset.tab}`));
+  if ($('#completejob')) $('#completejob').onclick = () => completeJobModal(j);
   $('#status').onchange = async e => {
+    if (e.target.value === 'completed' && j.status !== 'completed') { e.target.value = j.status; return completeJobModal(j); }
     const body = { status: e.target.value };
     if (body.status === 'completed' && !isOffice()) { const n = prompt('Completion notes (what was done, anything the office should know):', j.completion_notes || ''); if (n === null) { e.target.value = j.status; return; } body.completion_notes = n; }
     await act(() => PUT('/jobs/' + j.id, body), 'Status updated'); route();
@@ -496,7 +502,7 @@ async function viewJob(id) {
       if (!confirm(approved ? `Create an invoice from approved estimate ${approved.number}?` : 'Create an invoice from logged labor (at each tech\'s bill rate) and billable materials?')) return;
       const r = await act(() => POST(`/jobs/${j.id}/invoice`), 'Invoice created'); go('#/invoices/' + r.id);
     };
-  } else $('#clockhere').onclick = async () => { await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job' }), 'Clocked in on ' + j.number); route(); };
+  } else $('#clockhere').onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job', ...loc }), 'Clocked in on ' + j.number); route(); };
 
   const T = $('#tab');
   if (tab === 'overview') {
@@ -515,11 +521,15 @@ async function viewJob(id) {
       <div id="appts"></div>
       <h2>Scope</h2><div style="white-space:pre-wrap">${esc(j.description || '—')}</div>
       ${j.completion_notes ? `<h2>Completion notes</h2><div style="white-space:pre-wrap">${esc(j.completion_notes)}</div>` : ''}
+      ${j.signoff_name ? `<h2>Customer sign-off</h2><div>✍ Accepted by <b>${esc(j.signoff_name)}</b> · ${fmtDT(j.signoff_at)}</div><div id="sigimg"></div>` : ''}
+      ${j.completion_blockers.length && !['completed', 'invoiced'].includes(j.status) ? `<div class="alert">Before completing: finish ${j.completion_blockers.map(esc).join(', ')} on the <a href="#/jobs/${j.id}?tab=forms">Checklists</a> tab.</div>` : ''}
     </div><div class="card"><h2>Notes & activity</h2>
       <form id="note" class="row"><input name="body" class="grow" placeholder="Add a note (visible to the team)"><button class="btn primary">Add</button></form>
       <div style="margin-top:10px">${j.notes.map(n => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="small muted">${esc(n.user_name || '')} · ${fmtDT(n.created_at)}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('') || '<div class="empty">No notes yet</div>'}</div>
     </div></div>`;
     jobAppointmentsCard(j);
+    const sig = j.attachments.find(a => a.kind === 'signature');
+    if (sig && $('#sigimg')) authImg(sig.id).then(u => { $('#sigimg').innerHTML = `<img src="${u}" alt="Customer signature" style="max-width:320px;background:#fff;border-radius:8px;margin-top:6px">`; });
     $('#note').onsubmit = async e => { e.preventDefault(); if (!e.target.body.value.trim()) return; await act(() => POST(`/jobs/${j.id}/notes`, { body: e.target.body.value })); route(); };
   }
   if (tab === 'time') {
@@ -546,6 +556,9 @@ async function viewJob(id) {
       ${table(permitCols(false), j.permits, { empty: 'No permits on this job', onClick: isOffice() ? p => permitForm(p) : null })}</div>`;
     if (isOffice()) $('#addp').onclick = () => permitForm({ job_id: j.id });
   }
+  if (tab === 'forms') fieldFormsTab(j, T);
+  if (tab === 'photos') fieldPhotosTab(j, T);
+  if (tab === 'equipment') fieldEquipmentTab(j, T);
   if (tab === 'budget') jobBudgetTab(j, T);
   if (tab === 'purchasing') jobPurchasingTab(j, T);
   if (tab === 'billing') {
@@ -661,6 +674,7 @@ async function viewCustomer(id) {
         ${table([{ label: 'Address', html: l => `${l.label ? `<b>${esc(l.label)}</b><br>` : ''}${esc([l.address, l.city, l.state, l.zip].filter(Boolean).join(', '))}` }, { label: 'Service', key: 'service_size' }, { label: 'Panel', key: 'panel_info' }], c.locations, { onClick: l => locationForm(c.id, l), empty: 'No locations' })}
         ${c.notes ? `<h3 style="margin-top:12px">Notes</h3><div style="white-space:pre-wrap">${esc(c.notes)}</div>` : ''}</div>
       <div class="card"><h2>Jobs</h2>${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b> ${esc(j.title)}` }, { label: 'Date', get: j => fmtDate(j.scheduled_start) }, { label: 'Status', html: j => pill(j.status) }], c.jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs' })}</div>
+      ${customerEquipmentCard(c)}
       <div class="card"><h2>Estimates</h2>${table([{ label: '#', key: 'number' }, { label: 'Title', key: 'title' }, { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }], c.estimates, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>
       <div class="card"><h2>Invoices</h2>${table([{ label: '#', key: 'number' }, { label: 'Date', get: i => fmtDate(i.issue_date) }, { label: 'Status', html: i => pill(i.status) }, { label: 'Balance', num: 1, get: i => money(i.balance) }], c.invoices, { onClick: i => go('#/invoices/' + i.id), empty: 'No invoices' })}</div>
       ${c.agreements.length ? `<div class="card"><h2>Service agreements</h2>${table([{ label: 'Plan', key: 'name' }, { label: 'Price', get: a => `${money(a.price)} / ${a.billing_frequency}` }, { label: 'Next visit', get: a => fmtDate(a.next_visit) }, { label: 'Status', html: a => pill(a.status) }], c.agreements, { onClick: () => go('#/agreements') })}</div>` : ''}
@@ -877,9 +891,10 @@ async function viewTime() {
   $('#sheet').innerHTML = (isOffice() && Object.keys(byUser).length > 1 ? `<div class="row" style="margin-bottom:10px">${Object.entries(byUser).map(([n, h]) => `<span class="pill accent">${esc(n)}: ${num(h)} h</span>`).join('')}</div>` : '') +
     table([{ label: 'Date', get: t => fmtDate(localDate(new Date(t.clock_in))) }, ...(isOffice() ? [{ label: 'Employee', key: 'user_name' }] : []),
       { label: 'Job', html: t => t.job_id ? `<a href="#/jobs/${t.job_id}">${esc(t.job_number)}</a> ${esc(t.job_title)}` : '—' }, { label: 'Type', get: t => label(t.kind) },
-      { label: 'Code', get: t => t.cost_code || '—' }, { label: 'In', get: t => fmtTime(t.clock_in) }, { label: 'Out', html: t => t.clock_out ? fmtTime(t.clock_out) : '<span class="pill good">On the clock</span>' },
+      { label: 'Code', get: t => t.cost_code || '—' }, { label: 'In', get: t => fmtTime(t.clock_in) },
+      { label: 'GPS', html: t => [['in', t.in_lat, t.in_lng, t.in_acc], ['out', t.out_lat, t.out_lng, t.out_acc]].filter(x => x[1] != null).map(([k, la, ln, ac]) => `<a target="_blank" rel="noopener" href="https://maps.google.com/?q=${la},${ln}" title="±${ac || '?'} m">📍${k}</a>`).join(' ') || '—', csv: t => t.in_lat != null ? `${t.in_lat},${t.in_lng}` : '' }, { label: 'Out', html: t => t.clock_out ? fmtTime(t.clock_out) : '<span class="pill good">On the clock</span>' },
       { label: 'Hours', num: 1, get: t => num(t.hours) }, { label: 'Notes', key: 'notes' }], rows,
-    { onClick: isOffice() ? t => timeForm(t) : null, empty: 'No time in this range', foot: rows.length ? ['Total', ...(isOffice() ? [''] : []), '', '', '', '', '', { v: num(total), num: 1 }, ''] : null });
+    { onClick: isOffice() ? t => timeForm(t) : null, empty: 'No time in this range', foot: rows.length ? ['Total', ...(isOffice() ? [''] : []), '', '', '', '', '', '', { v: num(total), num: 1 }, ''] : null });
 }
 
 // ============================================================ price book & inventory

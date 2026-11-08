@@ -12,7 +12,7 @@ npm start         # http://localhost:3000
 
 If you skip the seed, the first visit asks you to create the owner (admin) account.
 
-Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no native modules to compile. Data lives in `data/fieldops.db`; set `DB_PATH` to put it somewhere else. **Back up that file.** It is your entire business record.
+Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no native modules to compile. Data lives in `data/fieldops.db` and uploaded photos in `data/uploads/`; set `DB_PATH` / `UPLOAD_DIR` to put them somewhere else. **Back up the `data/` folder** (database and photos). It is your entire business record.
 
 ## What it does
 
@@ -30,6 +30,11 @@ Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no
 | **Permits & inspections** | Permit number, AHJ, status (applied → issued → rough → final → passed), inspection dates and fees. Fees count as job cost. |
 | **Service agreements** | Maintenance plans and memberships, annual recurring revenue, next-visit tracking and one-click visit job creation. |
 | **Expenses** | Expenses tied to a job are job cost (subs, rentals, supply runs). Untied expenses are overhead. |
+| **Checklists** | Electrical templates attach automatically by job type: job-start safety (PPE, LOTO, live-dead-live), service diagnostic, panel upgrade / service change (GES, bonding, torque, AFCI/GFCI, working clearance, NEC 230.67 surge), EV charger, generator / interlock, final walkthrough. Pass / Fail / N/A, number and text answers; answers save as you tap. Required lists must be finished before a tech can complete the job (office can override; the override is noted on the job). Templates are editable in Settings. |
+| **Photos & files** | Take photos from the phone camera, tagged before / during / after / panel / permit / damage. Photos shrink to 1600 px before upload to save cell data and carry a GPS stamp. PDFs accepted. Files are checked by content (not by name) and served only to signed-in users who are allowed to see that job. |
+| **Customer sign-off** | **Complete job** collects what was done and the customer's signature and printed name on the tech's screen. The sign-off shows on the job and on the customer's invoice page, and signatures can't be deleted. |
+| **GPS punches** | Clock-in, clock-out, en route, on site and done record the phone's location when the tech allows it (it never blocks a punch). Timesheets show 📍 map links. |
+| **Equipment records** | Panels, meters, disconnects, transfer switches, generators, EV chargers, surge protectors, solar and batteries at each address: make, model, serial, rating, install date, warranty, the job that installed it, and data-plate photos. Shown on the job and the customer. |
 | **Cost codes** | 16 electrical phase codes by default (Rough-in, Service & Distribution, Trim, Lighting, EV/Generators, Permits, …), editable in Settings. Codes apply to time (picked at clock-in), materials, PO and pick-list lines, estimate lines, bills and expenses. Converting an approved estimate builds each job's **budget by cost code** (hours and material), and every job has a budget-vs-actual tab. |
 | **Purchasing** | Vendors, purchase orders (to a job or into shop stock) and receiving. Job deliveries become job materials at PO cost; shop deliveries add stock at weighted-average cost. One click turns a PO into a vendor bill and records any price variance. Also does reorders from low stock and POs for pick-list shortages. |
 | **Pick lists** | Built from the approved estimate or by hand, picked on a phone or tablet. Completing a pick charges the materials to the job from stock. |
@@ -105,6 +110,7 @@ npm test          # API + calculation tests
 - `server/routes_ext.js` — visits/dispatch, cost codes, purchasing, pick lists, accounting API, Ply webhook
 - `server/ply.js` — Ply connector (payload mapping lives here)
 - `server/banking.js` / `server/routes_bank.js` — statement parsing, matching, rules, reconciliation
+- `server/routes_field.js` / `public/field.js` — photos & files, checklists, sign-off, GPS, equipment
 - `server/migrations.js` — versioned schema upgrades (existing databases upgrade automatically on start)
 - `server/app.js` — REST API and role checks
 - `public/app.js` — single-page UI (vanilla JS)

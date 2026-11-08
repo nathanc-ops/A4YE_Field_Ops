@@ -208,6 +208,14 @@ function seed(db) {
   ins('agreements', { customer_id: plaza.id, location_id: plaza.lid, name: 'Annual IR scan & panel maintenance', price: 1800, billing_frequency: 'annual', visits_per_year: 1, start_date: date(-300), next_visit: date(20) });
   ins('agreements', { customer_id: smith.id, location_id: smith.lid, name: 'Home Safety Club', price: 15, billing_frequency: 'monthly', visits_per_year: 1, start_date: date(-11), next_visit: date(340) });
 
+  // Equipment history at the addresses
+  ins('equipment', { location_id: smith.lid, type: 'panel', make: 'Federal Pacific', model: 'Stab-Lok 100A', status: 'removed', notes: 'Replaced on J-1001 (known breaker failures)' });
+  ins('equipment', { location_id: smith.lid, type: 'panel', make: 'Square D', model: 'HOM4080M200PC', serial: 'SD-22-118843', amps: '200', voltage: '120/240 1PH', install_date: date(-12), warranty_until: date(353), installed_job_id: j1 });
+  ins('equipment', { location_id: smith.lid, type: 'surge_protector', make: 'Square D', model: 'HEPD80', amps: '', install_date: date(-12), installed_job_id: j1 });
+  ins('equipment', { location_id: garcia.lid, type: 'panel', make: 'Square D', model: 'QO 200A', amps: '200', voltage: '120/240 1PH', notes: 'Basement' });
+  ins('equipment', { location_id: plaza.lid, type: 'panel', make: 'Eaton', model: 'Pow-R-Line MDP', amps: '800', voltage: '208Y/120 3PH', notes: 'Rear electrical room — IR scan annually' });
+  run(db, "UPDATE jobs SET signoff_name = 'Jordan Smith', signoff_at = ? WHERE id = ?", day(-12, 17), j1);
+
   // Every scheduled job gets a visit (appointment) crewed by its techs
   for (const j of D.all(db, 'SELECT id, scheduled_start, scheduled_end, status FROM jobs WHERE scheduled_start IS NOT NULL')) {
     const status = ['completed', 'invoiced'].includes(j.status) ? 'done' : j.status === 'in_progress' ? 'on_site' : j.status === 'dispatched' ? 'dispatched' : 'scheduled';

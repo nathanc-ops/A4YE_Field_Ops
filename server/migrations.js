@@ -381,6 +381,119 @@ const MIGRATIONS = [
     swap('brand_primary', '#d0332c', '#e0001a');
     swap('brand_accent', '#d0332c', '#fa001c');
   },
+  // 5: field tools — photos/files, checklists, customer sign-off, GPS punches, equipment records
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS attachments (
+      id INTEGER PRIMARY KEY,
+      entity_type TEXT NOT NULL CHECK (entity_type IN ('job','location','equipment')),
+      entity_id INTEGER NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'photo' CHECK (kind IN ('photo','document','signature')),
+      tag TEXT,                           -- before | during | after | panel | permit | other
+      filename TEXT, mime TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
+      path TEXT NOT NULL,                 -- relative to the upload directory
+      caption TEXT,
+      lat REAL, lng REAL,
+      user_id INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_att_entity ON attachments(entity_type, entity_id);
+    CREATE TABLE IF NOT EXISTS form_templates (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      job_types TEXT NOT NULL DEFAULT '*',   -- comma list of job types, or * for every job
+      items TEXT NOT NULL,                   -- JSON [{label, type: check|passfail|text|number, required}]
+      required_for_completion INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS job_forms (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      template_id INTEGER REFERENCES form_templates(id),
+      name TEXT NOT NULL,
+      items TEXT NOT NULL,                   -- snapshot of the template items when attached
+      answers TEXT NOT NULL DEFAULT '{}',
+      required_for_completion INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT, completed_by INTEGER REFERENCES users(id),
+      updated_at TEXT, updated_by INTEGER REFERENCES users(id),
+      UNIQUE (job_id, template_id)
+    );
+    CREATE TABLE IF NOT EXISTS equipment (
+      id INTEGER PRIMARY KEY,
+      location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+      type TEXT NOT NULL DEFAULT 'panel',
+      make TEXT, model TEXT, serial TEXT,
+      amps TEXT, voltage TEXT,
+      install_date TEXT, warranty_until TEXT,
+      installed_job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','removed')),
+      notes TEXT,
+      created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_equip_loc ON equipment(location_id);`);
+    for (const c of ['in_lat', 'in_lng', 'in_acc', 'out_lat', 'out_lng', 'out_acc']) addColumn(db, 'time_entries', c, 'REAL');
+    addColumn(db, 'jobs', 'signoff_name', 'TEXT');
+    addColumn(db, 'jobs', 'signoff_at', 'TEXT');
+    addColumn(db, 'jobs', 'signoff_attachment_id', 'INTEGER');
+    addColumn(db, 'jobs', 'signoff_note', 'TEXT');
+
+    const T = (name, types, req, items, sort) => db.prepare('INSERT INTO form_templates (name, job_types, required_for_completion, items, sort) VALUES (?,?,?,?,?)')
+      .run(name, types, req, JSON.stringify(items.map(([label, type = 'check', required = 1]) => ({ label, type, required: !!required }))), sort);
+    T('Job start safety', '*', 1, [
+      ['PPE worn (safety glasses, gloves, arc-rated clothing as required)'],
+      ['Work area hazards assessed (water, overhead lines, access, pets)'],
+      ['Circuits identified; lockout/tagout applied for de-energized work'],
+      ['Absence of voltage verified with a tested meter (live-dead-live)'],
+      ['Customer told about any power interruption'],
+    ], 1);
+    T('Service call diagnostic', 'service,troubleshooting,emergency', 0, [
+      ['Customer complaint confirmed', 'text'],
+      ['Panel inspected for heat, damage, double taps', 'passfail'],
+      ['Grounding and bonding checked', 'passfail'],
+      ['GFCI / AFCI devices tested', 'passfail'],
+      ['Voltage at panel L1–N (V)', 'number', 0],
+      ['Voltage at panel L2–N (V)', 'number', 0],
+      ['Findings and recommendation', 'text'],
+      ['Upgrades / safety recommendations offered to customer', 'check', 0],
+    ], 2);
+    T('Panel upgrade / service change', 'install,remodel,new_construction', 0, [
+      ['Permit posted on site'],
+      ['Utility disconnect / reconnect coordinated'],
+      ['Grounding electrode system installed or verified', 'passfail'],
+      ['Main bonding jumper installed at service equipment only'],
+      ['Neutrals and grounds separated in subpanels', 'passfail'],
+      ['Terminations torqued to manufacturer spec (calibrated tool)'],
+      ['AFCI / GFCI protection installed where required', 'passfail'],
+      ['Surge protection installed or offered (NEC 230.67)', 'check', 0],
+      ['Working clearance maintained (30 in wide × 36 in deep)', 'passfail'],
+      ['Panel directory filled out and legible'],
+      ['Rough / final inspection result', 'passfail', 0],
+    ], 3);
+    T('EV charger install', 'ev_charger', 0, [
+      ['Load calculation done — available capacity (A)', 'number'],
+      ['Circuit sized at 125% of continuous load'],
+      ['GFCI protection provided where required', 'passfail'],
+      ['Disconnect within sight where required'],
+      ['Charger commissioned and tested'],
+      ['Customer shown operation / app setup', 'check', 0],
+    ], 4);
+    T('Generator / interlock', 'generator', 0, [
+      ['Interlock is listed for this panel'],
+      ['Inlet and cord rated for generator output'],
+      ['Generator breaker sized and labeled'],
+      ['Customer trained on transfer procedure'],
+      ['Carbon monoxide / placement warning given'],
+    ], 5);
+    T('Final walkthrough', '*', 1, [
+      ['All new circuits tested and labeled'],
+      ['Covers, plates and dead fronts installed'],
+      ['Work area cleaned up, debris removed'],
+      ['Before / after photos taken'],
+      ['Walkthrough completed with customer', 'check', 0],
+    ], 9);
+  },
 ];
 
 function migrate(db) {

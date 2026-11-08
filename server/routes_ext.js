@@ -73,7 +73,7 @@ module.exports = function routesExt(app, db, X) {
     if (req.user.role === 'tech') {
       // techs can only advance the status of their own visits
       if (!get(db, 'SELECT 1 x FROM appointment_techs WHERE appointment_id = ? AND user_id = ?', a.id, req.user.id)) throw bad('Not your appointment', 403);
-      return res.json(techStatus(a, req.body.status, req.user));
+      return res.json(techStatus(a, req.body.status, req.user, H.gps(req.body)));
     }
     const data = pick(req.body, ['start', 'end', 'status', 'notes']);
     for (const k of ['start', 'end']) if (data[k]) data[k] = new Date(data[k]).toISOString();
@@ -97,18 +97,19 @@ module.exports = function routesExt(app, db, X) {
       WHERE t1.appointment_id = ? AND a2.start < ? AND a2.end > ?`, apptId, a.end, a.start);
   }
   // En route / on site / done from the field. On site clocks the tech in; done clocks them out.
-  function techStatus(a, status, user) {
+  function techStatus(a, status, user, g = { lat: null, lng: null, acc: null }) {
     if (!['dispatched', 'en_route', 'on_site', 'done'].includes(status)) throw bad('Invalid status');
     run(db, 'UPDATE appointments SET status = ? WHERE id = ?', status, a.id);
     const now = new Date().toISOString();
     const u = get(db, 'SELECT * FROM users WHERE id = ?', user.id);
     const rate = r2(u.hourly_wage * (1 + (u.burden_pct || 0) / 100));
     if (status === 'en_route' || status === 'on_site') {
-      run(db, 'UPDATE time_entries SET clock_out = ? WHERE user_id = ? AND clock_out IS NULL', now, u.id);
-      insert('time_entries', { user_id: u.id, job_id: a.job_id, appointment_id: a.id, kind: status === 'en_route' ? 'travel' : 'job', clock_in: now, hourly_cost: rate, hourly_wage: u.hourly_wage });
+      run(db, 'UPDATE time_entries SET clock_out = ?, out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL', now, g.lat, g.lng, g.acc, u.id);
+      insert('time_entries', { user_id: u.id, job_id: a.job_id, appointment_id: a.id, kind: status === 'en_route' ? 'travel' : 'job', clock_in: now, hourly_cost: rate, hourly_wage: u.hourly_wage,
+        in_lat: g.lat, in_lng: g.lng, in_acc: g.acc });
       if (status === 'on_site') run(db, "UPDATE jobs SET status = 'in_progress' WHERE id = ? AND status IN ('scheduled','dispatched','unscheduled')", a.job_id);
     }
-    if (status === 'done') run(db, 'UPDATE time_entries SET clock_out = ? WHERE user_id = ? AND clock_out IS NULL AND job_id = ?', now, u.id, a.job_id);
+    if (status === 'done') run(db, 'UPDATE time_entries SET clock_out = ?, out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL AND job_id = ?', now, g.lat, g.lng, g.acc, u.id, a.job_id);
     return { ok: true };
   }
 

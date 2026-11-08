@@ -336,7 +336,7 @@ async function viewMyDay2() {
   $('#soon').innerHTML = table([{ label: 'When', get: a => fmtDT(a.start) }, { label: 'Job', html: a => `<b>${esc(a.job_number)}</b> ${esc(a.job_title)}<div class="small muted">${esc(a.customer_name)} · ${esc(a.address || '')}</div>` }],
     soon, { onClick: a => go('#/jobs/' + a.job_id), empty: 'Nothing else this week' });
   if (picks.length) $('#mypicks').innerHTML = `<div class="card" style="margin-top:14px"><h2>Pick lists</h2>${table([{ label: '#', key: 'number' }, { label: 'Job', get: p => `${p.job_number} ${p.job_title}` }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }], picks, { onClick: p => go('#/pick/' + p.id) })}</div>`;
-  $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); await act(() => PUT('/appointments/' + id, { status: st }), label(st)); route(); });
+  $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); const loc = await getLoc(); await act(() => PUT('/appointments/' + id, { status: st, ...loc }), label(st)); route(); });
 }
 
 // ============================================================ job: visits, budget, purchasing
@@ -1005,5 +1005,4 @@ async function viewReconcile(id) {
   };
   draw();
 }
-
-boot();
+// boot() runs from field.js (last script)
