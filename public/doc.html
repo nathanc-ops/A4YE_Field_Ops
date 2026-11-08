@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Your Document</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/brand/favicon.png">
+  <meta name="theme-color" content="#000000">
   <link rel="stylesheet" href="/styles.css">
   <style>
     body { background: var(--bg); }
@@ -50,7 +54,7 @@ function render(d) {
     ? { approved: `✓ Approved by ${esc(doc.signature_name)} — thank you! We'll be in touch to schedule.`, declined: 'This estimate was declined.', expired: 'This estimate has expired — please contact us for an updated price.' }[doc.status]
     : doc.status === 'paid' ? '✓ Paid in full — thank you!' : doc.status === 'void' ? 'This invoice has been voided.' : '';
   document.getElementById('doc').innerHTML = `<div class="card">
-    <div class="head"><div><div class="co">${d.company.logo_url ? `<img src="${esc(d.company.logo_url)}" alt="" style="height:44px;max-width:160px;object-fit:contain">` : '<span class="bolt">⚡</span>'}${esc(d.company.name)}</div>
+    <div class="head"><div><div class="co">${d.company.logo_url ? `<img src="${esc(d.company.logo_url)}" alt="${esc(d.company.name)}" style="height:72px;max-width:240px;object-fit:contain">` : `<span class="bolt">⚡</span>${esc(d.company.name)}`}</div>
       <div class="muted small">${[d.company.address, d.company.phone, d.company.email].filter(Boolean).map(esc).join(' · ')}${d.company.license ? `<br>License ${esc(d.company.license)}` : ''}</div></div>
       <div><div class="big">${isEst ? 'ESTIMATE' : 'INVOICE'}</div><div class="num">#${esc(doc.number)}</div>
       <div class="num muted small">${isEst ? (doc.valid_until ? `Valid until ${fmtDate(doc.valid_until)}` : '') : `Issued ${fmtDate(doc.issue_date)}<br>Due ${fmtDate(doc.due_date) || 'on receipt'}`}</div></div></div>

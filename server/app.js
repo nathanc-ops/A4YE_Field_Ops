@@ -59,7 +59,11 @@ function createApp(db) {
   const office = role('admin', 'office');
   const admin = role('admin');
 
-  app.get('/api/setup', wrap((req, res) => res.json({ needs_setup: get(db, 'SELECT COUNT(*) n FROM users').n === 0 })));
+  app.get('/api/setup', wrap((req, res) => {
+    const s = D.settings(db);
+    res.json({ needs_setup: get(db, 'SELECT COUNT(*) n FROM users').n === 0,
+      brand: { company_name: s.company_name, logo_url: s.logo_url, tagline: s.company_tagline, brand_primary: s.brand_primary } });
+  }));
   app.post('/api/setup', wrap((req, res) => {
     if (get(db, 'SELECT COUNT(*) n FROM users').n > 0) throw bad('Already set up');
     const { name, email, password, company_name } = req.body;

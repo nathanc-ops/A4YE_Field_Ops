@@ -10,7 +10,16 @@ function hexToRgb(h) { const m = /^#?([0-9a-f]{6})$/i.exec(String(h || '').trim(
 const rgbToHex = c => '#' + c.map(v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0')).join('');
 const mix = (a, b, t) => { const x = hexToRgb(a), y = hexToRgb(b); return x && y ? rgbToHex(x.map((v, i) => v + (y[i] - v) * t)) : a; };
 const lum = h => { const c = hexToRgb(h); if (!c) return 0; const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
-const inkFor = h => lum(h) > 0.4 ? '#111827' : '#ffffff';
+const contrast = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+// pick whichever text color reads better on the given background
+const inkFor = h => contrast(h, '#ffffff') >= contrast(h, '#111111') ? '#ffffff' : '#111111';
+// nudge a color toward white/black until it reaches 4.5:1 against the surface
+function readableOn(color, surface) {
+  const toward = lum(surface) < 0.2 ? '#ffffff' : '#000000';
+  let c = color;
+  for (let t = 0.05; contrast(c, surface) < 4.5 && t <= 0.9; t += 0.05) c = mix(color, toward, t);
+  return c;
+}
 function isDarkMode() { const t = localStorage.getItem('fo_theme'); return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; }
 function applyBrand(s = S.settings) {
   const r = document.documentElement.style;
@@ -18,13 +27,18 @@ function applyBrand(s = S.settings) {
   const accent = hexToRgb(s.brand_accent) ? s.brand_accent : '#f5b400';
   const side = hexToRgb(s.brand_sidebar) ? s.brand_sidebar : '#0b1f36';
   r.setProperty('--brand', accent); r.setProperty('--brand-ink', inkFor(accent)); r.setProperty('--sidebar', side);
+  // sidebar section labels in a red that reads on the sidebar
+  r.setProperty('--brand-text', readableOn(accent, side));
   if (primary) {
     const dark = isDarkMode();
-    // dark mode needs a lighter step of the brand color to stay readable on a dark surface
-    const a = dark ? (lum(primary) < 0.2 ? mix(primary, '#ffffff', 0.55) : primary) : (lum(primary) > 0.35 ? mix(primary, '#000000', 0.35) : primary);
-    r.setProperty('--accent', a); r.setProperty('--accent-ink', inkFor(a));
-    r.setProperty('--accent-soft', dark ? mix(a, '#0f1115', 0.78) : mix(a, '#ffffff', 0.86));
-  } else ['--accent', '--accent-ink', '--accent-soft'].forEach(k => r.removeProperty(k));
+    const surface = dark ? '#151515' : '#ffffff';
+    // links/text: brand color stepped until it passes 4.5:1 on the page surface
+    const link = readableOn(primary, surface);
+    // buttons keep the true brand color; text color is whichever contrasts better
+    r.setProperty('--accent', link); r.setProperty('--accent-ink', inkFor(link));
+    r.setProperty('--btn', primary); r.setProperty('--btn-ink', inkFor(primary));
+    r.setProperty('--accent-soft', dark ? mix(primary, '#0a0a0a', 0.8) : mix(primary, '#ffffff', 0.9));
+  } else ['--accent', '--accent-ink', '--accent-soft', '--btn', '--btn-ink'].forEach(k => r.removeProperty(k));
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyBrand());
 const _applyTheme = applyTheme;
@@ -779,11 +793,12 @@ async function settingsExtras(el) {
   const cards = [];
   if (isAdmin()) cards.push(`<div class="card"><h2>Branding</h2><p class="small muted">Colors and logo used across the app and on estimates/invoices customers see.</p>
     <form id="brand"><div class="form-grid">
-      ${fieldHtml({ name: 'brand_primary', label: 'Primary (buttons, links)', type: 'color' }, s.brand_primary || '#0b2a4a')}
-      ${fieldHtml({ name: 'brand_accent', label: 'Accent (highlights)', type: 'color' }, s.brand_accent || '#f5b400')}
-      ${fieldHtml({ name: 'brand_sidebar', label: 'Sidebar', type: 'color' }, s.brand_sidebar || '#0b1f36')}
+      ${fieldHtml({ name: 'brand_primary', label: 'Primary (buttons, links)', type: 'color' }, s.brand_primary || '#d0332c')}
+      ${fieldHtml({ name: 'brand_accent', label: 'Accent (highlights)', type: 'color' }, s.brand_accent || '#d0332c')}
+      ${fieldHtml({ name: 'brand_sidebar', label: 'Sidebar', type: 'color' }, s.brand_sidebar || '#000000')}
       <label class="f"><span>Logo (PNG/JPG/SVG, under 300 KB)</span><input type="file" id="logo" accept="image/*"></label>
       ${fieldHtml({ name: 'logo_url', label: '…or logo URL', full: true }, s.logo_url && !s.logo_url.startsWith('data:') ? s.logo_url : '')}
+      ${fieldHtml({ name: 'company_tagline', label: 'Tagline (sign-in screen)', full: true }, s.company_tagline)}
     </div><div class="row" style="margin-top:12px">${s.logo_url ? `<img src="${esc(s.logo_url)}" alt="Logo" style="height:40px;border-radius:6px;background:#fff;padding:2px">` : ''}
       <button class="btn primary">Save branding</button><button type="button" class="btn" id="brandreset">Reset to default</button><button type="button" class="btn danger" id="logoclear">Remove logo</button></div></form></div>`);
   cards.push(`<div class="card"><div class="row spread"><h2>Cost codes</h2><button class="btn" id="newcc">+ Cost code</button></div>
@@ -820,7 +835,7 @@ async function settingsExtras(el) {
   ['brand_primary', 'brand_accent', 'brand_sidebar'].forEach(k => bf[k].addEventListener('input', () => applyBrand({ ...S.settings, brand_primary: bf.brand_primary.value, brand_accent: bf.brand_accent.value, brand_sidebar: bf.brand_sidebar.value })));
   bf.onsubmit = async e => {
     e.preventDefault();
-    const body = { brand_primary: bf.brand_primary.value, brand_accent: bf.brand_accent.value, brand_sidebar: bf.brand_sidebar.value };
+    const body = { brand_primary: bf.brand_primary.value, brand_accent: bf.brand_accent.value, brand_sidebar: bf.brand_sidebar.value, company_tagline: bf.company_tagline.value };
     const file = $('#logo').files[0];
     if (file) {
       if (file.size > 300 * 1024) return toast('Logo must be under 300 KB', true);
@@ -828,7 +843,7 @@ async function settingsExtras(el) {
     } else if (bf.logo_url.value) body.logo_url = bf.logo_url.value;
     saveSettings(body, 'Branding saved');
   };
-  $('#brandreset').onclick = () => saveSettings({ brand_primary: '#0b2a4a', brand_accent: '#f5b400', brand_sidebar: '#0b1f36' }, 'Branding reset');
+  $('#brandreset').onclick = () => saveSettings({ brand_primary: '#d0332c', brand_accent: '#d0332c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
   $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
   const pf = $('#plyf');

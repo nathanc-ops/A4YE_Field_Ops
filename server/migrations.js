@@ -306,6 +306,19 @@ const MIGRATIONS = [
       day_start_hour: '6', day_end_hour: '19',
     })) ins.run(k, v);
   },
+  // 2: All 4 You Electrical brand (red on black). Leaves colors alone if someone already customized them.
+  db => {
+    const set = (k, v, ifIn) => {
+      const cur = db.prepare('SELECT value FROM settings WHERE key = ?').get(k);
+      if (!cur) db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(k, v);
+      else if (ifIn.includes(cur.value || '')) db.prepare('UPDATE settings SET value = ? WHERE key = ?').run(v, k);
+    };
+    set('brand_primary', '#d0332c', ['', '#0b2a4a']);
+    set('brand_accent', '#d0332c', ['', '#f5b400']);
+    set('brand_sidebar', '#000000', ['', '#0b1f36']);
+    set('logo_url', '/brand/a4y-logo.png', ['']);
+    set('company_tagline', 'Powered by people. Built All 4 You.', ['']);
+  },
 ];
 
 function migrate(db) {

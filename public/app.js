@@ -146,15 +146,21 @@ function logout(silent) {
   renderAuth();
 }
 async function renderAuth() {
-  const { needs_setup } = await GET('/setup');
+  const { needs_setup, brand = {} } = await GET('/setup');
   const root = $('#root');
-  root.innerHTML = `<div class="auth"><div class="card"><div class="brand" style="color:var(--text);padding:0 0 12px"><span class="bolt">⚡</span> A4YE Field Ops</div>
-    ${needs_setup ? `<p class="muted">First run — create the owner (admin) account.</p>` : ''}
+  // "Powered by people. Built All 4 You." → two stacked lines (small word + big words)
+  const tl = String(brand.tagline || '').match(/^\s*(\S+\s+\S+)\s+(.+?)\.\s*(\S+)\s+(.+?)\.?\s*$/);
+  const tagline = tl ? `<div class="tagline"><div class="sm">${esc(tl[1])}</div><div class="lg red">${esc(tl[2])}.</div>
+      <div class="rule"><i></i><svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true"><path fill="#d0332c" d="M14 2 4 14h7l-1 8 10-12h-7z"/></svg><i></i></div><div class="sm">${esc(tl[3])}</div><div class="lg">${esc(tl[4])}.</div></div>` : '';
+  root.innerHTML = `<div class="auth"><div class="auth-box">
+    ${brand.logo_url ? `<img class="logo" src="${esc(brand.logo_url)}" alt="${esc(brand.company_name || '')}">` : `<h1>${esc(brand.company_name || 'Field Ops')}</h1>`}
+    <div class="label">FIELD OPS</div>${tagline}
+    <p class="hint">${needs_setup ? 'First run — create the owner (admin) account.' : 'Sign in to your crew account'}</p>
     <form class="stack">
       ${needs_setup ? fieldHtml({ name: 'company_name', label: 'Company name', default: 'All 4 You Electrical' }) + fieldHtml({ name: 'name', label: 'Your name', required: true }) : ''}
       ${fieldHtml({ name: 'email', label: 'Email', type: 'email', required: true })}
       ${fieldHtml({ name: 'password', label: needs_setup ? 'Password (8+ characters)' : 'Password', type: 'password', required: true })}
-      <button class="btn primary" style="width:100%;justify-content:center">${needs_setup ? 'Create account' : 'Sign in'}</button>
+      <button class="btn primary">${needs_setup ? 'Create account' : 'Sign in'}</button>
     </form></div></div>`;
   $('form', root).onsubmit = async e => {
     e.preventDefault();
@@ -193,9 +199,9 @@ const NAV = [
 function renderShell() {
   const nav = NAV.filter(n => !n.roles || n.roles.includes(S.user.role));
   $('#root').innerHTML = `<div class="app">
-    <nav class="side" id="side"><div class="brand">${S.settings.logo_url ? `<img class="logo" src="${esc(S.settings.logo_url)}" alt="">` : '<span class="bolt">⚡</span>'} <span>${esc(S.settings.company_name || 'Field Ops')}</span></div>
+    <nav class="side" id="side"><div class="brand">${S.settings.logo_url ? `<img class="logo" src="${esc(S.settings.logo_url)}" alt="${esc(S.settings.company_name || '')}">` : `<span class="bolt">⚡</span> <span>${esc(S.settings.company_name || 'Field Ops')}</span>`}</div>
       ${nav.map(n => n.sect ? `<div class="sect">${esc(n.sect)}</div>` : `<a href="${n.href}" data-nav>${n.icon} &nbsp;${esc(n.label)}</a>`).join('')}
-      <div class="me">${esc(S.user.name)}<br><span class="muted">${esc(label(S.user.role))}</span><br><a href="#" id="logout" style="padding:6px 0;color:#93c5fd">Sign out</a></div>
+      <div class="me">${esc(S.user.name)}<br><span class="muted">${esc(label(S.user.role))}</span><br><a href="#" id="logout" style="padding:6px 0;color:var(--brand-text, #e05a4c)">Sign out</a></div>
     </nav>
     <main class="main"><div id="view"></div></main></div>`;
   $('#logout').onclick = e => { e.preventDefault(); logout(); };
