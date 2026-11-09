@@ -11,6 +11,8 @@ const { all, get, run, tx } = D;
 
 function createApp(db) {
   const app = express();
+  app.set('trust proxy', 'loopback'); // behind Caddy on the same machine: use the visitor's real IP
+  app.disable('x-powered-by');
   // photo uploads arrive as base64 JSON (10 MB file ≈ 13.4 MB encoded); everything else stays small
   const keepRaw = (req, res, buf) => { req.rawBody = buf; };
   const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
@@ -79,9 +81,19 @@ function createApp(db) {
     const tok = D.token(); run(db, 'INSERT INTO sessions (token, user_id) VALUES (?,?)', tok, id);
     res.json({ token: tok });
   }));
+  // Slow down password guessing: 8 misses for an email or 30 from one address locks it for 15 minutes.
+  const fails = new Map();
+  const LOCK_MS = 15 * 60e3;
+  const failKey = (k, limit) => { const f = fails.get(k); return f && Date.now() - f.first < LOCK_MS && f.n >= limit; };
+  const addFail = k => { const f = fails.get(k); if (!f || Date.now() - f.first >= LOCK_MS) fails.set(k, { n: 1, first: Date.now() }); else f.n++; if (fails.size > 10000) fails.clear(); };
+  app.get('/healthz', (req, res) => { try { get(db, 'SELECT 1 x'); res.json({ ok: true }); } catch { res.status(500).json({ ok: false }); } });
   app.post('/api/login', wrap((req, res) => {
-    const u = get(db, 'SELECT * FROM users WHERE email = ? AND active = 1', String(req.body.email || ''));
-    if (!u || !D.verifyPassword(String(req.body.password || ''), u.password_hash)) throw bad('Wrong email or password', 401);
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const kE = 'e:' + email, kI = 'i:' + req.ip;
+    if (failKey(kE, 8) || failKey(kI, 30)) throw bad('Too many failed sign-ins. Wait 15 minutes and try again, or ask an admin to reset your password.', 429);
+    const u = get(db, 'SELECT * FROM users WHERE lower(email) = ? AND active = 1', email);
+    if (!u || !D.verifyPassword(String(req.body.password || ''), u.password_hash)) { addFail(kE); addFail(kI); throw bad('Wrong email or password', 401); }
+    fails.delete(kE);
     const tok = D.token(); run(db, 'INSERT INTO sessions (token, user_id) VALUES (?,?)', tok, u.id);
     res.json({ token: tok });
   }));

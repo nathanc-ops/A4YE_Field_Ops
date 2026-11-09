@@ -4,4 +4,7 @@ const { createApp } = require('./app');
 
 const db = open();
 const port = Number(process.env.PORT || 3000);
-createApp(db).listen(port, () => console.log(`A4YE Field Ops running at http://localhost:${port}`));
+const host = process.env.HOST || undefined; // set HOST=127.0.0.1 on a server so only the HTTPS proxy can reach it
+const server = createApp(db).listen(port, host, () => console.log(`A4YE Field Ops running at http://${host || 'localhost'}:${port}`));
+// finish requests in flight and close the database cleanly on restart/shutdown
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { server.close(() => { try { db.close(); } catch { /* already closed */ } process.exit(0); }); server.closeIdleConnections(); setTimeout(() => process.exit(0), 5000).unref(); });

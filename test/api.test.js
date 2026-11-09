@@ -185,3 +185,11 @@ test('payroll splits weekly overtime', () => {
   assert.equal(row.overtime_hours, 10);
   assert.equal(row.gross_pay, 40 * 20 + 10 * 30);
 });
+
+test('health check and sign-in lockout after repeated wrong passwords', async () => {
+  const h = await fetch(base + '/healthz');
+  assert.equal(h.status, 200);
+  let last;
+  for (let i = 0; i < 9; i++) last = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'locktest@example.com', password: 'nope' }) });
+  assert.equal(last.status, 429);
+});

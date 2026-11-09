@@ -1,0 +1,16 @@
+# Caddy gets and renews the HTTPS certificate for this name automatically.
+# setup.sh replaces DOMAIN_NAME with your address.
+DOMAIN_NAME {
+	encode zstd gzip
+	request_body {
+		max_size 50MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options SAMEORIGIN
+		-Server
+	}
+	reverse_proxy 127.0.0.1:3000
+}

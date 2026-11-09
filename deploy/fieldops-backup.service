@@ -1,0 +1,6 @@
+[Unit]
+Description=A4YE Field Ops nightly backup
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fieldops/deploy/backup.sh

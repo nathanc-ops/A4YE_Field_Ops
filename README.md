@@ -12,7 +12,11 @@ npm start         # http://localhost:3000
 
 If you skip the seed, the first visit asks you to create the owner (admin) account.
 
-**Windows:** if PowerShell says *running scripts is disabled on this system*, type `npm.cmd` instead of `npm` (for example `npm.cmd install`), or use Command Prompt.
+**Windows:** if PowerShell says *running scripts is disabled on this system*, type `npm.cmd` instead of `npm` (for example `npm.cmd install`), or use Command Prompt. Two shortcuts you can double-click:
+- `start-windows.bat` starts the program and opens it in the browser. Keep its window open while you use it.
+- `update-windows.bat` backs up `data\fieldops.db`, downloads the latest version from GitHub and starts it. It needs [Git](https://git-scm.com/download/win), and works even if you first downloaded the code as a ZIP.
+
+**Putting it online** for the crew: see [docs/DEPLOY.md](docs/DEPLOY.md). It covers a DigitalOcean server at ops.all4youelectrical.com with HTTPS, nightly and off-site backups, and one-command updates.
 
 Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no native modules to compile. Data lives in `data/fieldops.db` and uploaded photos in `data/uploads/`; set `DB_PATH` / `UPLOAD_DIR` to put them somewhere else. **Back up the `data/` folder** (database and photos). It is your entire business record.
 
@@ -126,7 +130,7 @@ PUBLIC_URL=https://ops.yourdomain.com npm start
 - **SMS and offline mode.** The tech view is mobile-friendly but needs a signal.
 - **Excel files and direct connections to the old system.** Imports take CSV files. Save Excel sheets as CSV first. There's no live connection to ServiceTitan or Successware.
 - **Multi-company and audit log.** It's single-company, and edits are not versioned.
-- **Hosting & backups.** You need to run this somewhere (a small VPS or office PC), put HTTPS in front of it (e.g. Caddy), and back up `data/fieldops.db` nightly.
+- **Hosting is on you.** `deploy/` sets up a DigitalOcean server (see docs/DEPLOY.md), but you own the server, its bills and its backups. Test a restore before you rely on it.
 
 ## Development
 
@@ -145,6 +149,7 @@ npm test          # API + calculation tests
 - `server/billing.js` / `public/billing.js` — quoted-price vs time & material billing, WIP report
 - `server/tech_estimates.js` — tech estimate routes, price guardrails, office review
 - `server/importer.js` / `server/routes_import.js` / `public/import.js` — CSV and photo import, column matching, test runs, undo
+- `deploy/` — server setup, update, backup and restore scripts; `scripts/backup.js` — safe live database copy (`npm run backup`)
 - `server/migrations.js` — versioned schema upgrades (existing databases upgrade automatically on start)
 - `server/app.js` — REST API and role checks
 - `public/app.js` — single-page UI (vanilla JS)

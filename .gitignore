@@ -3,3 +3,5 @@ data/*.db
 data/*.db-*
 .env
 data/uploads/
+data/backups/
+data/*.db.*

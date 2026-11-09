@@ -1,0 +1,23 @@
+[Unit]
+Description=A4YE Field Ops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fieldops
+Group=fieldops
+WorkingDirectory=/opt/fieldops
+EnvironmentFile=/etc/fieldops/fieldops.env
+ExecStart=/usr/bin/node --no-warnings server/index.js
+Restart=always
+RestartSec=3
+# the app can only write to its data folder
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/fieldops
+
+[Install]
+WantedBy=multi-user.target
