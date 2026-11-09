@@ -559,6 +559,34 @@ const MIGRATIONS = [
     const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
     for (const [k, v] of Object.entries({ tech_estimates: '1', tech_see_costs: '0', tech_max_discount_pct: '10', tech_min_margin_pct: '35', tech_custom_lines: 'review' })) ins.run(k, v);
   },
+  // 9: data import from other systems (CSV), with an undo log per batch
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS import_batches (
+      id INTEGER PRIMARY KEY,
+      type TEXT NOT NULL,
+      filename TEXT,
+      options TEXT,
+      created_count INTEGER NOT NULL DEFAULT 0,
+      updated_count INTEGER NOT NULL DEFAULT 0,
+      skipped_count INTEGER NOT NULL DEFAULT 0,
+      warnings TEXT,
+      user_id INTEGER REFERENCES users(id),
+      undone_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS import_records (
+      id INTEGER PRIMARY KEY,
+      batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+      entity TEXT NOT NULL,
+      entity_id INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_imprec ON import_records(batch_id);`);
+    addColumn(db, 'customers', 'external_id', 'TEXT');          // the customer's id in the old system, for linking later files
+    db.exec('CREATE INDEX IF NOT EXISTS idx_cust_ext ON customers(external_id)');
+    addColumn(db, 'invoices', 'ledger_skip', 'INTEGER NOT NULL DEFAULT 0');   // history from the old system: not posted to the books
+    addColumn(db, 'payments', 'ledger_skip', 'INTEGER NOT NULL DEFAULT 0');
+    db.prepare("INSERT OR IGNORE INTO accounts (number, name, type, subtype, description) VALUES ('3950', 'Opening Balance Equity', 'equity', 'opening', 'Offset for opening balances brought over from the old books. Should be zero once conversion is finished.')").run();
+  },
 ];
 
 function migrate(db) {

@@ -12,6 +12,8 @@ npm start         # http://localhost:3000
 
 If you skip the seed, the first visit asks you to create the owner (admin) account.
 
+**Windows:** if PowerShell says *running scripts is disabled on this system*, type `npm.cmd` instead of `npm` (for example `npm.cmd install`), or use Command Prompt.
+
 Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no native modules to compile. Data lives in `data/fieldops.db` and uploaded photos in `data/uploads/`; set `DB_PATH` / `UPLOAD_DIR` to put them somewhere else. **Back up the `data/` folder** (database and photos). It is your entire business record.
 
 ## What it does
@@ -81,6 +83,29 @@ Editing or voiding a source record re-posts its entry. Entries dated on or befor
 2. Work the **To review** list: **Match**, **Apply** (a customer deposit), **Add expense** or **Categorize**, or ✕ to exclude a duplicate.
 3. Choose **Reconcile** and enter the statement's ending date and balance. On an account's very first reconciliation, also enter the statement's start date and beginning balance. Matched lines arrive already checked; check anything else on the statement until the difference is $0.00, then choose **Finish**. When upgrading a database from an earlier version, run **Accounting → Close books → Rebuild ledger** once.
 
+## Moving over from your old system
+
+**Import Data** (admin only, in the sidebar) brings records over as CSV files exported from ServiceTitan, Successware, Housecall, QuickBooks or a spreadsheet. In Excel, use File → Save As → CSV.
+
+1. **Pick the file.** Columns are matched to fields automatically from the names those systems use. Fix any match in the drop-downs.
+2. **Test run.** This runs the whole import and then throws it away. It shows exactly what would be added or updated, and which rows have problems and why.
+3. **Import.** Rows with problems are left out; everything else goes in.
+4. **Undo** any import from the history. This removes what it added, unless those records have been used since (for example, a new job on an imported customer).
+
+Import in this order, because later files find their customer and job by the IDs and numbers in earlier ones:
+
+| Order | What | Notes |
+|---|---|---|
+| 1 | **Chart of accounts**, then **opening balances** | Opening balances are the trial balance from your old books on your start date. Any difference goes to *3950 Opening Balance Equity*, which should be zero when you're done. |
+| 2 | **Customers**, **vendors** | Matched to existing records by old-system ID, email, phone, then name. Matches fill in missing details instead of creating duplicates. A service address on the row adds a location. |
+| 3 | **Materials & price book** | Matched by code, then name, and updated. |
+| 4 | **Jobs** | Old job numbers are kept. Technicians are matched to your team by name. Open jobs with a date land on the schedule board. |
+| 5 | **Estimates**, **invoices & payments** | Either one row per document, or one row per line item with the number repeated. An *Option* column builds good/better/best. *Amount paid* or *Balance due* records the payment. |
+| 6 | **Notes**, **materials used on jobs**, **journal entries** | Notes go on the job, or on the customer when there's no job number. Material history counts toward job costing without changing stock. |
+| 7 | **Photos** | Pick a folder. Each photo goes on the job whose number is in its folder or file name (`5001/panel.jpg`, `5001 - Smith_before.jpg`). |
+
+**Imported invoices stay off the books by default.** Your opening balances already include receivables as one total, so posting every old invoice would count that revenue twice. Old invoices still show on customers, jobs and sales reports. A payment you record on an imported open invoice from now on posts normally. Tick *Post these invoices and payments to the books* only if you are not importing opening balances.
+
 ## Email
 
 Without SMTP settings, **Send** marks the document as sent and copies the customer link so you can text or email it yourself. To send directly:
@@ -98,7 +123,8 @@ PUBLIC_URL=https://ops.yourdomain.com npm start
 - **Live bank feeds.** Statements are imported as files (CSV, OFX, QFX). Pulling transactions in automatically needs a bank-data aggregator such as Plaid: a paid account, API keys and their approval. Imported transactions already flow into the same matching, so a feed can be added later without changing the review or reconcile steps.
 - **Payroll tax filing.** Labor is accrued at loaded cost and you record what payroll actually paid. Gross-to-net, tax deposits and W-2s still need a payroll provider.
 - **Ply's real API.** The connector is built and tested against a stand-in Ply API, but Ply doesn't publish its specification. Confirm endpoints and field names with Ply before relying on it (see docs/PLY_INTEGRATION.md).
-- **SMS, GPS tracking, photo uploads, offline mode.** The tech view is mobile-friendly but needs a signal.
+- **SMS and offline mode.** The tech view is mobile-friendly but needs a signal.
+- **Excel files and direct connections to the old system.** Imports take CSV files. Save Excel sheets as CSV first. There's no live connection to ServiceTitan or Successware.
 - **Multi-company and audit log.** It's single-company, and edits are not versioned.
 - **Hosting & backups.** You need to run this somewhere (a small VPS or office PC), put HTTPS in front of it (e.g. Caddy), and back up `data/fieldops.db` nightly.
 
@@ -118,6 +144,7 @@ npm test          # API + calculation tests
 - `server/routes_field.js` / `public/field.js` — photos & files, checklists, sign-off, GPS, equipment
 - `server/billing.js` / `public/billing.js` — quoted-price vs time & material billing, WIP report
 - `server/tech_estimates.js` — tech estimate routes, price guardrails, office review
+- `server/importer.js` / `server/routes_import.js` / `public/import.js` — CSV and photo import, column matching, test runs, undo
 - `server/migrations.js` — versioned schema upgrades (existing databases upgrade automatically on start)
 - `server/app.js` — REST API and role checks
 - `public/app.js` — single-page UI (vanilla JS)

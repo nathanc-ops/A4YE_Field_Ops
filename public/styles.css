@@ -307,3 +307,8 @@ input[type="color"] { height: 40px; padding: 3px; cursor: pointer; }
 .opt-tabs > button:not(.btn) { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: 8px; padding: 8px 12px; cursor: pointer; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; font-weight: 600; }
 .opt-tabs > button.on { border-color: var(--brand); box-shadow: inset 0 -3px 0 var(--brand); }
 .opt-tabs > button span { font-weight: 400; color: var(--text-2); }
+
+/* import data */
+.alert.good { background: var(--good-soft); color: var(--good); }
+.imp-tile { display: flex; flex-direction: column; justify-content: space-between; }
+.imp-tile code { font-size: 12px; }

@@ -14,7 +14,9 @@ function createApp(db) {
   // photo uploads arrive as base64 JSON (10 MB file ≈ 13.4 MB encoded); everything else stays small
   const keepRaw = (req, res, buf) => { req.rawBody = buf; };
   const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
-  app.use((req, res, next) => (req.path === '/api/attachments' ? bigJson : smallJson)(req, res, next));
+  const importJson = express.json({ limit: '40mb' }); // CSV exports from the old system can be large
+  app.use((req, res, next) => (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
+    : req.path.startsWith('/api/import/') ? importJson : smallJson)(req, res, next));
 
   // ------------------------------------------------------------ helpers
   // Sync handlers run inside one transaction, so a failed ledger posting rolls back the whole change.
@@ -785,6 +787,7 @@ function createApp(db) {
     run(db, 'DELETE FROM billing_milestones WHERE id = ?', m.id); res.json({ ok: true });
   }));
   app.get('/api/reports/wip', office, wrap((req, res) => res.json(Bill.wipReport(db))));
+  require('./routes_import')(app, db, { wrap, bad, admin, H });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

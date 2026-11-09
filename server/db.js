@@ -341,9 +341,11 @@ function tx(db, fn) {
   }
 }
 
+// Next free number after the highest one in use (imported records can arrive out of order).
 function nextNumber(db, table, prefix) {
-  const row = get(db, `SELECT number FROM ${table} WHERE number LIKE ? ORDER BY id DESC LIMIT 1`, `${prefix}-%`);
-  const n = row ? parseInt(row.number.split('-').pop(), 10) + 1 : 1001;
+  const row = get(db, `SELECT MAX(CAST(substr(number, ?) AS INTEGER)) n FROM ${table} WHERE number GLOB ?`, prefix.length + 2, `${prefix}-[0-9]*`);
+  let n = row && row.n ? row.n + 1 : 1001;
+  while (get(db, `SELECT 1 x FROM ${table} WHERE number = ?`, `${prefix}-${n}`)) n++;
   return `${prefix}-${n}`;
 }
 

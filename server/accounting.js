@@ -54,7 +54,7 @@ function post(db, { date, memo, source_type = 'manual', source_id = null, create
 function postInvoice(db, invoiceId) {
   const C = require('./calc');
   const inv = get(db, 'SELECT * FROM invoices WHERE id = ?', invoiceId);
-  if (!inv || inv.status === 'draft' || inv.status === 'void') return unpost(db, 'invoice', invoiceId);
+  if (!inv || inv.status === 'draft' || inv.status === 'void' || inv.ledger_skip) return unpost(db, 'invoice', invoiceId);
   const full = C.invoiceWithTotals(db, inv);
   const cust = get(db, 'SELECT type FROM customers WHERE id = ?', inv.customer_id);
   const revAcct = cust && cust.type === 'commercial' ? '4100' : '4000';
@@ -66,7 +66,7 @@ function postInvoice(db, invoiceId) {
 }
 function postPayment(db, paymentId) {
   const p = get(db, 'SELECT p.*, i.number, i.customer_id, i.job_id FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE p.id = ?', paymentId);
-  if (!p) return unpost(db, 'payment', paymentId);
+  if (!p || p.ledger_skip) return unpost(db, 'payment', paymentId);
   const dep = p.deposit_account_id || settings(db).default_deposit_account || '1000';
   return post(db, { date: p.paid_at, memo: `Payment on ${p.number}${p.reference ? ' · ' + p.reference : ''}`, source_type: 'payment', source_id: p.id, lines: [
     { account: dep, debit: p.amount, customer_id: p.customer_id },
