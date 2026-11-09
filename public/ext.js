@@ -102,6 +102,32 @@ function dateNav(view, date, step) {
 function bindDatePick(view) { const d = $('#dpick'); if (d) d.onchange = () => go('#/schedule' + qs({ view, date: d.value })); }
 const legend = () => `<div class="legend">${APPT_STATUSES.filter(s => s !== 'cancelled').map(s => `<span class="st-${s}"><i></i>${label(s)}</span>`).join('')}</div>`;
 
+// Hours a visit takes up on one day (same rule as the server): a visit spanning several days is a daily crew window.
+function visitHoursOnDay(a, day) {
+  const d0 = new Date(day + 'T00:00:00').getTime(), d1 = d0 + 864e5, s = Date.parse(a.start), e = Date.parse(a.end);
+  const overlap = (x, y) => Math.max(0, Math.min(y, d1, e) - Math.max(x, d0, s)) / 36e5;
+  const st = new Date(s), en = new Date(e);
+  if (st.toDateString() === en.toDateString()) return overlap(s, e);
+  const ws = d0 + (st.getHours() * 60 + st.getMinutes()) * 6e4, we = d0 + (en.getHours() * 60 + en.getMinutes()) * 6e4;
+  return we > ws ? overlap(ws, we) : overlap(d0, d1);
+}
+// Crew blocks: techs are grouped by the Title on their Team profile (Journeyman, Apprentice, Master/Foreman…).
+const CREW = [['master', 'Masters & foremen'], ['journeyman', 'Journeymen'], ['apprentice', 'Apprentices'], ['other', 'Other staff']];
+function crewOf(userId) {
+  const t = String((S.users.find(u => u.id === userId) || {}).title || '');
+  if (/apprent|helper|trainee|\bappr\b/i.test(t)) return 'apprentice';
+  if (/journey|\bjw\b|\bjm\b|\bjman\b/i.test(t)) return 'journeyman';
+  if (/master|foreman|supervisor|super\b/i.test(t)) return 'master';
+  return 'other';
+}
+// rows → [{key, label, rows}] in crew order; empty groups dropped. Row id 0 (Unassigned) goes in its own block at the end.
+function crewBlocks(rows) {
+  const out = CREW.map(([key, label]) => ({ key, label, rows: rows.filter(r => r.id && crewOf(r.id) === key) })).filter(g => g.rows.length);
+  const un = rows.filter(r => !r.id);
+  if (un.length) out.push({ key: 'unassigned', label: 'Unassigned', rows: un });
+  return out;
+}
+
 // ---------------------------------------------------------------- hourly tech board
 async function viewBoard(date, seg) {
   const H0 = Number(S.settings.day_start_hour) || 6, H1 = Math.max(H0 + 4, Number(S.settings.day_end_hour) || 19);
@@ -150,9 +176,10 @@ async function viewBoard(date, seg) {
           <b>${esc(j.number)}</b> ${j.priority !== 'normal' ? pill(j.priority) : ''}<br>${esc(j.customer_name)}<br><span class="muted">${esc(j.title)}</span></div>`).join('') || '<div class="empty">All caught up</div>'}</div>` : ''}
       <div><div class="hb-wrap"><div class="hb" style="--hours:${H1 - H0};--hw:${hw}px">
         <div class="hb-head"><div class="hb-tech" style="background:var(--surface-2)"><b>Tech</b></div><div class="hb-hours">${hours}</div></div>
-        ${rows.map(r => `<div class="hb-row"><div class="hb-tech"><b><span class="dot" style="background:${esc(r.color)}"></span>${esc(r.name)}</b>
+        ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? `${g.rows[0].items.length} visit(s)` : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + (r.booked || 0), 0), 1)}h booked`}</span></div>` : ''}
+        ${g.rows.map(r => `<div class="hb-row crew-${g.key}"><div class="hb-tech"><b><span class="dot" style="background:${esc(r.color)}"></span>${esc(r.name)}</b>
             ${r.id ? `<div class="small muted">${r.clock ? `<span class="pill good">● ${r.clock.job_number ? esc(r.clock.job_number) : label(r.clock.kind)}</span>` : 'Off clock'}${r.booked != null ? ` · ${num(r.booked, 1)}h booked` : ''}</div>` : ''}</div>
-          <div class="hb-lane" data-tech="${r.id}" style="height:${r.lanes * 58 + 10}px">${r.items.map(it => block(r, it)).join('')}${nowLine}</div></div>`).join('')}
+          <div class="hb-lane" data-tech="${r.id}" style="height:${r.lanes * 58 + 10}px">${r.items.map(it => block(r, it)).join('')}${nowLine}</div></div>`).join('')}`).join('')}
       </div></div><div class="row spread" style="margin-top:8px">${legend()}<span class="small muted">15-minute snap</span></div></div>
     </div>`;
   bindDatePick('board');
@@ -241,15 +268,16 @@ async function viewWeek(date, seg) {
   const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)))) : S.users.filter(u => u.id === S.user.id);
   const rows = [...techs.map(t => ({ id: t.id, name: t.name, color: t.color })), ...(isOffice() ? [{ id: 0, name: 'Unassigned', color: '#94a3b8' }] : [])];
   const cellAppts = (r, d) => appts.filter(a => localDate(new Date(a.start)) === d && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length));
-  const cap = list => { const h = list.reduce((s, a) => s + (new Date(a.end) - new Date(a.start)) / 36e5, 0); return { h, pct: Math.min(100, h / 8 * 100), cls: h > 10 ? 'over' : h >= 8 ? 'full' : '' }; };
-  const totals = rows.map(r => days.reduce((s, d) => s + cap(cellAppts(r, d)).h, 0));
+  const cap = (list, d) => { const h = list.reduce((s, a) => s + visitHoursOnDay(a, d), 0); return { h, pct: Math.min(100, h / 8 * 100), cls: h > 10 ? 'over' : h >= 8 ? 'full' : '' }; };
+  const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
     <div class="wk"><div class="h">Tech</div>${days.map(d => `<div class="h ${d === todayStr() ? 'today' : ''}"><a href="#/schedule${qs({ view: 'board', date: d })}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</a></div>`).join('')}
-    ${rows.map((r, ri) => `<div class="tech"><span class="dot" style="background:${esc(r.color)}"></span> ${esc(r.name)}<div class="small muted">${num(totals[ri], 1)} h booked</div></div>
-      ${days.map(d => { const list = cellAppts(r, d); const c = cap(list); return `<div class="cell" data-tech="${r.id}" data-day="${d}">
+    ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}" style="grid-column:1/-1"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? '' : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + totals.get(r), 0), 1)}h booked this week`}</span></div>` : ''}
+    ${g.rows.map(r => `<div class="tech"><span class="dot" style="background:${esc(r.color)}"></span> ${esc(r.name)}<div class="small muted">${num(totals.get(r), 1)} h booked</div></div>
+      ${days.map(d => { const list = cellAppts(r, d); const c = cap(list, d); return `<div class="cell" data-tech="${r.id}" data-day="${d}">
         ${r.id && list.length ? `<div class="cap ${c.cls}" title="${num(c.h, 1)} of 8 h"><i style="width:${c.pct}%"></i></div>` : ''}
-        ${list.map(a => `<a class="chip st-${a.status}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" href="#/jobs/${a.job_id}"><b>${fmtTime(a.start)}–${fmtTime(a.end)}</b> ${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`).join('')}</div>`; }).join('')}`).join('')}</div>
+        ${list.map(a => `<a class="chip st-${a.status}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" href="#/jobs/${a.job_id}"><b>${fmtTime(a.start)}–${fmtTime(a.end)}</b> ${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
     <div style="margin-top:8px">${legend()}</div>`;
   bindDatePick('week');
   if (!isOffice()) return;
@@ -296,10 +324,10 @@ async function viewDispatch(date, seg) {
           { label: 'Status', html: a => pill(a.status) },
           { label: '', html: a => `<div class="status-btns">${next[a.status] ? `<button class="btn sm ${a.status === 'scheduled' ? 'primary' : ''}" data-st="${a.id}:${next[a.status][0]}">${next[a.status][1]}</button>` : ''}<button class="btn sm" data-edit="${a.id}">Edit</button></div>` }],
         appts, { empty: 'No visits today' })}</div>
-      <div class="card"><h2>Techs</h2>${d.techs.map(t => `<div class="tcard"><div class="row spread"><b><span class="dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</b>${t.phone ? `<a href="tel:${esc(t.phone)}">📞</a>` : ''}</div>
+      <div class="card"><h2>Techs</h2>${crewBlocks(d.techs).map(g => `<div class="crew-h crew-${g.key}" style="margin:8px 0 4px"><span>${esc(g.label)}</span><span class="muted">${g.rows.length}</span></div>${g.rows.map(t => `<div class="tcard"><div class="row spread"><b><span class="dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</b>${t.phone ? `<a href="tel:${esc(t.phone)}">📞</a>` : ''}</div>
           <div class="small">${t.clock ? `<span class="pill good">● On the clock</span> ${t.clock.job_number ? `on <a href="#/jobs/${t.clock.job_id}">${esc(t.clock.job_number)}</a>` : esc(label(t.clock.kind))} since ${fmtTime(t.clock.clock_in)}` : '<span class="muted">Off the clock</span>'}</div>
           <div class="cap ${t.booked_hours > 10 ? 'over' : t.booked_hours >= 8 ? 'full' : ''}" style="margin-top:6px"><i style="width:${Math.min(100, t.booked_hours / 8 * 100)}%"></i></div>
-          <div class="small muted">${num(t.booked_hours, 1)} of 8 h booked · ${t.appointments} visit(s)</div></div>`).join('') || '<div class="empty">No techs set up</div>'}</div>
+          <div class="small muted">${num(t.booked_hours, 1)} of 8 h booked · ${t.appointments} visit(s)</div></div>`).join('')}`).join('') || '<div class="empty">No techs set up</div>'}</div>
     </div>`;
   bindDatePick('dispatch');
   $('#newjob').onclick = () => jobForm({});
@@ -813,6 +841,18 @@ async function settingsExtras(el) {
       ${fieldHtml({ name: 'default_deposit_account', label: 'Customer payments deposit to', type: 'select', options: (S.accounts || []).filter(a => a.subtype === 'bank').map(a => [a.number, `${a.number} · ${a.name}`]), blank: false }, s.default_deposit_account)}
       ${fieldHtml({ name: 'default_paid_from_account', label: 'Expenses & bills paid from', type: 'select', options: (S.accounts || []).filter(a => ['bank', 'credit_card'].includes(a.subtype)).map(a => [a.number, `${a.number} · ${a.name}`]), blank: false }, s.default_paid_from_account)}
       </div><div class="row" style="margin-top:12px"><button class="btn primary">Save defaults</button></div></form></div>`);
+    cards.push(`<div class="card"><h2>Address lookup</h2>
+      <p class="small">When you type a service address, the app looks it up, fills in city, state and ZIP, and saves its map location. Every address field also has a <b>Map ↗</b> button that opens Google Maps.</p>
+      <p class="small">${s.google_maps_api_key_set ? '<span class="pill good">Google Maps key saved</span> Suggestions come from Google as you type.' : '<span class="pill">Free mode</span> Without a key, the free US Census lookup checks an address once you have typed the house number and street. There are no suggestions while you type.'}</p>
+      <form id="geof"><div class="form-grid">
+        ${fieldHtml({ name: 'google_maps_api_key', label: s.google_maps_api_key_set ? 'Google Maps API key (saved — leave blank to keep)' : 'Google Maps API key (optional)', type: 'password', full: true })}
+      </div>
+      <details class="small" style="margin:8px 0"><summary>How to get a key</summary><ol>
+        <li>Go to console.cloud.google.com and create a project. Billing must be turned on, though light use usually stays inside Google's free monthly allowance.</li>
+        <li>Under <b>APIs &amp; Services → Library</b>, enable <b>Places API (New)</b>.</li>
+        <li>Under <b>Credentials → Create credentials → API key</b>, restrict the key to <b>Places API (New)</b> only.</li>
+        <li>Paste it here. The key stays on your server and is never sent to browsers.</li></ol></details>
+      <div class="row"><button class="btn primary">Save</button>${s.google_maps_api_key_set ? '<button type="button" class="btn danger" id="geoclear">Remove key</button>' : ''}</div></form></div>`);
     const log = await GET('/integrations/ply/log');
     cards.push(`<div class="card"><h2>Integrations — Ply</h2>
       <div class="alert info" style="margin-bottom:12px">Ply doesn't publish its API reference. Get your API key, base URL and endpoint paths from your Ply rep, enter them here, then use <b>Test connection</b>. The payloads this app sends and the webhooks it accepts are documented in <code>docs/PLY_INTEGRATION.md</code>.</div>
@@ -847,6 +887,8 @@ async function settingsExtras(el) {
   $('#brandreset').onclick = () => saveSettings({ brand_primary: '#e0001a', brand_accent: '#fa001c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
   $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
+  $('#geof').onsubmit = e => { e.preventDefault(); const v = e.target.google_maps_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ google_maps_api_key: v }, 'Google Maps key saved'); };
+  if ($('#geoclear')) $('#geoclear').onclick = () => { if (confirm('Remove the Google Maps key? Address lookup falls back to the free US Census check.')) saveSettings({ google_maps_api_key_clear: '1' }, 'Key removed'); };
   const pf = $('#plyf');
   pf.onsubmit = e => { e.preventDefault(); saveSettings({ ply_enabled: pf.ply_enabled.checked ? '1' : '0', ply_api_base: pf.ply_api_base.value, ply_api_key: pf.ply_api_key.value, ply_webhook_secret: pf.ply_webhook_secret.value,
     ply_path_po: pf.ply_path_po.value, ply_path_pick_list: pf.ply_path_pick_list.value, ply_path_job: pf.ply_path_job.value, ply_path_items: pf.ply_path_items.value }, 'Ply settings saved'); };

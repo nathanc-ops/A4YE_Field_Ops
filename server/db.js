@@ -308,9 +308,28 @@ function verifyPassword(pw, stored) {
 }
 const token = () => crypto.randomBytes(24).toString('base64url');
 
+// How a customer files alphabetically: company if there is one; a business-looking name as typed;
+// otherwise a person, by last name ("Jordan Smith Jr." -> "smith jordan", "Smith, Jordan" -> "smith jordan").
+const BUSINESS = /\b(llc|l\.l\.c|inc|corp|corporation|co|company|ltd|lp|llp|pllc|group|properties|property|apartments?|management|mgmt|construction|builders?|homes|electric|church|school|district|association|assn|hoa|partners|trust|bank|city|county|state|university|hospital|clinic|restaurant|hotel|services?|enterprises?|holdings|realty|development|plaza|center|centre)\b\.?/i;
+function customerSortKey(name, company) {
+  const c = String(company || '').trim();
+  if (c) return c.toLowerCase().replace(/^the\s+/, '');
+  const n = String(name || '').trim().replace(/\s+/g, ' ');
+  if (!n) return '';
+  if (BUSINESS.test(n) || /^the\s/i.test(n) || /\d/.test(n)) return n.toLowerCase().replace(/^the\s+/, '');
+  if (n.includes(',')) { const i = n.indexOf(','); return `${n.slice(0, i).trim()} ${n.slice(i + 1).trim()}`.trim().toLowerCase(); }
+  const parts = n.split(' ').filter(w => !/^(jr|sr|ii|iii|iv)\.?$/i.test(w));
+  if (parts.length < 2) return n.toLowerCase();
+  let last = parts.pop();
+  // surname particles stay with the surname: "Mary Van Dyke" files under V, "Luis De La Cruz" under D
+  while (parts.length > 1 && /^(van|von|der|den|de|del|della|di|da|la|le|du|dos|das|st\.?|mac|bin|al)$/i.test(parts[parts.length - 1])) last = parts.pop() + ' ' + last;
+  return `${last} ${parts.join(' ')}`.toLowerCase();
+}
+
 function open(file) {
   const dbPath = file || process.env.DB_PATH || path.join(__dirname, '..', 'data', 'fieldops.db');
   const db = new DatabaseSync(dbPath);
+  db.function('cust_sort', { deterministic: true }, (name, company) => customerSortKey(name, company));
   db.exec(SCHEMA);
   const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
@@ -356,4 +375,5 @@ function settings(db) {
   return o;
 }
 
-module.exports = { open, all, get, run, tx, nextNumber, settings, hashPassword, verifyPassword, token };
+module.exports = {
+  customerSortKey, open, all, get, run, tx, nextNumber, settings, hashPassword, verifyPassword, token };

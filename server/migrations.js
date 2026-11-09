@@ -598,6 +598,12 @@ const MIGRATIONS = [
     db.exec("UPDATE invoices SET title = (SELECT e.title FROM estimates e WHERE e.id = invoices.estimate_id) WHERE title IS NULL AND estimate_id IS NOT NULL");
     db.exec("UPDATE invoices SET title = (SELECT j.title FROM jobs j WHERE j.id = invoices.job_id) WHERE title IS NULL AND job_id IS NOT NULL");
   },
+  // 12: service addresses remember map coordinates and when they were checked against a map/address database
+  db => {
+    addColumn(db, 'locations', 'lat', 'REAL');
+    addColumn(db, 'locations', 'lng', 'REAL');
+    addColumn(db, 'locations', 'verified_at', 'TEXT');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

@@ -6,6 +6,7 @@ const C = require('./calc');
 const mailer = require('./mailer');
 const A = require('./accounting');
 const Bill = require('./billing');
+const Geo = require('./geo');
 
 const { all, get, run, tx } = D;
 
@@ -148,7 +149,7 @@ function createApp(db) {
   // everything below requires sign-in
   app.use('/api', auth);
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
@@ -170,6 +171,7 @@ function createApp(db) {
     const up = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     for (const [k, v] of Object.entries(req.body || {})) {
       if (k.endsWith('_set')) continue;
+      if (k.endsWith('_clear')) { const base = k.slice(0, -6); if (SECRET_KEYS.includes(base) && v) up.run(base, ''); continue; }
       if (SECRET_KEYS.includes(k) && !v) continue; // blank = keep existing secret
       up.run(k, String(v ?? ''));
     }
@@ -197,13 +199,38 @@ function createApp(db) {
 
   // ------------------------------------------------------------ customers & locations
   const CUST_FIELDS = ['type', 'name', 'company', 'email', 'phone', 'alt_phone', 'billing_address', 'lead_source', 'tax_exempt', 'payment_terms_days', 'notes'];
-  const LOC_FIELDS = ['label', 'address', 'city', 'state', 'zip', 'service_size', 'panel_info', 'access_notes'];
+  const LOC_FIELDS = ['label', 'address', 'city', 'state', 'zip', 'service_size', 'panel_info', 'access_notes', 'lat', 'lng', 'verified_at'];
+
+  // ------------------------------------------------------------ address lookup (see geo.js)
+  app.get('/api/address/suggest', office, wrap(async (req, res) => {
+    res.json({ ...(await Geo.suggest(D.settings(db), req.query.q, req.query.session)), google: !!(D.settings(db).google_maps_api_key || process.env.GOOGLE_MAPS_API_KEY) });
+  }));
+  app.get('/api/address/details', office, wrap(async (req, res) => res.json(await Geo.details(D.settings(db), req.query.id, req.query.session))));
+  // Search: every word must match somewhere (name, company, email, any service address, old-system id);
+  // digits also match phone numbers however they were typed. Paged: X-Total-Count says how many match in all.
+  const digitsOnly = col => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '.', ''), '+', '')`;
   app.get('/api/customers', wrap((req, res) => {
-    const q = `%${req.query.q || ''}%`;
+    const where = [], p = [];
+    for (const word of String(req.query.q || '').trim().split(/\s+/).filter(Boolean).slice(0, 6)) {
+      const like = `%${word.replace(/[%_\\]/g, m => '\\' + m)}%`;
+      const ors = ["c.name LIKE ? ESCAPE '\\'", "c.company LIKE ? ESCAPE '\\'", "c.email LIKE ? ESCAPE '\\'", "c.external_id LIKE ? ESCAPE '\\'",
+        "EXISTS (SELECT 1 FROM locations l WHERE l.customer_id = c.id AND (l.address LIKE ? ESCAPE '\\' OR l.city LIKE ? ESCAPE '\\' OR l.zip LIKE ? ESCAPE '\\' OR l.label LIKE ? ESCAPE '\\'))"];
+      p.push(like, like, like, like, like, like, like, like);
+      const dg = word.replace(/\D/g, '');
+      if (dg.length >= 3 && dg.length >= word.replace(/[\s().+-]/g, '').length) { ors.push(`${digitsOnly('c.phone')} LIKE ?`, `${digitsOnly('c.alt_phone')} LIKE ?`); p.push(`%${dg}%`, `%${dg}%`); }
+      where.push(`(${ors.join(' OR ')})`);
+    }
+    if (req.query.type) { where.push('c.type = ?'); p.push(req.query.type); }
+    // default: people by last name, businesses by name; sort=first files people by first name as typed
+    const sortName = req.query.sort === 'first' ? "LOWER(COALESCE(NULLIF(c.company, ''), c.name))" : 'cust_sort(c.name, c.company)';
+    if (/^[a-z]$/i.test(req.query.letter || '')) { where.push(`UPPER(SUBSTR(${sortName}, 1, 1)) = ?`); p.push(req.query.letter.toUpperCase()); }
+    else if (req.query.letter === '#') where.push(`UPPER(SUBSTR(${sortName}, 1, 1)) NOT BETWEEN 'A' AND 'Z'`);
+    const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 1000), offset = Math.max(Number(req.query.offset) || 0, 0);
+    res.set('X-Total-Count', String(get(db, `SELECT COUNT(*) n FROM customers c ${w}`, ...p).n));
     res.json(all(db, `SELECT c.*, (SELECT COUNT(*) FROM jobs j WHERE j.customer_id = c.id) job_count,
       (SELECT address || COALESCE(', ' || city, '') FROM locations l WHERE l.customer_id = c.id ORDER BY id LIMIT 1) primary_address
-      FROM customers c WHERE (c.name LIKE ? OR c.company LIKE ? OR c.email LIKE ? OR c.phone LIKE ?)
-      ${req.query.type ? 'AND c.type = ?' : ''} ORDER BY c.name LIMIT 500`, q, q, q, q, ...(req.query.type ? [req.query.type] : [])));
+      FROM customers c ${w} ORDER BY ${sortName}, c.id LIMIT ? OFFSET ?`, ...p, limit, offset));
   }));
   app.get('/api/customers/:id', wrap((req, res) => {
     const c = mustGet('customers', req.params.id);
@@ -260,6 +287,9 @@ function createApp(db) {
   const JOB_FIELDS = ['customer_id', 'location_id', 'title', 'description', 'job_type', 'priority', 'status', 'scheduled_start', 'scheduled_end',
     'lead_source', 'po_number', 'contract_amount', 'budget_hours', 'budget_materials', 'completion_notes',
     'billing_type', 'retainage_pct', 'percent_complete', 'labor_rate', 'material_markup_pct', 'trip_charge', 'nte_amount', 'bill_travel'];
+  // A blank box means "use the default" for columns that can't be empty (the form blanks the other billing type's fields).
+  const JOB_NOT_BLANK = { retainage_pct: 0, bill_travel: 1, job_type: 'service', priority: 'normal', billing_type: 'tm' };
+  const jobData = body => { const d = pick(body, JOB_FIELDS); for (const [k, v] of Object.entries(JOB_NOT_BLANK)) if (k in d && (d[k] === null || d[k] === '')) d[k] = v; return d; };
   const jobSelect = `SELECT j.*, c.name customer_name, c.type customer_type, c.phone customer_phone,
     l.address, l.city, l.state, l.zip,
     (SELECT GROUP_CONCAT(u.name, ', ') FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = j.id) tech_names,
@@ -320,7 +350,7 @@ function createApp(db) {
     res.json(job);
   }));
   app.post('/api/jobs', office, wrap((req, res) => {
-    const data = pick(req.body, JOB_FIELDS);
+    const data = jobData(req.body);
     if (!data.customer_id || !data.title) throw bad('Customer and job title are required');
     if (!data.status) data.status = data.scheduled_start ? 'scheduled' : 'unscheduled';
     if (!data.billing_type) data.billing_type = data.contract_amount > 0 ? 'fixed' : 'tm';
@@ -334,7 +364,7 @@ function createApp(db) {
   }));
   app.put('/api/jobs/:id', wrap((req, res) => {
     const job = mustGet('jobs', req.params.id);
-    let data = pick(req.body, JOB_FIELDS);
+    let data = jobData(req.body);
     if (req.user.role === 'tech') {
       const assigned = get(db, 'SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?', job.id, req.user.id);
       if (!assigned) throw bad('Not assigned to this job', 403);
@@ -858,6 +888,44 @@ function createApp(db) {
   app.get('/api/reports/payroll', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.payroll(db, from, to)); }));
   app.get('/api/reports/ar-aging', office, wrap((req, res) => res.json(C.arAging(db))));
   app.get('/api/reports/tech-performance', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.techPerformance(db, from, to)); }));
+  // Permits report: filter by which date (applied/issued/inspection/expires), status group and jurisdiction.
+  app.get('/api/reports/permits', office, wrap((req, res) => {
+    const { from, to } = range(req);
+    const DATE = { applied: 'COALESCE(p.applied_date, date(p.created_at))', issued: 'p.issued_date', inspection: 'p.inspection_date', expires: 'p.expires_date' };
+    const by = DATE[req.query.by] ? req.query.by : 'applied';
+    const where = [`${DATE[by]} BETWEEN ? AND ?`], prm = [from, to];
+    const OPEN = "p.status NOT IN ('passed','closed')";
+    if (req.query.status === 'open') where.push(OPEN);
+    else if (req.query.status === 'attention') where.push(`(p.status = 'failed' OR (${OPEN} AND ((p.inspection_date < ? AND p.status IN ('rough_scheduled','final_scheduled')) OR p.expires_date <= ?)))`), prm.push(today(), addDays(today(), 30));
+    else if (req.query.status && req.query.status !== 'all') { const st = String(req.query.status).split(','); where.push(`p.status IN (${st.map(() => '?').join(',')})`); prm.push(...st); }
+    if (req.query.jurisdiction) { where.push('p.jurisdiction = ?'); prm.push(req.query.jurisdiction); }
+    const rows = all(db, `SELECT p.*, j.number job_number, j.title job_title, j.status job_status, c.name customer_name, c.company customer_company,
+        TRIM(COALESCE(l.address, '') || COALESCE(', ' || l.city, '')) address,
+        (SELECT GROUP_CONCAT(u.name, ', ') FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = j.id) techs
+      FROM permits p JOIN jobs j ON j.id = p.job_id JOIN customers c ON c.id = j.customer_id LEFT JOIN locations l ON l.id = j.location_id
+      WHERE ${where.join(' AND ')} ORDER BY ${DATE[by]}, p.id`, ...prm);
+    const t = today(), soon = addDays(t, 30);
+    for (const r of rows) {
+      const open = !['passed', 'closed'].includes(r.status);
+      r.flags = [
+        r.status === 'failed' && 'Failed inspection',
+        open && ['rough_scheduled', 'final_scheduled'].includes(r.status) && r.inspection_date && r.inspection_date < t && 'Inspection date passed. Update the result.',
+        open && r.expires_date && r.expires_date < t && 'Expired',
+        open && r.expires_date && r.expires_date >= t && r.expires_date <= soon && 'Expires within 30 days',
+        open && ['completed', 'invoiced'].includes(r.job_status) && 'Job finished but permit not closed',
+      ].filter(Boolean);
+      r.days_open = r.applied_date ? Math.round((Date.parse(['passed', 'closed'].includes(r.status) && r.inspection_date ? r.inspection_date : t) - Date.parse(r.applied_date)) / 864e5) : null;
+    }
+    const tally = key => Object.entries(rows.reduce((m, r) => { const k = r[key] || '(none)'; m[k] = m[k] || { count: 0, fees: 0 }; m[k].count++; m[k].fees = C.r2(m[k].fees + (r.fee || 0)); return m; }, {}))
+      .map(([k, v]) => ({ [key]: k, ...v })).sort((a, b) => b.count - a.count);
+    res.json({ from, to, by, rows, summary: {
+      count: rows.length, fees: C.r2(rows.reduce((a, r) => a + (r.fee || 0), 0)),
+      open: rows.filter(r => !['passed', 'closed'].includes(r.status)).length, passed: rows.filter(r => ['passed', 'closed'].includes(r.status)).length,
+      failed: rows.filter(r => r.status === 'failed').length, attention: rows.filter(r => r.flags.length).length,
+      by_status: tally('status'), by_jurisdiction: tally('jurisdiction'),
+      jurisdictions: all(db, "SELECT DISTINCT jurisdiction FROM permits WHERE jurisdiction IS NOT NULL AND jurisdiction != '' ORDER BY jurisdiction").map(r => r.jurisdiction),
+    } });
+  }));
   app.get('/api/reports/estimates', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.estimateConversion(db, from, to)); }));
   app.get('/api/reports/job-costing', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.jobCostingReport(db, from, to)); }));
   app.get('/api/reports/lead-sources', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.revenueBySource(db, from, to)); }));

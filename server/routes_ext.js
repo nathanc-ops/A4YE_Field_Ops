@@ -121,7 +121,7 @@ module.exports = function routesExt(app, db, X) {
     const techs = all(db, "SELECT id, name, color, title, phone FROM users WHERE active = 1 AND role = 'tech' ORDER BY name").map(u => {
       const mine = appts.filter(a => a.tech_ids.includes(u.id));
       const clock = get(db, `SELECT t.*, j.number job_number FROM time_entries t LEFT JOIN jobs j ON j.id = t.job_id WHERE t.user_id = ? AND t.clock_out IS NULL`, u.id);
-      return { ...u, booked_hours: r2(mine.reduce((s, a) => s + (new Date(a.end) - new Date(a.start)) / 36e5, 0)), appointments: mine.length, clock };
+      return { ...u, booked_hours: r2(mine.reduce((s, a) => s + C.visitHoursOnDay(a, day), 0)), appointments: mine.length, clock };
     });
     const unscheduled = all(db, `${X.jobSelect} WHERE j.status = 'unscheduled' OR (j.status IN ('scheduled','dispatched','on_hold','in_progress')
       AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a.job_id = j.id AND a.status NOT IN ('cancelled','done') AND a.end > ?)) ORDER BY CASE j.priority WHEN 'emergency' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, j.id`, from).map(X.fixTechs);

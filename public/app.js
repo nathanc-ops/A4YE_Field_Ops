@@ -44,6 +44,7 @@ async function api(method, path, body) {
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && path !== '/login') { logout(true); throw new Error('Please sign in again'); }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (Array.isArray(data) && res.headers.get('X-Total-Count')) data.total = Number(res.headers.get('X-Total-Count'));
   return data;
 }
 const GET = p => api('GET', p);
@@ -79,6 +80,9 @@ function fieldHtml(f, v) {
   const val = v ?? f.default ?? '';
   const req = f.required ? 'required' : '';
   let input;
+  if (f.type === 'customer') return customerFieldHtml(f, val);
+  if (f.type === 'address') return addressFieldHtml(f, val);
+  if (f.type === 'hidden') return `<input type="hidden" name="${f.name}" value="${esc(val)}">`;
   if (f.type === 'select') {
     const opts = (f.options || []).map(o => Array.isArray(o) ? o : [o, label(o)]);
     input = `<select id="${id}" name="${f.name}" ${req}>${f.blank !== false ? `<option value="">${esc(f.blank || '—')}</option>` : ''}${opts.map(([ov, ol]) => `<option value="${esc(ov)}" ${String(ov) === String(val) ? 'selected' : ''}>${esc(ol)}</option>`).join('')}</select>`;
@@ -92,6 +96,7 @@ function readForm(form, fields) {
   const o = {};
   for (const f of fields) {
     const el = form.elements[f.name]; if (!el) continue;
+    if (f.type === 'customer' && f.required && !el.value) throw new Error(`Choose the ${f.label.toLowerCase()} from the search list`);
     if (f.type === 'checkbox') o[f.name] = el.checked ? 1 : 0;
     else if (f.type === 'number') o[f.name] = el.value === '' ? null : Number(el.value);
     else if (f.type === 'datetime') o[f.name] = fromLocalInput(el.value);
@@ -261,10 +266,6 @@ async function boot() {
 }
 
 // ============================================================ shared pickers
-async function customerPicker(selectedId) {
-  const list = await GET('/customers');
-  return list.map(c => [c.id, c.company ? `${c.company} (${c.name})` : c.name]);
-}
 async function jobPicker() {
   const list = await GET('/jobs' + qs({ status: 'unscheduled,scheduled,dispatched,in_progress,on_hold,completed' }));
   return list.map(j => [j.id, `${j.number} · ${j.customer_name} · ${j.title}`]);
@@ -413,9 +414,8 @@ async function viewSchedule() {
 // ============================================================ jobs
 async function jobForm(job, { customerId } = {}) {
   await loadUsers();
-  const customers = await customerPicker();
   const fields = [
-    { name: 'customer_id', label: 'Customer', type: 'select', options: customers, required: true, full: true },
+    { name: 'customer_id', label: 'Customer', type: 'customer', required: true, full: true },
     { name: 'location_id', label: 'Service location', type: 'select', options: [], full: true },
     { name: 'title', label: 'Job title', required: true, full: true, placeholder: 'e.g. Replace 100A panel with 200A' },
     { name: 'job_type', label: 'Job type', type: 'select', options: JOB_TYPES, blank: false, default: 'service' },
@@ -672,15 +672,17 @@ async function customerForm(c = {}) {
     { name: 'notes', label: 'Notes', type: 'textarea', full: true },
   ];
   const locFields = c.id ? [] : [
-    { name: 'loc_address', label: 'Service address', full: true }, { name: 'loc_city', label: 'City' }, { name: 'loc_state', label: 'State' }, { name: 'loc_zip', label: 'ZIP' },
+    { name: 'loc_address', label: 'Service address', type: 'address', full: true, fill: { city: 'loc_city', state: 'loc_state', zip: 'loc_zip', lat: 'loc_lat', lng: 'loc_lng', verified: 'loc_verified_at' } },
+    { name: 'loc_city', label: 'City' }, { name: 'loc_state', label: 'State' }, { name: 'loc_zip', label: 'ZIP' },
     { name: 'loc_service_size', label: 'Service size (e.g. 200A 1PH)' },
+    { name: 'loc_lat', type: 'hidden' }, { name: 'loc_lng', type: 'hidden' }, { name: 'loc_verified_at', type: 'hidden' },
   ];
   formModal({
     title: c.id ? 'Edit customer' : 'New customer', fields: [...fields, ...locFields], values: c, wide: true,
     submit: async d => {
       const body = Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith('loc_')));
       if (c.id) { await PUT('/customers/' + c.id, body); toast('Saved'); route(); return; }
-      body.location = { address: d.loc_address, city: d.loc_city, state: d.loc_state, zip: d.loc_zip, service_size: d.loc_service_size };
+      body.location = { address: d.loc_address, city: d.loc_city, state: d.loc_state, zip: d.loc_zip, service_size: d.loc_service_size, lat: d.loc_lat, lng: d.loc_lng, verified_at: d.loc_verified_at };
       const r = await POST('/customers', body); toast('Customer added'); go('#/customers/' + r.id);
     },
   });
@@ -688,22 +690,36 @@ async function customerForm(c = {}) {
 function locationForm(customerId, l = {}) {
   formModal({
     title: l.id ? 'Edit location' : 'Add service location', values: l,
-    fields: [{ name: 'label', label: 'Label (e.g. Main house, Suite 4)' }, { name: 'address', label: 'Address', required: true }, { name: 'city', label: 'City' }, { name: 'state', label: 'State' }, { name: 'zip', label: 'ZIP' },
+    fields: [{ name: 'label', label: 'Label (e.g. Main house, Suite 4)' },
+      { name: 'address', label: 'Address', type: 'address', required: true, full: true, fill: { city: 'city', state: 'state', zip: 'zip', lat: 'lat', lng: 'lng', verified: 'verified_at' } },
+      { name: 'city', label: 'City' }, { name: 'state', label: 'State' }, { name: 'zip', label: 'ZIP' },
+      { name: 'lat', type: 'hidden' }, { name: 'lng', type: 'hidden' }, { name: 'verified_at', type: 'hidden' },
       { name: 'service_size', label: 'Service size' }, { name: 'panel_info', label: 'Panel(s) — make/model/location', full: true }, { name: 'access_notes', label: 'Access notes (gate codes, pets, site contact)', type: 'textarea', full: true }],
     submit: async d => { if (l.id) await PUT('/locations/' + l.id, d); else await POST(`/customers/${customerId}/locations`, d); toast('Saved'); route(); },
   });
 }
 async function viewCustomers() {
   const { params } = hashParams();
-  const q = params.get('q') || '', type = params.get('type') || '';
-  const list = await GET('/customers' + qs({ q, type }));
+  const q = params.get('q') || '', type = params.get('type') || '', letter = params.get('letter') || '';
+  let sort = params.get('sort'); if (sort == null) { try { sort = localStorage.getItem('fo_cust_sort') || ''; } catch { sort = ''; } }
+  const page = Math.max(Number(params.get('page')) || 1, 1), per = 100;
+  const list = await GET('/customers' + qs({ q, type, letter, sort, limit: per, offset: (page - 1) * per }));
+  const total = list.total ?? list.length, pages = Math.max(1, Math.ceil(total / per));
+  const link = o => '#/customers' + qs({ q, type, letter, sort, ...o });
   $('#view').innerHTML = setTop('Customers', '<button class="btn primary" id="new">+ New customer</button>') + `<div class="card">
-    <form id="srch" class="row"><input name="q" placeholder="Search name, company, phone, email" value="${esc(q)}" style="max-width:320px">
-      <select name="type" style="width:auto"><option value="">All types</option><option ${type === 'residential' ? 'selected' : ''}>residential</option><option ${type === 'commercial' ? 'selected' : ''}>commercial</option></select><button class="btn">Search</button></form>
+    <form id="srch" class="row"><input name="q" placeholder="Search name, company, phone, email or address" value="${esc(q)}" style="max-width:360px">
+      <select name="type" style="width:auto"><option value="">All types</option><option ${type === 'residential' ? 'selected' : ''}>residential</option><option ${type === 'commercial' ? 'selected' : ''}>commercial</option></select><button class="btn">Search</button>
+      ${q || type || letter ? `<a class="btn" href="#/customers">Clear</a>` : ''}<span class="grow"></span>
+      <select id="csort" style="width:auto" title="How people are filed A to Z"><option value="">A–Z by last name</option><option value="first" ${sort === 'first' ? 'selected' : ''}>A–Z by first name</option></select></form>
+    <div class="az">${['', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '#'].map(L => `<button type="button" data-letter="${L}" class="${L === letter ? 'on' : ''}">${L || 'All'}</button>`).join('')}</div>
+    <p class="small muted" style="margin:0 0 8px">${total.toLocaleString()} customer${total === 1 ? '' : 's'}${total > per ? ` · showing ${((page - 1) * per + 1).toLocaleString()}–${Math.min(page * per, total).toLocaleString()}` : ''}</p>
     ${table([{ label: 'Name', html: c => `<b>${esc(c.company || c.name)}</b>${c.company ? `<div class="muted small">${esc(c.name)}</div>` : ''}` }, { label: 'Type', html: c => pill(c.type) },
-      { label: 'Phone', key: 'phone' }, { label: 'Email', key: 'email' }, { label: 'Address', key: 'primary_address' }, { label: 'Jobs', num: 1, key: 'job_count' }], list, { onClick: c => go('#/customers/' + c.id), empty: 'No customers yet' })}</div>`;
+      { label: 'Phone', key: 'phone' }, { label: 'Email', key: 'email' }, { label: 'Address', key: 'primary_address' }, { label: 'Jobs', num: 1, key: 'job_count' }], list, { onClick: c => go('#/customers/' + c.id), empty: q || letter ? 'No customers match' : 'No customers yet' })}
+    ${pages > 1 ? `<div class="row" style="margin-top:10px;justify-content:center">${page > 1 ? `<a class="btn" href="${link({ page: page - 1 })}">‹ Previous</a>` : ''}<span class="muted">Page ${page} of ${pages}</span>${page < pages ? `<a class="btn" href="${link({ page: page + 1 })}">Next ›</a>` : ''}</div>` : ''}</div>`;
   $('#new').onclick = () => customerForm();
-  $('#srch').onsubmit = e => { e.preventDefault(); go('#/customers' + qs({ q: e.target.q.value, type: e.target.type.value })); };
+  $$('[data-letter]').forEach(b => b.onclick = () => go('#/customers' + qs({ q, type, sort, letter: b.dataset.letter })));
+  $('#csort').onchange = e => { try { localStorage.setItem('fo_cust_sort', e.target.value); } catch { /* private mode */ } go('#/customers' + qs({ q, type, letter, sort: e.target.value })); };
+  $('#srch').onsubmit = e => { e.preventDefault(); go('#/customers' + qs({ q: e.target.q.value.trim(), type: e.target.type.value, sort })); };
 }
 async function viewCustomer(id) {
   const c = await GET('/customers/' + id);
@@ -763,7 +779,7 @@ async function viewDoc(kind, id) {
   const isEst = kind === 'estimate';
   const base = isEst ? '/estimates' : '/invoices';
   const { params } = hashParams();
-  const [customers, pb] = await Promise.all([customerPicker(), loadPricebook(true)]);
+  const pb = await loadPricebook(true);
   let doc;
   if (id === 'new') {
     doc = { items: [], customer_id: params.get('customer_id') || '', job_id: params.get('job_id') || null, discount: 0, tax_rate: null, status: 'draft' };
@@ -809,7 +825,7 @@ async function viewDoc(kind, id) {
     ${techMode && !locked ? `<p class="small muted">Pick items from the price book (prices are fixed). ${S.settings.tech_custom_lines === 'block' ? 'Custom lines are turned off.' : S.settings.tech_custom_lines === 'review' ? 'Custom lines send the estimate to the office for review.' : ''} Discounts over ${maxDisc}% need office review.</p>` : ''}
     <form id="docform" class="stack">
     <div class="card"><div class="form-grid">
-      ${fieldHtml({ name: 'customer_id', label: 'Customer', type: 'select', options: customers, required: true }, doc.customer_id)}
+      ${fieldHtml({ name: 'customer_id', label: 'Customer', type: 'customer', required: true }, doc.customer_id)}
       ${isEst ? fieldHtml({ name: 'location_id', label: 'Service location', type: 'select', options: [] }) : fieldHtml({ name: 'job_id', label: 'Job', type: 'select', options: [] })}
       ${fieldHtml({ name: 'title', label: isEst ? 'Estimate title' : 'Title (optional)', full: true }, doc.title)}
       ${isEst ? fieldHtml({ name: 'valid_until', label: 'Valid until', type: 'date' }, doc.valid_until) : fieldHtml({ name: 'issue_date', label: 'Issue date', type: 'date' }, doc.issue_date || todayStr()) + fieldHtml({ name: 'due_date', label: 'Due date (blank = customer terms)', type: 'date' }, doc.due_date)}
@@ -967,6 +983,7 @@ async function viewDoc(kind, id) {
 
   form.onsubmit = async e => {
     e.preventDefault();
+    if (!techMode && !form.customer_id.value) return toast('Choose the customer from the search list', true);
     const body = techMode ? { job_id: doc.job_id, title: form.title.value, discount: Number(form.discount.value) || 0, notes: form.notes.value }
       : { customer_id: Number(form.customer_id.value), title: form.title.value, tax_rate: Number(form.tax_rate.value) || 0, discount: Number(form.discount.value) || 0, notes: form.notes.value, terms: form.terms.value };
     if (isEst) Object.assign(body, { location_id: form.location_id.value || null, valid_until: form.valid_until.value || null, job_id: doc.job_id || null });
@@ -1167,7 +1184,7 @@ async function permitForm(p) {
 async function viewPermits() {
   const { params } = hashParams(); const open = params.get('all') ? '' : '1';
   const rows = await GET('/permits' + qs({ open }));
-  $('#view').innerHTML = setTop('Permits & Inspections', isOffice() ? '<button class="btn primary" id="new">+ Permit</button>' : '') + `<div class="card">
+  $('#view').innerHTML = setTop('Permits & Inspections', isOffice() ? '<a class="btn" href="#/reports?r=permits">Permit report</a><button class="btn primary" id="new">+ Permit</button>' : '') + `<div class="card">
     <div class="tabs"><button class="${open ? 'on' : ''}" data-a="">Open</button><button class="${open ? '' : 'on'}" data-a="1">All</button></div>
     ${table(permitCols(true), rows, { onClick: isOffice() ? p => permitForm(p) : p => go('#/jobs/' + p.job_id), empty: 'No permits' })}</div>`;
   $$('[data-a]').forEach(b => b.onclick = () => go('#/permits' + qs({ all: b.dataset.a })));
@@ -1189,10 +1206,9 @@ async function viewAgreements() {
   $$('[data-visit]').forEach(b => b.onclick = async () => { const r = await act(() => POST(`/agreements/${b.dataset.visit}/create-visit`), 'Visit job created'); go('#/jobs/' + r.id); });
 }
 async function agreementForm(a) {
-  const customers = await customerPicker();
   formModal({
     title: a.id ? 'Edit agreement' : 'New service agreement', values: a, wide: true,
-    fields: [{ name: 'customer_id', label: 'Customer', type: 'select', options: customers, required: true, full: true }, { name: 'name', label: 'Plan name', required: true, full: true },
+    fields: [{ name: 'customer_id', label: 'Customer', type: 'customer', required: true, full: true }, { name: 'name', label: 'Plan name', required: true, full: true },
       { name: 'price', label: 'Price $', type: 'number', required: true }, { name: 'billing_frequency', label: 'Billed', type: 'select', options: ['monthly', 'quarterly', 'annual'], blank: false, default: 'annual' },
       { name: 'visits_per_year', label: 'Visits per year', type: 'number', default: 1 }, { name: 'status', label: 'Status', type: 'select', options: ['active', 'paused', 'cancelled', 'expired'], blank: false },
       { name: 'start_date', label: 'Start', type: 'date', default: todayStr() }, { name: 'end_date', label: 'End', type: 'date' }, { name: 'next_visit', label: 'Next visit', type: 'date' },
@@ -1214,12 +1230,40 @@ function presetRange(p) {
     default: return [f(new Date(y, m, 1)), f(d)];
   }
 }
+const PERMIT_DATES = [['applied', 'Applied'], ['issued', 'Issued'], ['inspection', 'Inspection'], ['expires', 'Expires']];
+async function permitReportView(R, params, from, to) {
+  const by = params.get('by') || 'applied', status = params.get('status') || 'all', jurisdiction = params.get('jurisdiction') || '';
+  const d = await GET('/reports/permits' + qs({ from, to, by, status, jurisdiction }));
+  const sm = d.summary;
+  const cols = [{ label: 'Job', html: p => `<a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a><div class="muted small">${esc(p.job_title)}</div>`, csv: p => p.job_number },
+    { label: 'Customer / address', html: p => `${esc(p.customer_company || p.customer_name)}<div class="muted small">${esc(p.address || '')}</div>`, csv: p => p.customer_company || p.customer_name },
+    { label: 'Address', html: () => '', csv: p => p.address, hide: 1 },
+    { label: 'Type', key: 'permit_type' }, { label: 'Permit #', key: 'permit_number' }, { label: 'Jurisdiction', key: 'jurisdiction' },
+    { label: 'Status', html: p => pill(p.status) + (p.flags.length ? `<div class="small" style="color:var(--bad)">${p.flags.map(esc).join('<br>')}</div>` : ''), csv: p => p.status },
+    { label: 'Applied', get: p => fmtDate(p.applied_date), csv: p => p.applied_date }, { label: 'Issued', get: p => fmtDate(p.issued_date), csv: p => p.issued_date },
+    { label: 'Inspection', get: p => fmtDate(p.inspection_date), csv: p => p.inspection_date }, { label: 'Expires', get: p => fmtDate(p.expires_date), csv: p => p.expires_date },
+    { label: 'Days open', num: 1, get: p => p.days_open ?? '', csv: p => p.days_open ?? '' }, { label: 'Inspector', key: 'inspector' }, { label: 'Techs', key: 'techs' },
+    { label: 'Fee', num: 1, get: p => money(p.fee), csv: p => p.fee }, { label: 'Issues', html: () => '', csv: p => p.flags.join('; '), hide: 1 }];
+  const go2 = o => go('#/reports' + qs({ r: 'permits', from, to, by, status, jurisdiction, ...o }));
+  R.innerHTML = `<form id="pf" class="row no-print" style="margin-bottom:12px;flex-wrap:wrap">
+      <label class="small">Date range applies to <select name="by" style="width:auto">${PERMIT_DATES.map(([k, l]) => `<option value="${k}" ${k === by ? 'selected' : ''}>${l} date</option>`).join('')}</select></label>
+      <label class="small">Status <select name="status" style="width:auto">${[['all', 'All'], ['open', 'Open (not passed/closed)'], ['attention', 'Needs attention'], ['failed', 'Failed'], ['passed,closed', 'Passed / closed'], ['needed', 'Needed'], ['applied', 'Applied'], ['issued', 'Issued'], ['rough_scheduled,final_scheduled', 'Inspection scheduled']]
+        .map(([k, l]) => `<option value="${k}" ${k === status ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="small">Jurisdiction <select name="jurisdiction" style="width:auto"><option value="">All</option>${sm.jurisdictions.map(j => `<option ${j === jurisdiction ? 'selected' : ''}>${esc(j)}</option>`).join('')}</select></label></form>
+    <div class="grid g4">${kpi('Permits', sm.count, `${fmtDate(from)} – ${fmtDate(to)}, by ${by} date`)}${kpi('Open', sm.open, `${sm.passed} passed / closed`)}${kpi('Need attention', sm.attention, `${sm.failed} failed`)}${kpi('Permit fees', money0(sm.fees))}</div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h2>By status</h2>${table([{ label: 'Status', html: x => pill(x.status) }, { label: 'Permits', num: 1, key: 'count' }, { label: 'Fees', num: 1, get: x => money(x.fees) }], sm.by_status, { empty: 'None', onClick: x => go2({ status: x.status }) })}</div>
+      <div class="card"><h2>By jurisdiction</h2>${table([{ label: 'Jurisdiction', key: 'jurisdiction' }, { label: 'Permits', num: 1, key: 'count' }, { label: 'Fees', num: 1, get: x => money(x.fees) }], sm.by_jurisdiction, { empty: 'None', onClick: x => x.jurisdiction !== '(none)' && go2({ jurisdiction: x.jurisdiction }) })}</div></div>
+    <div class="card" style="margin-top:14px"><h2>Permits</h2>${table(cols.filter(c => !c.hide), d.rows, { empty: 'No permits match. Try a wider date range, or a different date type.' })}</div>`;
+  $('#pf').onchange = e => go2({ [e.target.name]: e.target.value });
+  return () => toCSV(cols, d.rows, `permits_${by}_${from}_${to}.csv`);
+}
 async function viewReports() {
   const { params } = hashParams();
   const r = params.get('r') || 'pl';
   const [defFrom, defTo] = presetRange('mtd');
   const from = params.get('from') || defFrom, to = params.get('to') || defTo;
-  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled']];
+  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled'], ['permits', 'Permits']];
   $('#view').innerHTML = setTop('Reports', '<button class="btn" id="csv">Export CSV</button><button class="btn" onclick="print()">Print</button>') + `
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === r ? 'on' : ''}" data-r="${k}">${l}</button>`).join('')}</div>
     ${r === 'ar' || r === 'wip' ? '' : `<form id="rng" class="row no-print" style="margin-bottom:14px"><input type="date" name="from" value="${from}" style="width:auto"> to <input type="date" name="to" value="${to}" style="width:auto"><button class="btn">Run</button>
@@ -1316,6 +1360,7 @@ async function viewReports() {
   }
   if (r === 'cc') csv = await costCodeReportView(R, from, to, sub);
   if (r === 'wip') await wipReportView(R);
+  if (r === 'permits') csv = await permitReportView(R, params, from, to);
   if (r === 'source') {
     const rows = await GET('/reports/lead-sources' + qs({ from, to }));
     const cols = [{ label: 'Source', key: 'source' }, { label: 'Jobs', num: 1, key: 'jobs' }, { label: 'Invoiced revenue', num: 1, get: r => money0(r.revenue), csv: r => r.revenue }, { label: 'Rev / job', num: 1, get: r => money0(r.jobs ? r.revenue / r.jobs : 0), csv: r => r.jobs ? r.revenue / r.jobs : 0 }];

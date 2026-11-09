@@ -118,6 +118,17 @@ function timeInRange(db, from, to, extraWhere = '', ...params) {
 }
 
 const endOfDay = d => new Date(new Date(d + 'T00:00:00').getTime() + 86400000).toISOString();
+// Hours a visit takes up on one day. A visit spanning several days (e.g. 7 AM Mon to 3 PM Fri) is a daily
+// 7–3 crew window, not 100 straight hours, so each day counts its start-to-end time of day.
+function visitHoursOnDay(a, day) {
+  const d0 = new Date(day + 'T00:00:00').getTime(), d1 = d0 + 864e5, s = Date.parse(a.start), e = Date.parse(a.end);
+  const overlap = (x, y) => Math.max(0, Math.min(y, d1, e) - Math.max(x, d0, s)) / 36e5;
+  const st = new Date(s), en = new Date(e);
+  const multiDay = st.toDateString() !== en.toDateString();
+  if (!multiDay) return overlap(s, e);
+  const ws = d0 + (st.getHours() * 60 + st.getMinutes()) * 6e4, we = d0 + (en.getHours() * 60 + en.getMinutes()) * 6e4;
+  return we > ws ? overlap(ws, we) : overlap(d0, d1);
+}
 const startOfDay = d => new Date(d + 'T00:00:00').toISOString();
 
 function profitAndLoss(db, from, to) {
@@ -364,6 +375,7 @@ function costCodeReport(db, from, to) {
 }
 
 module.exports = {
+  visitHoursOnDay,
   estimateChosenItems, jobCostCodes, costCodeReport,
   r2, docTotals, invoiceWithTotals, estimateWithTotals, refreshInvoiceStatus, jobCosting,
   profitAndLoss, monthlyTrend, hoursByJob, payroll, arAging, techPerformance, estimateConversion,

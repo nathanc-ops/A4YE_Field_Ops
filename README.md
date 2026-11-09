@@ -121,6 +121,23 @@ PUBLIC_URL=https://ops.yourdomain.com npm start
 
 `PUBLIC_URL` controls the links in emails, so set it to the address customers can actually reach.
 
+## Address lookup
+
+When you type a service address on a customer or location, the app looks it up. It fills in city, state and ZIP, saves the map location, and marks the address **✓ Verified**. Every address field also has a **Map ↗** button that opens Google Maps so you can see the place.
+
+- **Free (default):** uses the US Census address database. It only checks an address once the house number and street are typed, and gives no suggestions while you type.
+- **Google (recommended):** under Settings → Address lookup, paste a Google Maps API key with **Places API (New)** enabled. You then get suggestions as you type. The key stays on the server.
+
+## Schedule blocks
+
+The tech board, week view and dispatch list group people by the **Title** on their Team profile:
+- Masters & foremen
+- Journeymen
+- Apprentices
+- Other staff
+
+Spellings like "Journeyman Electrician", "JW", "1st-year apprentice" and "Helper" are recognized. To move someone to a different block, change their title.
+
 ## Not built yet (be aware before you rely on it)
 
 - **Online card payments.** Invoices show how to pay but have no Stripe/Square checkout. Payments are recorded manually.

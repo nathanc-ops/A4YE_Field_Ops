@@ -312,3 +312,25 @@ input[type="color"] { height: 40px; padding: 3px; cursor: pointer; }
 .alert.good { background: var(--good-soft); color: var(--good); }
 .imp-tile { display: flex; flex-direction: column; justify-content: space-between; }
 .imp-tile code { font-size: 12px; }
+
+/* search-as-you-type (customer picker, address lookup) */
+.lk { position: relative; }
+.sugg { position: absolute; z-index: 60; left: 0; right: 0; top: calc(100% + 2px); background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); max-height: 320px; overflow-y: auto; }
+.sugg-i { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.sugg-i:last-child { border-bottom: 0; }
+.sugg-i.on, .sugg-i:hover { background: var(--accent-soft); }
+.sugg-note { padding: 8px 10px; font-size: 12px; color: var(--muted); }
+.sugg-note.bad { color: var(--bad); }
+.lk-status .pill { font-size: 11px; margin-left: 4px; }
+.az { display: flex; flex-wrap: wrap; gap: 2px; margin: 10px 0; }
+.az button { min-width: 28px; padding: 3px 6px; border: 1px solid var(--border); background: var(--surface); border-radius: 6px; cursor: pointer; font-size: 13px; }
+.az button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+/* crew blocks on the schedule (grouped by Team title) */
+.crew-h { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 10px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  background: var(--surface-2); border-bottom: 1px solid var(--border); border-left: 4px solid var(--crew, var(--border)); position: sticky; left: 0; }
+.hb > .crew-h { border-top: 2px solid var(--border); }
+.crew-master { --crew: #7c3aed; } .crew-journeyman { --crew: #2563eb; } .crew-apprentice { --crew: #d97706; } .crew-other { --crew: #64748b; } .crew-unassigned { --crew: #94a3b8; }
+.hb-row.crew-journeyman .hb-tech, .hb-row.crew-apprentice .hb-tech, .hb-row.crew-master .hb-tech { box-shadow: inset 4px 0 0 var(--crew); }
+.crew-h > span:first-child { position: sticky; left: 10px; }
