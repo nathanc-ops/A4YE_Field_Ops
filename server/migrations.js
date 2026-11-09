@@ -592,6 +592,12 @@ const MIGRATIONS = [
     for (const t of ['jobs', 'estimates']) { addColumn(db, t, 'cancelled_at', 'TEXT'); addColumn(db, t, 'cancel_reason', 'TEXT'); }
     rebuildTable(db, 'estimates', sql => sql.replace("'declined','expired')", "'declined','expired','cancelled')"));
   }, { foreignKeysOff: true }),
+  // 11: the invoice form has always had a Title box, but the table had no column for it, so saving failed
+  db => {
+    addColumn(db, 'invoices', 'title', 'TEXT');
+    db.exec("UPDATE invoices SET title = (SELECT e.title FROM estimates e WHERE e.id = invoices.estimate_id) WHERE title IS NULL AND estimate_id IS NOT NULL");
+    db.exec("UPDATE invoices SET title = (SELECT j.title FROM jobs j WHERE j.id = invoices.job_id) WHERE title IS NULL AND job_id IS NOT NULL");
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

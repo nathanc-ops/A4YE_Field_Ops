@@ -680,7 +680,7 @@ function createApp(db) {
     const s = D.settings(db);
     const cust = mustGet('customers', e.customer_id);
     const id = tx(db, () => {
-      const iid = insert('invoices', { number: D.nextNumber(db, 'invoices', 'INV'), customer_id: e.customer_id, job_id: e.job_id, estimate_id: e.id,
+      const iid = insert('invoices', { number: D.nextNumber(db, 'invoices', 'INV'), customer_id: e.customer_id, job_id: e.job_id, estimate_id: e.id, title: e.title,
         issue_date: today(), due_date: addDays(today(), cust.payment_terms_days ?? Number(s.invoice_terms_days)), tax_rate: e.tax_rate, discount: e.discount,
         notes: e.notes, terms: s.invoice_terms, public_token: D.token() });
       if (all(db, 'SELECT 1 FROM estimate_options WHERE estimate_id = ?', e.id).length && !e.approved_option_id) throw bad('Record which option the customer chose before invoicing');

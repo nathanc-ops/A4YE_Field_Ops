@@ -75,10 +75,10 @@ function newInvoice(db, job, { kind, notes, periodTo, estimateId, taxRate, disco
   const s = settings(db);
   const cust = get(db, 'SELECT * FROM customers WHERE id = ?', job.customer_id);
   const issue = today();
-  const id = Number(run(db, `INSERT INTO invoices (number, customer_id, job_id, estimate_id, issue_date, due_date, tax_rate, discount, notes, terms, public_token, billing_kind, period_to)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, D.nextNumber(db, 'invoices', 'INV'), job.customer_id, job.id, estimateId || null, issue,
+  const id = Number(run(db, `INSERT INTO invoices (number, customer_id, job_id, estimate_id, issue_date, due_date, tax_rate, discount, notes, terms, public_token, billing_kind, period_to, title)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, D.nextNumber(db, 'invoices', 'INV'), job.customer_id, job.id, estimateId || null, issue,
   addDays(issue, cust.payment_terms_days ?? Number(s.invoice_terms_days)), cust.tax_exempt ? 0 : (taxRate ?? Number(s.default_tax_rate)), discount || 0,
-  notes || null, s.invoice_terms, D.token(), kind, periodTo || null).lastInsertRowid);
+  notes || null, s.invoice_terms, D.token(), kind, periodTo || null, job.title || null).lastInsertRowid);
   let sort = 0;
   const line = (o) => run(db, 'INSERT INTO invoice_items (invoice_id, pricebook_id, description, qty, unit_price, unit_cost, taxable, cost_code_id, sort) VALUES (?,?,?,?,?,?,?,?,?)',
     id, o.pricebook_id || null, o.description, o.qty ?? 1, r2(o.unit_price), o.unit_cost || 0, o.taxable ? 1 : 0, o.cost_code_id || null, sort++);

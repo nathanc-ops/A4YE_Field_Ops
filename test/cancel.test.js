@@ -152,7 +152,7 @@ test('upgrading an existing database keeps estimate lines, options and invoice l
   d.exec('PRAGMA writable_schema = ON');
   d.prepare("UPDATE sqlite_master SET sql = replace(sql, ',''cancelled'')', ')') WHERE name = 'estimates'").run();
   d.exec('PRAGMA writable_schema = OFF');
-  d.prepare('UPDATE schema_version SET version = version - 1').run();
+  d.prepare('UPDATE schema_version SET version = 9').run();
   d.close();
   const raw = new DatabaseSync(file);
   assert.ok(!/'cancelled'/.test(raw.prepare("SELECT sql FROM sqlite_master WHERE name = 'estimates'").get().sql));
@@ -171,4 +171,18 @@ test('upgrading an existing database keeps estimate lines, options and invoice l
   d.prepare('DELETE FROM estimates WHERE id = ?').run(e);
   assert.equal(d.prepare('SELECT COUNT(*) n FROM estimate_items').get().n, 0);
   d.close();
+});
+
+test('invoice form: create and save with every field the screen sends (including title)', async () => {
+  const form = { customer_id: cust, job_id: null, title: 'Service call', issue_date: '2026-11-01', due_date: null, tax_rate: 0, discount: 0, notes: null, terms: 'Net 15',
+    items: [{ description: 'Diagnose GFCI', qty: 1, unit_price: 150, unit_cost: null, cost_code_id: null, taxable: 0 }] };
+  const c = await call('POST', '/invoices', form);
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  const u = await call('PUT', `/invoices/${c.data.id}`, { ...form, title: 'Service call — GFCI' });
+  assert.equal(u.status, 200, JSON.stringify(u.data));
+  const inv = (await call('GET', `/invoices/${c.data.id}`)).data;
+  assert.equal(inv.title, 'Service call — GFCI'); assert.equal(inv.total, 150);
+  db.prepare("UPDATE invoices SET status = 'sent' WHERE id = ?").run(inv.id); // drafts aren't visible to customers
+  const pub = await call('GET', `/public/invoice/${inv.public_token}`, null, null);
+  assert.equal(pub.data.doc.title, 'Service call — GFCI');
 });
