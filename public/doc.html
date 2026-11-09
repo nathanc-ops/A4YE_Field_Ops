@@ -50,7 +50,9 @@ const [, , kind, token] = location.pathname.split('/');
 
 async function load(method = 'GET', body) {
   const url = `/api/public/${kind}/${token}${body ? '/respond' : ''}`;
-  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  // if this browser is signed in to the office app, say so: staff can preview drafts and don't count as the customer viewing
+  let tok = null; try { tok = method === 'GET' ? localStorage.getItem('fo_token') : null; } catch { /* private mode */ }
+  const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined });
   const data = await r.json();
   if (!r.ok) throw new Error(data.error || 'Not found');
   return data;
@@ -86,7 +88,10 @@ function render(d) {
   const statusMsg = isEst
     ? { approved: `✓ ${chosen ? `“${esc(chosen.name)}” approved` : 'Approved'} by ${esc(doc.signature_name)} — thank you! We'll be in touch to schedule.`, declined: 'This estimate was declined.', expired: 'This estimate has expired — please contact us for an updated price.' }[doc.status]
     : doc.status === 'paid' ? '✓ Paid in full — thank you!' : doc.status === 'void' ? 'This invoice has been voided.' : '';
-  document.getElementById('doc').innerHTML = `<div class="card">
+  const staffNote = !d.staff_preview ? '' : doc.status === 'draft' && !isEst
+    ? '<div class="card" style="margin-bottom:12px;border-left:4px solid #d97706"><b>Draft preview: only your staff can see this.</b> The customer\'s link starts working once you send the invoice.</div>'
+    : '<div class="card" style="margin-bottom:12px;border-left:4px solid #64748b;font-size:13px">You\'re signed in as staff, so opening this page doesn\'t count as the customer viewing it.</div>';
+  document.getElementById('doc').innerHTML = staffNote + `<div class="card">
     <div class="head"><div><div class="co">${d.company.logo_url ? `<img src="${esc(d.company.logo_url)}" alt="${esc(d.company.name)}" style="height:72px;max-width:240px;object-fit:contain">` : `<span class="bolt">⚡</span>${esc(d.company.name)}`}</div>
       <div class="muted small">${[d.company.address, d.company.phone, d.company.email].filter(Boolean).map(esc).join(' · ')}${d.company.license ? `<br>License ${esc(d.company.license)}` : ''}</div></div>
       <div><div class="big">${isEst ? 'ESTIMATE' : 'INVOICE'}</div><div class="num">#${esc(doc.number)}</div>

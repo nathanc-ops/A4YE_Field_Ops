@@ -100,33 +100,41 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ public (customer-facing) docs
-  function publicDoc(kind, tokenValue) {
+  // Signed-in office staff opening a customer link: may preview drafts, and doesn't count as the customer viewing it.
+  const staffFrom = req => {
+    const h = req.get('authorization') || '';
+    if (!h.startsWith('Bearer ')) return null;
+    const u = get(db, 'SELECT u.id, u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND u.active = 1', h.slice(7));
+    return u && u.role !== 'tech' ? u : null;
+  };
+  function publicDoc(kind, tokenValue, { staff = null } = {}) {
     const s = D.settings(db);
     const company = { name: s.company_name, phone: s.company_phone, email: s.company_email, address: s.company_address, license: s.license_number,
       logo_url: s.logo_url, brand_primary: s.brand_primary, brand_accent: s.brand_accent };
     if (kind === 'estimate') {
       const e = get(db, 'SELECT * FROM estimates WHERE public_token = ?', tokenValue);
       if (!e) throw bad('Not found', 404);
-      if (e.status === 'sent') { run(db, "UPDATE estimates SET status = 'viewed', viewed_at = datetime('now') WHERE id = ?", e.id); e.status = 'viewed'; }
+      if (e.status === 'sent' && !staff) { run(db, "UPDATE estimates SET status = 'viewed', viewed_at = datetime('now') WHERE id = ?", e.id); e.status = 'viewed'; }
       const full = C.estimateWithTotals(db, e);
       for (const it of [...full.items, ...full.chosen_items]) delete it.unit_cost;
       for (const o of full.options) { delete o.est_cost; delete o.est_margin_pct; }
       delete full.est_cost; delete full.est_margin_pct;
       full.pending_review = e.review_status === 'pending';
       delete full.review_reasons; delete full.review_note;
-      return { kind, company, doc: full, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', e.customer_id),
+      return { kind, company, doc: full, staff_preview: !!staff, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', e.customer_id),
         location: e.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', e.location_id) : null };
     }
     const i = get(db, 'SELECT * FROM invoices WHERE public_token = ?', tokenValue);
-    if (!i || i.status === 'draft') throw bad('Not found', 404);
+    if (!i) throw bad('Not found', 404);
+    if (i.status === 'draft' && !staff) throw bad(`This invoice hasn't been sent yet. Please contact ${s.company_name || 'us'}${s.company_phone ? ` at ${s.company_phone}` : ''} if you were expecting it.`, 404);
     const full = C.invoiceWithTotals(db, i);
     for (const it of full.items) delete it.unit_cost;
     delete full.est_cost; delete full.est_margin_pct;
     const job = i.job_id ? get(db, 'SELECT number, title, location_id, signoff_name, signoff_at FROM jobs WHERE id = ?', i.job_id) : null;
-    return { kind, company, doc: full, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', i.customer_id),
+    return { kind, company, doc: full, staff_preview: !!staff, customer: get(db, 'SELECT name, company, email, phone, billing_address FROM customers WHERE id = ?', i.customer_id),
       job, location: job && job.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', job.location_id) : null };
   }
-  app.get('/api/public/:kind(estimate|invoice)/:token', wrap((req, res) => res.json(publicDoc(req.params.kind, req.params.token))));
+  app.get('/api/public/:kind(estimate|invoice)/:token', wrap((req, res) => res.json(publicDoc(req.params.kind, req.params.token, { staff: staffFrom(req) }))));
   app.post('/api/public/estimate/:token/respond', wrap((req, res) => {
     const e = get(db, 'SELECT * FROM estimates WHERE public_token = ?', req.params.token);
     if (!e) throw bad('Not found', 404);

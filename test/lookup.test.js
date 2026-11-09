@@ -179,3 +179,26 @@ test('booked hours: a multi-day visit counts its daily window, not every hour in
   assert.equal(C.visitHoursOnDay({ start: at('2026-11-09', 9), end: at('2026-11-09', 11) }, '2026-11-09'), 2);
   assert.equal(C.visitHoursOnDay({ start: at('2026-11-09', 22), end: at('2026-11-10', 2) }, '2026-11-10'), 2); // overnight call: just the 2 hours after midnight
 });
+
+test('customer view: staff can preview a draft invoice; customers get a clear message; staff opening an estimate does not mark it viewed', async () => {
+  const cust = (await call('POST', '/customers', { name: 'Preview Pat' })).data.id;
+  const inv = (await call('POST', '/invoices', { customer_id: cust, items: [{ description: 'Service call', qty: 1, unit_price: 125 }] })).data.id;
+  const t = db.prepare('SELECT public_token FROM invoices WHERE id = ?').get(inv).public_token;
+  const anon = await call('GET', `/public/invoice/${t}`, null, null);
+  assert.equal(anon.status, 404); assert.match(anon.data.error, /hasn't been sent yet/);
+  const staff = await call('GET', `/public/invoice/${t}`);
+  assert.equal(staff.status, 200); assert.equal(staff.data.staff_preview, true); assert.equal(staff.data.doc.status, 'draft');
+  await call('POST', '/users', { name: 'Tess Tech', email: 'tess@x.com', password: 'password123', role: 'tech' });
+  const techTok = (await call('POST', '/login', { email: 'tess@x.com', password: 'password123' }, null)).data.token;
+  assert.equal((await call('GET', `/public/invoice/${t}`, null, techTok)).status, 404);
+  assert.equal((await call('GET', '/public/invoice/nope', null, null)).data.error, 'Not found');
+
+  const est = (await call('POST', '/estimates', { customer_id: cust, items: [{ description: 'Panel', qty: 1, unit_price: 2000 }] })).data.id;
+  await call('PUT', `/estimates/${est}`, { status: 'sent' });
+  const et = db.prepare('SELECT public_token FROM estimates WHERE id = ?').get(est).public_token;
+  await call('GET', `/public/estimate/${et}`);
+  assert.equal(db.prepare('SELECT status FROM estimates WHERE id = ?').get(est).status, 'sent');
+  const cv = await call('GET', `/public/estimate/${et}`, null, null);
+  assert.equal(cv.data.staff_preview, false);
+  assert.equal(db.prepare('SELECT status FROM estimates WHERE id = ?').get(est).status, 'viewed');
+});

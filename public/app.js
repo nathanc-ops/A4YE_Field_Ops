@@ -812,7 +812,7 @@ async function viewDoc(kind, id) {
   $('#view').innerHTML = setTop(id === 'new' ? `New ${kind}` : `${isEst ? (doc.change_order ? 'Change order' : 'Estimate') : 'Invoice'} ${esc(doc.number)}`,
     id === 'new' ? '' : techMode ? `${pill(doc.status)} ${review.status === 'pending' ? '<span class="pill warn">Office review</span>' : ''}${doc.job_id ? `<a class="btn" href="#/jobs/${doc.job_id}">Open job</a>` : ''}
       ${!['approved', 'cancelled'].includes(doc.status) ? `<button class="btn primary" id="present" ${review.status === 'pending' ? 'disabled title="Waiting for office review"' : ''}>Present to customer</button>` : ''}` : `${pill(doc.status)} ${review.status === 'pending' ? '<span class="pill warn">Needs review</span>' : ''}
-      <a class="btn" target="_blank" href="${esc(doc.public_url)}">Customer view ↗</a>
+      <a class="btn" target="_blank" href="${esc(doc.public_url)}" ${!isEst && doc.status === 'draft' ? 'title="Draft: only you can see this until it is sent"' : ''}>${!isEst && doc.status === 'draft' ? 'Preview (draft) ↗' : 'Customer view ↗'}</a>
       ${isEst ? `${['sent', 'viewed', 'draft'].includes(doc.status) ? '<button class="btn" id="mark-approved">Mark approved</button><button class="btn" id="mark-declined">Mark declined</button>' : ''}
         ${doc.status === 'approved' && !doc.job_id ? '<button class="btn" id="tojob">Convert to job</button>' : ''}${doc.job_id ? `<a class="btn" href="#/jobs/${doc.job_id}">Open job</a>` : ''}
         ${doc.status !== 'cancelled' ? '<button class="btn" id="toinv">Convert to invoice</button><button class="btn danger" id="cancelest">Cancel estimate</button>' : '<button class="btn" id="reopenest">Reopen as draft</button>'}`
