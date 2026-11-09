@@ -468,7 +468,7 @@ async function viewJobs() {
   const status = params.get('status') || (isOffice() ? 'unscheduled,scheduled,dispatched,in_progress,on_hold,completed' : '');
   const q = params.get('q') || '';
   const jobs = await GET('/jobs' + qs({ status, q }));
-  const tabs = [['unscheduled,scheduled,dispatched,in_progress,on_hold,completed', 'Open'], ['unscheduled', 'Unscheduled'], ['in_progress', 'In progress'], ['completed', 'Needs invoice'], ['invoiced', 'Invoiced'], ['', 'All']];
+  const tabs = [['unscheduled,scheduled,dispatched,in_progress,on_hold,completed', 'Open'], ['unscheduled', 'Unscheduled'], ['in_progress', 'In progress'], ['completed', 'Needs invoice'], ['invoiced', 'Invoiced'], ['cancelled', 'Cancelled'], ['', 'All']];
   $('#view').innerHTML = setTop('Jobs', isOffice() ? '<button class="btn primary" id="new">+ Book job</button>' : '') + `<div class="card">
     <div class="row spread"><div class="tabs" style="margin:0;border:0">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
     <form id="srch" class="row"><input name="q" placeholder="Search job #, customer, address" value="${esc(q)}" style="width:260px"></form></div>
@@ -481,6 +481,19 @@ async function viewJobs() {
   if (isOffice()) { $('#new').onclick = () => jobForm({}); if (params.get('new')) jobForm({}, { customerId: params.get('customer_id') }); }
 }
 
+function cancelJobModal(j) {
+  formModal({
+    title: `Cancel ${j.number}`, okLabel: 'Cancel job',
+    extra: '<p class="small muted">The job is kept for your records. Upcoming visits come off the board, and open estimates, pick lists and draft purchase orders are cancelled. Invoices, and orders already sent to a vendor, are left for you to handle.</p>',
+    fields: [{ name: 'reason', label: 'Reason', full: true, required: true, placeholder: 'e.g. Customer went with another contractor' }],
+    submit: async d => {
+      const r = await POST(`/jobs/${j.id}/cancel`, d);
+      toast('Job cancelled');
+      if (r.warnings.length) alert('Still to do:\n\n• ' + r.warnings.join('\n• '));
+      route();
+    },
+  });
+}
 async function viewJob(id) {
   const j = await GET('/jobs/' + id);
   const { params } = hashParams();
@@ -498,22 +511,36 @@ async function viewJob(id) {
     `<select id="status" style="width:auto">${(statusOpts.includes(j.status) ? statusOpts : [j.status, ...statusOpts]).map(s => `<option value="${s}" ${s === j.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
      ${!['completed', 'invoiced', 'cancelled'].includes(j.status) ? '<button class="btn go" id="completejob">✓ Complete job</button>' : ''}
      ${!isOffice() && S.settings.tech_estimates !== '0' && !['invoiced', 'cancelled'].includes(j.status) ? `<a class="btn" href="#/estimates/new?job_id=${j.id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a>` : ''}
-     ${isOffice() ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a><button class="btn primary" id="invoice">Bill job</button>` : `<button class="btn go" id="clockhere">Clock in here</button>`}`,
+     ${isOffice() && j.status === 'cancelled' ? '<button class="btn" id="reopenjob">Reopen job</button>' : ''}
+     ${isOffice() && j.status !== 'cancelled' ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a><button class="btn primary" id="invoice">Bill job</button>` : ''}
+     ${isOffice() && !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn danger" id="canceljob">Cancel job</button>' : ''}
+     ${isAdmin() ? `<button class="btn danger" id="deljob" ${j.delete_blockers.length ? `title="Can't delete: has ${esc(j.delete_blockers.join(', '))}"` : ''}>Delete</button>` : ''}
+     ${!isOffice() && j.status !== 'cancelled' ? '<button class="btn go" id="clockhere">Clock in here</button>' : ''}`,
     `${pill(j.status)} ${j.priority !== 'normal' ? pill(j.priority) : ''} ${billingPill(j.billing_type)} · ${esc(label(j.job_type))} · ${isOffice() ? `<a href="#/customers/${j.customer_id}">${esc(j.customer_name)}</a>` : esc(j.customer_name)}`) + `
+    ${j.status === 'cancelled' ? `<div class="alert" style="margin-bottom:14px"><b>Cancelled${j.cancelled_at ? ` ${fmtDate(j.cancelled_at.slice(0, 10))}` : ''}.</b> ${esc(j.cancel_reason || '')}</div>` : ''}
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div><div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => go(`#/jobs/${j.id}?tab=${b.dataset.tab}`));
+  if ($('#canceljob')) $('#canceljob').onclick = () => cancelJobModal(j);
+  if ($('#reopenjob')) $('#reopenjob').onclick = async () => { await act(() => POST(`/jobs/${j.id}/reopen`), 'Job reopened. Schedule a new visit when ready.'); route(); };
+  if ($('#deljob')) $('#deljob').onclick = async () => {
+    if (j.delete_blockers.length) return toast(`Can't delete ${j.number}: it has ${j.delete_blockers.join(', ')}. Cancel it instead, so the history is kept.`, true);
+    if (!confirm(`Permanently delete ${j.number}? Its visits, notes, checklists and photos are erased. This can't be undone.\n\nIf the work just isn't happening, use Cancel job instead.`)) return;
+    await act(() => DEL('/jobs/' + j.id), 'Job deleted'); go('#/jobs');
+  };
   if ($('#completejob')) $('#completejob').onclick = () => completeJobModal(j);
   $$('[data-present]').forEach(b => b.onclick = async () => { const r = await act(() => POST(`/estimates/${b.dataset.present}/present`)); window.open(r.url, '_blank', 'noopener'); route(); });
   $('#status').onchange = async e => {
     if (e.target.value === 'completed' && j.status !== 'completed') { e.target.value = j.status; return completeJobModal(j); }
+    if (e.target.value === 'cancelled' && j.status !== 'cancelled') { e.target.value = j.status; return cancelJobModal(j); }
+    if (j.status === 'cancelled') { e.target.value = j.status; return toast('Use Reopen job first', true); }
     const body = { status: e.target.value };
     if (body.status === 'completed' && !isOffice()) { const n = prompt('Completion notes (what was done, anything the office should know):', j.completion_notes || ''); if (n === null) { e.target.value = j.status; return; } body.completion_notes = n; }
     await act(() => PUT('/jobs/' + j.id, body), 'Status updated'); route();
   };
   if (isOffice()) {
-    $('#edit').onclick = () => jobForm(j);
-    $('#invoice').onclick = () => go(`#/jobs/${j.id}?tab=billing`);
-  } else $('#clockhere').onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job', ...loc }), 'Clocked in on ' + j.number); route(); };
+    if ($('#edit')) $('#edit').onclick = () => jobForm(j);
+    if ($('#invoice')) $('#invoice').onclick = () => go(`#/jobs/${j.id}?tab=billing`);
+  } else if ($('#clockhere')) $('#clockhere').onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job', ...loc }), 'Clocked in on ' + j.number); route(); };
 
   const T = $('#tab');
   if (tab === 'overview') {
@@ -539,7 +566,7 @@ async function viewJob(id) {
       <h2>Scope</h2><div style="white-space:pre-wrap">${esc(j.description || '—')}</div>
       ${j.completion_notes ? `<h2>Completion notes</h2><div style="white-space:pre-wrap">${esc(j.completion_notes)}</div>` : ''}
       ${j.signoff_name ? `<h2>Customer sign-off</h2><div>✍ Accepted by <b>${esc(j.signoff_name)}</b> · ${fmtDT(j.signoff_at)}</div><div id="sigimg"></div>` : ''}
-      ${j.completion_blockers.length && !['completed', 'invoiced'].includes(j.status) ? `<div class="alert">Before completing: finish ${j.completion_blockers.map(esc).join(', ')} on the <a href="#/jobs/${j.id}?tab=forms">Checklists</a> tab.</div>` : ''}
+      ${j.completion_blockers.length && !['completed', 'invoiced', 'cancelled'].includes(j.status) ? `<div class="alert">Before completing: finish ${j.completion_blockers.map(esc).join(', ')} on the <a href="#/jobs/${j.id}?tab=forms">Checklists</a> tab.</div>` : ''}
     </div><div class="card"><h2>Notes & activity</h2>
       <form id="note" class="row"><input name="body" class="grow" placeholder="Add a note (visible to the team)"><button class="btn primary">Add</button></form>
       <div style="margin-top:10px">${j.notes.map(n => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="small muted">${esc(n.user_name || '')} · ${fmtDT(n.created_at)}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('') || '<div class="empty">No notes yet</div>'}</div>
@@ -701,7 +728,7 @@ async function viewCustomer(id) {
 async function viewEstimates() {
   const { params } = hashParams(); const status = params.get('status') || '';
   const list = await GET('/estimates' + qs({ status }));
-  const tabs = isOffice() ? [['', 'All'], ['review', 'Needs review'], ['draft', 'Draft'], ['sent', 'Sent'], ['viewed', 'Viewed'], ['approved', 'Approved'], ['declined', 'Declined']] : [['', 'All']];
+  const tabs = isOffice() ? [['', 'All'], ['review', 'Needs review'], ['draft', 'Draft'], ['sent', 'Sent'], ['viewed', 'Viewed'], ['approved', 'Approved'], ['declined', 'Declined'], ['cancelled', 'Cancelled']] : [['', 'All']];
   $('#view').innerHTML = setTop(isOffice() ? 'Estimates' : 'My Estimates', isOffice() ? '<a class="btn primary" href="#/estimates/new">+ New estimate</a>' : '', isOffice() ? '' : 'Start a new estimate from one of your jobs.') + `<div class="card">
     <div class="tabs">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
     ${table([{ label: '#', key: 'number' }, { label: 'Customer', key: 'customer_name' }, { label: 'Title', key: 'title' }, { label: 'Created', get: e => fmtDate(e.created_at.slice(0, 10)) },
@@ -745,7 +772,7 @@ async function viewDoc(kind, id) {
   const techMode = !isOffice();
   if (techMode && (!isEst || (id === 'new' && !doc.job_id))) throw new Error('Start an estimate from one of your jobs');
   const seeCosts = !techMode || S.settings.tech_see_costs === '1';
-  const locked = isEst ? (doc.status === 'approved' || (techMode && ['declined', 'expired'].includes(doc.status))) : (doc.status === 'void' || (doc.payments || []).length > 0);
+  const locked = isEst ? (['approved', 'cancelled'].includes(doc.status) || (techMode && ['declined', 'expired'].includes(doc.status))) : (doc.status === 'void' || (doc.payments || []).length > 0);
   const maxDisc = Number(S.settings.tech_max_discount_pct) || 0;
   const review = isEst && id !== 'new' ? { status: doc.review_status, reasons: doc.review_reasons ? (Array.isArray(doc.review_reasons) ? doc.review_reasons : JSON.parse(doc.review_reasons)) : [], note: doc.review_note } : { status: null, reasons: [] };
   const st = S.settings;
@@ -768,13 +795,14 @@ async function viewDoc(kind, id) {
 
   $('#view').innerHTML = setTop(id === 'new' ? `New ${kind}` : `${isEst ? (doc.change_order ? 'Change order' : 'Estimate') : 'Invoice'} ${esc(doc.number)}`,
     id === 'new' ? '' : techMode ? `${pill(doc.status)} ${review.status === 'pending' ? '<span class="pill warn">Office review</span>' : ''}${doc.job_id ? `<a class="btn" href="#/jobs/${doc.job_id}">Open job</a>` : ''}
-      ${doc.status !== 'approved' ? `<button class="btn primary" id="present" ${review.status === 'pending' ? 'disabled title="Waiting for office review"' : ''}>Present to customer</button>` : ''}` : `${pill(doc.status)} ${review.status === 'pending' ? '<span class="pill warn">Needs review</span>' : ''}
+      ${!['approved', 'cancelled'].includes(doc.status) ? `<button class="btn primary" id="present" ${review.status === 'pending' ? 'disabled title="Waiting for office review"' : ''}>Present to customer</button>` : ''}` : `${pill(doc.status)} ${review.status === 'pending' ? '<span class="pill warn">Needs review</span>' : ''}
       <a class="btn" target="_blank" href="${esc(doc.public_url)}">Customer view ↗</a>
       ${isEst ? `${['sent', 'viewed', 'draft'].includes(doc.status) ? '<button class="btn" id="mark-approved">Mark approved</button><button class="btn" id="mark-declined">Mark declined</button>' : ''}
         ${doc.status === 'approved' && !doc.job_id ? '<button class="btn" id="tojob">Convert to job</button>' : ''}${doc.job_id ? `<a class="btn" href="#/jobs/${doc.job_id}">Open job</a>` : ''}
-        <button class="btn" id="toinv">Convert to invoice</button>`
+        ${doc.status !== 'cancelled' ? '<button class="btn" id="toinv">Convert to invoice</button><button class="btn danger" id="cancelest">Cancel estimate</button>' : '<button class="btn" id="reopenest">Reopen as draft</button>'}`
     : `${doc.job_id ? `<a class="btn" href="#/jobs/${doc.job_id}">Open job</a>` : ''}${doc.status !== 'void' && doc.balance > 0 && doc.status !== 'draft' ? '<button class="btn" id="pay">Record payment</button>' : ''}`}
-      ${doc.status !== 'void' ? `<button class="btn primary" id="send">Send to customer</button>` : ''}`) + `
+      ${!['void', 'cancelled'].includes(doc.status) ? `<button class="btn primary" id="send">Send to customer</button>` : ''}`) + `
+    ${isEst && doc.status === 'cancelled' ? `<div class="alert" style="margin-bottom:14px"><b>Cancelled${doc.cancelled_at ? ` ${fmtDate(doc.cancelled_at.slice(0, 10))}` : ''}.</b> ${esc(doc.cancel_reason || '')} The customer link no longer accepts a signature.</div>` : ''}
     ${review.status === 'pending' ? `<div class="alert" style="margin-bottom:14px"><b>${techMode ? 'Waiting for office review.' : 'Built by a tech — needs your review.'}</b> ${review.reasons.map(esc).join(' · ')}${techMode ? '<br>The customer can look at it but can\'t sign until the office approves the pricing.' : ''}
       ${!techMode ? '<div class="row" style="margin-top:8px"><button type="button" class="btn go" id="rv-ok">Approve pricing</button><button type="button" class="btn" id="rv-back">Send back to tech…</button></div>' : ''}</div>` : ''}
     ${review.status === 'rejected' ? `<div class="alert" style="margin-bottom:14px"><b>Sent back by the office:</b> ${esc(review.note || '')}${techMode ? '<br>Make the change and save. It is checked again automatically.' : ''}</div>` : ''}
@@ -799,7 +827,7 @@ async function viewDoc(kind, id) {
         </div>
         <div class="totals" id="totals"></div>
       </div></div>
-    <div class="row no-print"><button class="btn primary">Save ${kind}</button>${id !== 'new' && (isEst ? doc.status !== 'approved' : doc.status === 'draft') ? `<button type="button" class="btn danger" id="del">Delete</button>` : ''}
+    <div class="row no-print">${isEst && doc.status === 'cancelled' ? '' : `<button class="btn primary">Save ${kind}</button>`}${id !== 'new' && (isEst ? doc.status !== 'approved' : doc.status === 'draft') ? `<button type="button" class="btn danger" id="del">Delete</button>` : ''}
       ${!isEst && id !== 'new' && !['void', 'paid'].includes(doc.status) ? '<button type="button" class="btn danger" id="void">Void invoice</button>' : ''}</div>
     </form>
     ${!isEst && id !== 'new' ? `<div class="card" style="margin-top:14px"><h2>Payments</h2>${table([{ label: 'Date', get: p => fmtDate(p.paid_at) }, { label: 'Method', get: p => label(p.method) }, { label: 'Reference', key: 'reference' }, { label: 'Amount', num: 1, get: p => money(p.amount) },
@@ -987,7 +1015,16 @@ async function viewDoc(kind, id) {
   on('#mark-declined', async () => { await act(() => PUT(`${base}/${id}`, { status: 'declined' }), 'Marked declined'); route(); });
   on('#tojob', async () => { const r = await act(() => POST(`${base}/${id}/convert-to-job`), 'Job created — schedule it'); go('#/jobs/' + r.id); });
   on('#toinv', async () => { const r = await act(() => POST(`${base}/${id}/convert-to-invoice`), 'Invoice created'); go('#/invoices/' + r.id); });
-  on('#del', async () => { if (confirm(`Delete this ${kind}?`)) { await act(() => DEL(`${base}/${id}`), 'Deleted'); go('#' + base); } });
+  on('#del', async () => {
+    const msg = isEst && doc.status !== 'draft' ? `Permanently delete ${doc.number}? The customer has already been sent this ${kind}, and their link will stop working. This can't be undone.\n\nTo keep the record, use Cancel estimate instead.` : `Delete this ${kind}? This can't be undone.`;
+    if (confirm(msg)) { await act(() => DEL(`${base}/${id}`), 'Deleted'); go(doc.job_id ? '#/jobs/' + doc.job_id : '#' + base); }
+  });
+  on('#cancelest', () => formModal({
+    title: `Cancel ${doc.number}`, okLabel: 'Cancel estimate',
+    extra: `<p class="small muted">${doc.status === 'approved' ? '<b>The customer approved this estimate.</b> Cancelling it removes it from the job\'s contract value. ' : ''}The estimate is kept for your records, but the customer can no longer sign it, and it isn't counted as a lost sale.</p>`,
+    fields: [{ name: 'reason', label: 'Reason (optional)', full: true, placeholder: 'e.g. Customer postponed, duplicate, re-quoted as EST-1042' }],
+    submit: async d => { await POST(`${base}/${id}/cancel`, d); toast('Estimate cancelled'); route(); } }));
+  on('#reopenest', async () => { await act(() => POST(`${base}/${id}/reopen`), 'Reopened as draft'); route(); });
   on('#void', async () => { if (confirm('Void this invoice? It will be excluded from revenue and receivables.')) { await act(() => PUT(`${base}/${id}`, { status: 'void' }), 'Voided'); route(); } });
   if (isAdmin()) await loadAccounts();
   on('#pay', () => formModal({

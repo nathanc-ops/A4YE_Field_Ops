@@ -129,6 +129,7 @@ function createApp(db) {
   app.post('/api/public/estimate/:token/respond', wrap((req, res) => {
     const e = get(db, 'SELECT * FROM estimates WHERE public_token = ?', req.params.token);
     if (!e) throw bad('Not found', 404);
+    if (e.status === 'cancelled') throw bad('This estimate has been withdrawn. Please contact us for an updated quote.');
     if (!['sent', 'viewed'].includes(e.status)) throw bad(`This estimate is already ${e.status}`);
     if (e.review_status === 'pending' && req.body.decision === 'approve') throw bad('Your technician is confirming this pricing with the office. You can approve once it’s confirmed — usually within minutes.');
     if (req.body.decision === 'approve') {
@@ -294,6 +295,7 @@ function createApp(db) {
     H.ensureJobForms(job.id);
     job.forms = H.jobForms(job.id);
     job.completion_blockers = H.completionBlockers(job.id);
+    if (req.user.role === 'admin') job.delete_blockers = H.jobDeleteBlockers(job.id);
     job.attachments = H.jobAttachments(job.id);
     job.equipment = job.location_id ? H.locationEquipment(job.location_id) : [];
     job.pick_lists = all(db, 'SELECT * FROM pick_lists WHERE job_id = ? ORDER BY id DESC', job.id);
@@ -343,6 +345,11 @@ function createApp(db) {
         if (blockers.length) throw bad(`Finish the required checklist(s) first: ${blockers.join(', ')}`);
       }
     }
+    if (data.status === 'cancelled' && job.status !== 'cancelled') {
+      if (req.user.role === 'tech') throw bad('Techs cannot cancel jobs', 403);
+      delete data.status;
+      tx(db, () => H.cancelJob(job, req.user, req.body.cancel_reason));
+    } else if (job.status === 'cancelled' && data.status && data.status !== 'cancelled') throw bad('Reopen the job first');
     if (data.status === 'completed' && job.status !== 'completed') data.completed_at = new Date().toISOString();
     if (data.scheduled_start && job.status === 'unscheduled' && !data.status) data.status = 'scheduled';
     tx(db, () => {
@@ -354,11 +361,69 @@ function createApp(db) {
     });
     res.json({ ok: true });
   }));
+  // Cancel: the job stays on record (searchable, reportable) but leaves the board, and its open paperwork is closed out.
+  H.cancelJob = (job, user, reason) => {
+    if (job.status === 'cancelled') throw bad('Job is already cancelled');
+    if (job.status === 'invoiced') throw bad('Job is invoiced — void its invoices first, then cancel');
+    reason = String(reason || '').trim().slice(0, 500);
+    const now = new Date().toISOString();
+    const done = {
+      visits: run(db, "UPDATE appointments SET status = 'cancelled' WHERE job_id = ? AND status NOT IN ('done','cancelled')", job.id).changes,
+      estimates: run(db, "UPDATE estimates SET status = 'cancelled', cancelled_at = ?, cancel_reason = ?, review_status = CASE WHEN review_status = 'pending' THEN NULL ELSE review_status END WHERE job_id = ? AND status IN ('draft','sent','viewed')", now, 'Job cancelled', job.id).changes,
+      pick_lists: run(db, "UPDATE pick_lists SET status = 'cancelled' WHERE job_id = ? AND status IN ('open','picking')", job.id).changes,
+      purchase_orders: run(db, "UPDATE purchase_orders SET status = 'cancelled' WHERE job_id = ? AND status = 'draft'", job.id).changes,
+    };
+    run(db, "UPDATE jobs SET status = 'cancelled', cancelled_at = ?, cancel_reason = ? WHERE id = ?", now, reason || null, job.id);
+    insert('job_notes', { job_id: job.id, user_id: user.id, body: `Job cancelled${reason ? `: ${reason}` : ''}` });
+    // things that still need a person: money already billed and orders already with the vendor
+    const warnings = [];
+    const inv = get(db, "SELECT COUNT(*) n FROM invoices WHERE job_id = ? AND status != 'void'", job.id).n;
+    if (inv) warnings.push(`${inv} invoice(s) are still open on this job. Void or credit them if the customer won't be paying.`);
+    const po = get(db, "SELECT COUNT(*) n FROM purchase_orders WHERE job_id = ? AND status IN ('submitted','partial')", job.id).n;
+    if (po) warnings.push(`${po} purchase order(s) were already sent to the vendor. Call to cancel or arrange a return.`);
+    return { ...done, warnings };
+  };
+  app.post('/api/jobs/:id/cancel', office, wrap((req, res) => {
+    const job = mustGet('jobs', req.params.id);
+    res.json(tx(db, () => H.cancelJob(job, req.user, req.body.reason)));
+  }));
+  app.post('/api/jobs/:id/reopen', office, wrap((req, res) => {
+    const job = mustGet('jobs', req.params.id);
+    if (job.status !== 'cancelled') throw bad('Only cancelled jobs can be reopened');
+    tx(db, () => {
+      // visits and estimates stay cancelled: reschedule and re-quote deliberately rather than resurrecting stale ones
+      run(db, "UPDATE jobs SET status = 'unscheduled', cancelled_at = NULL, cancel_reason = NULL WHERE id = ?", job.id);
+      insert('job_notes', { job_id: job.id, user_id: req.user.id, body: 'Job reopened' });
+    });
+    res.json({ ok: true });
+  }));
+  // Delete: only for jobs entered by mistake. Anything with money, hours or a customer signature attached must be cancelled instead.
+  H.jobDeleteBlockers = id => {
+    const n = sql => get(db, sql, id).n;
+    const why = [
+      [n('SELECT COUNT(*) n FROM invoices WHERE job_id = ?'), 'invoice(s)'],
+      [n('SELECT COUNT(*) n FROM time_entries WHERE job_id = ?'), 'time entr(ies)'],
+      [n('SELECT COUNT(*) n FROM job_materials WHERE job_id = ?'), 'material line(s)'],
+      [n('SELECT COUNT(*) n FROM expenses WHERE job_id = ?'), 'expense(s)'],
+      [n('SELECT COUNT(*) n FROM purchase_orders WHERE job_id = ?'), 'purchase order(s)'],
+      [n('SELECT COUNT(*) n FROM bill_lines WHERE job_id = ?'), 'vendor bill line(s)'],
+      [n('SELECT COUNT(*) n FROM journal_lines WHERE job_id = ?'), 'accounting entr(ies)'],
+      [n("SELECT COUNT(*) n FROM attachments WHERE entity_type = 'job' AND entity_id = ? AND kind = 'signature'"), 'customer signature(s)'],
+    ];
+    return why.filter(([c]) => c).map(([c, l]) => `${c} ${l}`);
+  };
   app.delete('/api/jobs/:id', admin, wrap((req, res) => {
-    const n = get(db, 'SELECT (SELECT COUNT(*) FROM invoices WHERE job_id = ?) + (SELECT COUNT(*) FROM time_entries WHERE job_id = ?) n', req.params.id, req.params.id).n;
-    if (n) throw bad('Job has invoices or time logged — cancel it instead of deleting');
-    run(db, 'UPDATE estimates SET job_id = NULL WHERE job_id = ?', req.params.id);
-    run(db, 'DELETE FROM jobs WHERE id = ?', req.params.id); res.json({ ok: true });
+    const job = mustGet('jobs', req.params.id);
+    const blockers = H.jobDeleteBlockers(job.id);
+    if (blockers.length) throw bad(`This job has ${blockers.join(', ')}. Cancel it instead, so the history is kept.`);
+    const files = all(db, "SELECT path FROM attachments WHERE entity_type = 'job' AND entity_id = ?", job.id).map(a => a.path);
+    tx(db, () => {
+      run(db, 'UPDATE estimates SET job_id = NULL WHERE job_id = ?', job.id);
+      run(db, "DELETE FROM attachments WHERE entity_type = 'job' AND entity_id = ?", job.id);
+      run(db, 'DELETE FROM jobs WHERE id = ?', job.id);
+    });
+    for (const f of files) H.removeUpload(f);
+    res.json({ ok: true, files: files.length });
   }));
   app.post('/api/jobs/:id/notes', wrap((req, res) => {
     if (!req.body.body) throw bad('Note is empty');
@@ -520,6 +585,8 @@ function createApp(db) {
   }));
   app.put('/api/estimates/:id', office, wrap((req, res) => {
     const e = mustGet('estimates', req.params.id);
+    if (e.status === 'cancelled') throw bad('Estimate is cancelled — reopen it to make changes');
+    if (req.body.status === 'cancelled') throw bad('Use Cancel estimate');
     if (e.status === 'approved' && req.body.items) throw bad('Approved estimates cannot be edited — create a change order (new estimate) instead');
     if (req.body.options && e.status === 'approved') throw bad('Approved estimates cannot be edited');
     tx(db, () => {
@@ -540,12 +607,37 @@ function createApp(db) {
   }));
   app.delete('/api/estimates/:id', office, wrap((req, res) => {
     const e = mustGet('estimates', req.params.id);
-    if (e.status === 'approved') throw bad('Approved estimates cannot be deleted');
-    run(db, 'UPDATE invoices SET estimate_id = NULL WHERE estimate_id = ?', e.id);
-    run(db, 'DELETE FROM estimates WHERE id = ?', e.id); res.json({ ok: true });
+    if (e.status === 'approved') throw bad('Approved estimates cannot be deleted. Cancel it instead, so the signed record is kept.');
+    tx(db, () => {
+      run(db, 'UPDATE invoices SET estimate_id = NULL WHERE estimate_id = ?', e.id);
+      run(db, 'DELETE FROM estimates WHERE id = ?', e.id);
+    });
+    res.json({ ok: true });
+  }));
+  // Cancel: withdrawn by us (customer changed plans, duplicate, re-quoted). Unlike "declined", it doesn't count as a lost sale,
+  // and the customer link stops accepting a signature.
+  app.post('/api/estimates/:id/cancel', office, wrap((req, res) => {
+    const e = mustGet('estimates', req.params.id);
+    if (e.status === 'cancelled') throw bad('Estimate is already cancelled');
+    const inv = get(db, "SELECT COUNT(*) n FROM invoices WHERE estimate_id = ? AND status != 'void'", e.id).n;
+    if (inv) throw bad(`This estimate has ${inv} invoice(s) made from it. Void them first.`);
+    const reason = String(req.body.reason || '').trim().slice(0, 500) || null;
+    tx(db, () => {
+      run(db, "UPDATE estimates SET status = 'cancelled', cancelled_at = datetime('now'), cancel_reason = ?, review_status = CASE WHEN review_status = 'pending' THEN NULL ELSE review_status END WHERE id = ?", reason, e.id);
+      if (e.job_id) insert('job_notes', { job_id: e.job_id, user_id: req.user.id, body: `${e.change_order ? 'Change order' : 'Estimate'} ${e.number} cancelled${e.status === 'approved' ? ' (it had been approved)' : ''}${reason ? `: ${reason}` : ''}` });
+    });
+    res.json({ ok: true, was_approved: e.status === 'approved' });
+  }));
+  app.post('/api/estimates/:id/reopen', office, wrap((req, res) => {
+    const e = mustGet('estimates', req.params.id);
+    if (e.status !== 'cancelled') throw bad('Only cancelled estimates can be reopened');
+    // back to draft: a fresh signature is needed, so any earlier approval is cleared
+    run(db, "UPDATE estimates SET status = 'draft', cancelled_at = NULL, cancel_reason = NULL, approved_at = NULL, approved_option_id = NULL, signature_name = NULL WHERE id = ?", e.id);
+    res.json({ ok: true });
   }));
   app.post('/api/estimates/:id/send', office, wrap(async (req, res) => {
     const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id));
+    if (e.status === 'cancelled') throw bad('Estimate is cancelled — reopen it first');
     const cust = mustGet('customers', e.customer_id);
     const to = req.body.to || cust.email;
     if (!to) throw bad('Customer has no email address');
@@ -561,6 +653,7 @@ function createApp(db) {
   // approved estimate -> job (book the work)
   app.post('/api/estimates/:id/convert-to-job', office, wrap((req, res) => {
     const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id));
+    if (e.status === 'cancelled') throw bad('Estimate is cancelled');
     if (e.job_id) return res.json({ id: e.job_id });
     if (e.options.length && !e.approved_option_id) throw bad('Record which option the customer chose (approve the estimate) before converting');
     const labor = e.chosen_items.reduce((s, it) => {
@@ -583,6 +676,7 @@ function createApp(db) {
   }));
   app.post('/api/estimates/:id/convert-to-invoice', office, wrap((req, res) => {
     const e = mustGet('estimates', req.params.id);
+    if (e.status === 'cancelled') throw bad('Estimate is cancelled');
     const s = D.settings(db);
     const cust = mustGet('customers', e.customer_id);
     const id = tx(db, () => {

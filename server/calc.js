@@ -277,7 +277,7 @@ function techPerformance(db, from, to) {
 }
 
 function estimateConversion(db, from, to) {
-  const rows = all(db, "SELECT e.*, u.name created_by_name FROM estimates e LEFT JOIN users u ON u.id = e.created_by WHERE date(e.created_at) >= ? AND date(e.created_at) <= ?", from, to)
+  const rows = all(db, "SELECT e.*, u.name created_by_name FROM estimates e LEFT JOIN users u ON u.id = e.created_by WHERE e.status != 'cancelled' AND date(e.created_at) >= ? AND date(e.created_at) <= ?", from, to)
     .map(e => estimateWithTotals(db, e));
   const sent = rows.filter(e => e.status !== 'draft');
   const won = rows.filter(e => e.status === 'approved');

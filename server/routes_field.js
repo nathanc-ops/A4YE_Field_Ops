@@ -56,6 +56,7 @@ module.exports = function routesField(app, db, X) {
     fs.writeFileSync(path.join(UPLOAD_DIR, rel), buf);
     return { path: rel, mime: real, size: buf.length, filename: String(filename || `upload.${MIME_EXT[real]}`).slice(0, 200) };
   }
+  H.removeUpload = rel => { try { fs.unlinkSync(path.join(UPLOAD_DIR, rel)); } catch { /* already gone */ } };
   H.saveAttachment = (user, { entity_type, entity_id, kind, tag, caption, lat, lng, data, mime, filename }) => {
     const f = saveFile({ data, mime, filename });
     return insert('attachments', { entity_type, entity_id: Number(entity_id), kind: kind || (f.mime === 'application/pdf' ? 'document' : 'photo'), tag: tag || null,

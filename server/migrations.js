@@ -587,7 +587,27 @@ const MIGRATIONS = [
     addColumn(db, 'payments', 'ledger_skip', 'INTEGER NOT NULL DEFAULT 0');
     db.prepare("INSERT OR IGNORE INTO accounts (number, name, type, subtype, description) VALUES ('3950', 'Opening Balance Equity', 'equity', 'opening', 'Offset for opening balances brought over from the old books. Should be zero once conversion is finished.')").run();
   },
+  // 10: cancelling jobs and estimates (with a reason); estimates gain a 'cancelled' status
+  Object.assign(function (db) {
+    for (const t of ['jobs', 'estimates']) { addColumn(db, t, 'cancelled_at', 'TEXT'); addColumn(db, t, 'cancel_reason', 'TEXT'); }
+    rebuildTable(db, 'estimates', sql => sql.replace("'declined','expired')", "'declined','expired','cancelled')"));
+  }, { foreignKeysOff: true }),
 ];
+
+// SQLite can't alter a CHECK constraint, so copy the table under the new definition.
+// Must run with foreign keys off (see migrate), or dropping the old table would cascade-delete child rows.
+function rebuildTable(db, table, edit) {
+  const def = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table).sql;
+  const next = edit(def);
+  if (next === def) return;
+  const extras = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger') AND sql IS NOT NULL").all(table).map(r => r.sql);
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => `"${c.name}"`).join(', ');
+  db.exec(next.replace(/^CREATE TABLE\s+(IF NOT EXISTS\s+)?("?)\w+\2/i, `CREATE TABLE ${table}__new`));
+  db.exec(`INSERT INTO ${table}__new (${cols}) SELECT ${cols} FROM ${table}`);
+  db.exec(`DROP TABLE ${table}`);
+  db.exec(`ALTER TABLE ${table}__new RENAME TO ${table}`);
+  for (const x of extras) db.exec(x);
+}
 
 function migrate(db) {
   db.exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
@@ -595,9 +615,18 @@ function migrate(db) {
   let v = row ? row.version : 0;
   if (!row) db.prepare('INSERT INTO schema_version (version) VALUES (0)').run();
   while (v < MIGRATIONS.length) {
+    const m = MIGRATIONS[v];
+    if (m.foreignKeysOff) db.exec('PRAGMA foreign_keys = OFF');   // only takes effect outside a transaction
     db.exec('BEGIN');
-    try { MIGRATIONS[v](db); v++; db.prepare('UPDATE schema_version SET version = ?').run(v); db.exec('COMMIT'); }
-    catch (e) { db.exec('ROLLBACK'); throw e; }
+    try {
+      m(db);
+      if (m.foreignKeysOff) {
+        const broken = db.prepare('PRAGMA foreign_key_check').all();
+        if (broken.length) throw new Error(`Migration ${v + 1} left ${broken.length} broken reference(s), e.g. ${JSON.stringify(broken[0])}`);
+      }
+      v++; db.prepare('UPDATE schema_version SET version = ?').run(v); db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    finally { if (m.foreignKeysOff) db.exec('PRAGMA foreign_keys = ON'); }
   }
 }
 

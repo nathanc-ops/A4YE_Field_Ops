@@ -127,7 +127,7 @@ module.exports = function techEstimates(app, db, X) {
   app.put('/api/estimates/:id', techOnly, wrap((req, res) => {
     const e = techEstimate(req.user, req.params.id);
     if (e.status === 'approved') throw bad('Approved estimates are locked — start a change order');
-    if (['declined', 'expired'].includes(e.status)) throw bad(`This estimate is ${e.status}`);
+    if (['declined', 'expired', 'cancelled'].includes(e.status)) throw bad(`This estimate is ${e.status}`);
     if (req.body.status) throw bad('Only the customer or the office can approve or decline', 403);
     update('estimates', e.id, { ...pick(req.body, ['title', 'notes']), ...(req.body.discount != null ? { discount: Number(req.body.discount) || 0 } : {}) });
     if (req.body.items) saveItems('estimate_items', 'estimate_id', e.id, cleanItems(req.body.items), saveOptions(e.id, req.body.options) || (req.body.options ? [] : undefined));
@@ -144,6 +144,7 @@ module.exports = function techEstimates(app, db, X) {
   // Put it in front of the customer: makes it signable (unless it's waiting on office review).
   app.post('/api/estimates/:id/present', wrap((req, res) => {
     const e = req.user.role === 'tech' ? techEstimate(req.user, req.params.id) : mustGet('estimates', req.params.id);
+    if (e.status === 'cancelled') throw bad('This estimate is cancelled');
     if (e.review_status === 'pending') throw bad('Waiting for the office to approve pricing. The customer can look, but can\'t sign yet.');
     if (e.status === 'draft') run(db, "UPDATE estimates SET status = 'sent', sent_at = datetime('now') WHERE id = ?", e.id);
     res.json({ url: `${baseUrl(req)}/p/estimate/${e.public_token}` });

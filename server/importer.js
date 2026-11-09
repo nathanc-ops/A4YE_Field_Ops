@@ -403,7 +403,7 @@ const JOB_STATUS = s => {
 };
 const DOC_STATUS = s => {
   s = String(s || '').toLowerCase();
-  return /approv|accept|sold|won|sign/.test(s) ? 'approved' : /declin|lost|reject|dismiss/.test(s) ? 'declined' : /expir/.test(s) ? 'expired'
+  return /approv|accept|sold|won|sign/.test(s) ? 'approved' : /cancel|void|withdr/.test(s) ? 'cancelled' : /declin|lost|reject|dismiss/.test(s) ? 'declined' : /expir/.test(s) ? 'expired'
     : /view|open(ed)?$/.test(s) ? 'viewed' : /sent|pending|present|open/.test(s) ? 'sent' : /draft/.test(s) ? 'draft' : null;
 };
 const KINDS = ['material', 'service', 'labor', 'equipment'];
