@@ -1,0 +1,116 @@
+'use strict';
+// Project schedule (the job tracker's Schedule & Gantt tab): task math, statuses, Gantt weeks / manpower, permissions.
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const D = require('../server/db');
+const { createApp } = require('../server/app');
+
+let server, base, db;
+const tok = {}, ids = {};
+async function call(who, method, p, body) {
+  const res = await fetch(base + '/api' + p, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tok[who] }, body: body ? JSON.stringify(body) : undefined });
+  return { status: res.status, data: await res.json() };
+}
+const cc = code => db.prepare('SELECT id FROM cost_codes WHERE code = ?').get(code).id;
+const day = n => { const d = new Date(Date.now() + n * 864e5); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+
+before(async () => {
+  db = D.open(':memory:');
+  server = createApp(db).listen(0); await new Promise(r => server.once('listening', r));
+  base = `http://127.0.0.1:${server.address().port}`;
+  tok.admin = (await call(null, 'POST', '/setup', { name: 'Owner', email: 'o@x.com', password: 'longenough' })).data.token;
+  ids.tech = (await call('admin', 'POST', '/users', { name: 'Jay', email: 'j@x.com', password: 'password123', role: 'tech', hourly_wage: 40 })).data.id;
+  ids.other = (await call('admin', 'POST', '/users', { name: 'Kim', email: 'k@x.com', password: 'password123', role: 'tech', hourly_wage: 40 })).data.id;
+  tok.tech = (await call(null, 'POST', '/login', { email: 'j@x.com', password: 'password123' })).data.token;
+  tok.other = (await call(null, 'POST', '/login', { email: 'k@x.com', password: 'password123' })).data.token;
+  ids.cust = (await call('admin', 'POST', '/customers', { name: 'Summit GC' })).data.id;
+  ids.job = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Clinic TI', is_project: 1, billing_type: 'fixed', contract_amount: 80000, tech_ids: [ids.tech],
+    start_date: day(-20), end_date: day(40) })).data.id;
+  await call('admin', 'PUT', `/jobs/${ids.job}/budgets`, { budgets: [{ cost_code_id: cc('0810'), budget_hours: 200 }, { cost_code_id: cc('1010'), budget_hours: 80 }] });
+  // 3 × 8 h on raceway inside the task window, 8 h outside it, 8 h on devices
+  const ins = db.prepare("INSERT INTO time_entries (user_id, job_id, kind, clock_in, clock_out, hourly_cost, hourly_wage, cost_code_id) VALUES (?,?, 'job', ?, ?, 50, 40, ?)");
+  const at = (n, h) => { const d = new Date(Date.now() + n * 864e5); d.setHours(h, 0, 0, 0); return d.toISOString(); };
+  for (const n of [-9, -8, -7]) ins.run(ids.tech, ids.job, at(n, 7), at(n, 15), cc('0810'));
+  ins.run(ids.tech, ids.job, at(-15, 7), at(-15, 15), cc('0810'));
+  ins.run(ids.tech, ids.job, at(-3, 7), at(-3, 15), cc('1010'));
+});
+after(() => server.close());
+
+test('build from budget, then task math: work days, planned %, earned, actual from the time clock, SPI, status', async () => {
+  const b = await call('admin', 'POST', `/projects/${ids.job}/schedule/build`);
+  assert.equal(b.status, 200, JSON.stringify(b.data)); assert.equal(b.data.added, 2);
+  assert.equal((await call('admin', 'POST', `/projects/${ids.job}/schedule/build`)).status, 400, 'nothing left to add');
+  let s = (await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data;
+  const race = s.rows.find(r => r.cost_code === '0810'), dev = s.rows.find(r => r.cost_code === '1010');
+  assert.equal(race.budget_hours, 200); assert.equal(race.ref, 'T-001'); assert.ok(race.phase, 'phase from the A4YE code');
+  ids.race = race.id; ids.dev = dev.id;
+  // raceway: 10 days, started 10 days ago, today is day 11 of 10 → planned 100%
+  let r = await call('admin', 'PUT', `/schedule/${ids.race}`, { start_date: day(-10), finish_date: day(-1), pct_complete: 50 });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  r = await call('admin', 'PUT', `/schedule/${ids.dev}`, { start_date: day(-4), finish_date: day(5), predecessor_id: ids.race });
+  s = (await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data;
+  const R = s.rows.find(x => x.id === ids.race), V = s.rows.find(x => x.id === ids.dev);
+  assert.equal(R.planned_pct, 100); assert.equal(R.planned_hours, 200); assert.equal(R.earned_hours, 100);
+  assert.equal(R.actual_hours, 24, 'only entries inside start–finish on its code');
+  assert.equal(R.hours_variance, 76); assert.equal(R.spi, 0.5); assert.equal(R.status, 'Late');
+  assert.ok(R.work_days >= 6 && R.work_days <= 8, `10 calendar days → 6–8 work days (${R.work_days})`);
+  assert.equal(V.status, 'Update %', 'started with no % entered'); assert.equal(V.actual_hours, 8); assert.equal(V.planned_pct, 50);
+  assert.equal(V.pred_ref, 'T-001'); assert.equal(V.pred_conflict, true, 'starts before its predecessor finishes');
+  assert.ok(R.float_days < 0, 'successor already started → negative float');
+  assert.equal(V.lookahead, true);
+  // statuses
+  await call('admin', 'PUT', `/schedule/${ids.dev}`, { pct_complete: 0 });
+  assert.equal((await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data.rows.find(x => x.id === ids.dev).status, 'Late Start');
+  await call('admin', 'PUT', `/schedule/${ids.race}`, { pct_complete: 100 });
+  s = (await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data;
+  assert.equal(s.rows.find(x => x.id === ids.race).status, 'Complete');
+  assert.equal(s.totals.budget_hours, 280); assert.equal(s.totals.earned_hours, 200);
+  // as-of date moves planned %
+  const early = (await call('admin', 'GET', `/projects/${ids.job}/schedule?as_of=${day(-6)}`)).data.rows.find(x => x.id === ids.race);
+  assert.equal(early.planned_pct, 50);
+});
+
+test('validation: dates, %, loops, other project', async () => {
+  assert.equal((await call('admin', 'PUT', `/schedule/${ids.dev}`, { start_date: day(5), finish_date: day(1) })).status, 400);
+  assert.equal((await call('admin', 'PUT', `/schedule/${ids.dev}`, { pct_complete: 120 })).status, 400);
+  assert.equal((await call('admin', 'PUT', `/schedule/${ids.race}`, { predecessor_id: ids.dev })).status, 400, 'loop');
+  assert.equal((await call('admin', 'PUT', `/schedule/${ids.race}`, { predecessor_id: ids.race })).status, 400, 'self');
+  assert.equal((await call('admin', 'POST', `/projects/${ids.job}/schedule`, { phase: 'P3' })).status, 400, 'name required');
+  const t = await call('admin', 'POST', `/projects/${ids.job}/schedule`, { name: 'Owner furnished fixtures by others', start_date: day(10), finish_date: day(12) });
+  assert.equal(t.status, 200);
+  const row = (await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data.rows.find(x => x.id === t.data.id);
+  assert.equal(row.status, 'By Others'); assert.equal(row.ref, 'T-003');
+  await call('admin', 'PUT', `/schedule/${t.data.id}`, { on_hold: true, budget_hours: 4 });
+  assert.equal((await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data.rows.find(x => x.id === t.data.id).status, 'On Hold');
+});
+
+test('Gantt weeks: planned hours spread by calendar overlap, crew, actual by week, schedule start snaps to Monday', async () => {
+  const r = await call('admin', 'PUT', `/projects/${ids.job}/schedule-start`, { schedule_start: day(-20) });
+  assert.equal(r.status, 200);
+  const s = (await call('admin', 'GET', `/projects/${ids.job}/schedule`)).data;
+  assert.equal(new Date(s.schedule_start + 'T00:00:00Z').getUTCDay(), 1);
+  assert.equal(s.weeks[0].week_start, s.schedule_start);
+  const planned = s.weeks.reduce((x, w) => x + w.planned_hours, 0);
+  assert.ok(Math.abs(planned - 284) < 0.5, `all budget hours land in some week (${planned})`);
+  const actual = s.weeks.reduce((x, w) => x + w.actual_hours, 0);
+  assert.equal(actual, 40);
+  const w = s.weeks.find(x => x.planned_hours > 0);
+  assert.equal(w.planned_crew, Math.round(w.planned_hours / (8 * 5 * 0.92) * 10) / 10);
+});
+
+test('permissions: crew on the job posts % only; others cannot; office needs the projects permission', async () => {
+  let r = await call('tech', 'PUT', `/schedule/${ids.dev}`, { pct_complete: 40 });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal((await call('tech', 'PUT', `/schedule/${ids.dev}`, { budget_hours: 999 })).status, 403);
+  assert.equal(db.prepare('SELECT budget_hours FROM project_tasks WHERE id = ?').get(ids.dev).budget_hours, 80);
+  assert.equal((await call('tech', 'POST', `/projects/${ids.job}/schedule`, { name: 'x' })).status, 403);
+  assert.equal((await call('tech', 'DELETE', `/schedule/${ids.dev}`)).status, 403);
+  assert.equal((await call('other', 'PUT', `/schedule/${ids.dev}`, { pct_complete: 90 })).status, 403, 'not on the job');
+  assert.equal((await call('tech', 'GET', `/projects/${ids.job}/schedule`)).data.can_edit, false);
+  // dashboard flag once a started task has nothing done
+  await call('admin', 'PUT', `/schedule/${ids.dev}`, { pct_complete: 0 });
+  const p = (await call('admin', 'GET', `/projects/${ids.job}`)).data;
+  assert.equal(p.summary.logs.tasks_late, 1);
+  const flags = JSON.stringify(p);
+  assert.match(flags, /schedule task/);
+});

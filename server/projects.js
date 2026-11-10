@@ -56,6 +56,8 @@ module.exports = function projectRoutes(app, db, X) {
       if (wx.rfis_overdue) flags.push(`${wx.rfis_overdue} RFI/submittal(s) past their needed date`);
       if (wx.safety_overdue) flags.push(`${wx.safety_overdue} safety/quality item(s) past due`);
       if (wx.milestones_late) flags.push(`${wx.milestones_late} milestone(s) late`);
+      if (wx.tasks_late) flags.push(`${wx.tasks_late} schedule task(s) late or late starting`);
+      if (wx.tasks_update) flags.push(`${wx.tasks_update} schedule task(s) need a % complete update`);
       if (wx.pay_apps_over_45) flags.push(`${wx.pay_apps_over_45} pay application(s) unpaid after 45 days`);
     }
     const workedRecently = get(db, "SELECT COUNT(DISTINCT date(clock_in, 'localtime')) n FROM time_entries WHERE job_id = ? AND clock_in > datetime('now', '-3 days')", job.id).n;
@@ -147,6 +149,7 @@ module.exports = function projectRoutes(app, db, X) {
       { key: 'rfi', label: 'RFIs / submittals overdue', count: rows.reduce((t, r) => t + (r.logs ? r.logs.rfis_overdue : 0), 0), jobs: rows.filter(r => r.logs && r.logs.rfis_overdue).map(r => r.number) },
       { key: 'safety', label: 'Safety / quality items overdue', count: rows.reduce((t, r) => t + (r.logs ? r.logs.safety_overdue : 0), 0), jobs: rows.filter(r => r.logs && r.logs.safety_overdue).map(r => r.number) },
       { key: 'ms', label: 'Milestones late', count: rows.reduce((t, r) => t + (r.logs ? r.logs.milestones_late : 0), 0), jobs: rows.filter(r => r.logs && r.logs.milestones_late).map(r => r.number) },
+      { key: 'tasks', label: 'Schedule tasks late', count: rows.reduce((t, r) => t + (r.logs ? r.logs.tasks_late || 0 : 0), 0), jobs: rows.filter(r => r.logs && r.logs.tasks_late).map(r => r.number) },
       { key: 'logs', label: 'Crew on site but no daily log', count: rows.filter(r => r.flags.some(f => /daily log/.test(f))).length, jobs: rows.filter(r => r.flags.some(f => /daily log/.test(f))).map(r => r.number) },
     ];
     // labor hours by week across the projects (last 12 weeks) and cost by division (budget vs actual)
@@ -256,5 +259,5 @@ module.exports = function projectRoutes(app, db, X) {
     run(db, 'DELETE FROM daily_logs WHERE id = ?', l.id); res.json({ ok: true });
   }));
 
-  return { summary, codeRows, canSee };
+  return { summary, codeRows, canSee, onProject };
 };

@@ -365,6 +365,152 @@ module.exports = function workbookRoutes(app, db, X) {
     if (d.type && !LISTS.safety_type.includes(d.type)) throw bad('Unknown type'); if (d.severity && !LISTS.severity.includes(d.severity)) throw bad('Unknown severity'); } });
   crud('milestones', 'project_milestones', MS_FIELDS, msRows, { required: ['name'] });
 
+  // ================================================================ Schedule & Gantt
+  // Start, finish and budget hours drive the Gantt. Planned % is time-based against the as-of date (the workbook's
+  // PerEnd); earned = budget × % complete; actual hours come from time entries on the task's cost code (or, with no
+  // code, any code in the task's phase) between its start and finish — the same SUMIFS the Schedule tab uses.
+  const ymd = s => (s ? String(s).slice(0, 10) : null);
+  const addD = (s, n) => new Date(Date.parse(s) + n * 864e5).toISOString().slice(0, 10);
+  const dow = s => new Date(Date.parse(s)).getUTCDay();
+  const r1 = n => Math.round((Number(n) || 0) * 10) / 10;
+  const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+  // Excel NETWORKDAYS: Mon–Fri between two dates, both ends counted; negative when b is before a
+  const netDays = (a, b) => {
+    if (b < a) return -netDays(b, a);
+    const total = days(a, b) + 1, full = Math.floor(total / 7); let n = full * 5;
+    for (let i = full * 7; i < total; i++) { const d = (dow(a) + i) % 7; if (d !== 0 && d !== 6) n++; }
+    return n;
+  };
+  const mondayOf = s => addD(s, -((dow(s) + 6) % 7));
+  const schedCfg = () => { const c = s(); const n = (k, d) => (Number(c[k]) > 0 ? Number(c[k]) : d);
+    return { hours_per_day: n('sched_hours_per_day', 8), days_per_week: n('sched_days_per_week', 5), availability: n('sched_crew_availability', 0.92), max_crew: n('sched_max_crew', 10) }; };
+  const TASK_STATUS = ['Not Started', 'In Progress', 'Complete', 'On Hold'];   // the Lists tab; the sheet also derives Late, Late Start, Update %, By Others
+  const TASK_FIELDS = ['phase', 'area', 'name', 'cost_code_id', 'start_date', 'finish_date', 'predecessor_id', 'responsible', 'budget_hours', 'pct_complete', 'on_hold', 'notes', 'sort'];
+
+  function laborEntries(job) {
+    const now = new Date().toISOString();
+    return all(db, 'SELECT t.clock_in, t.clock_out, t.cost_code_id, cc.phase FROM time_entries t LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.job_id = ?', job.id)
+      .map(t => ({ date: localDate(t.clock_in), hours: Math.max(0, (Date.parse(t.clock_out || now) - Date.parse(t.clock_in)) / 36e5), code: t.cost_code_id, phase: t.phase }));
+  }
+  function taskRows(job, asOf = today(), entries = laborEntries(job)) {
+    const tasks = all(db, `SELECT t.*, cc.code cost_code, cc.name cost_code_name FROM project_tasks t LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id
+      WHERE t.job_id = ? ORDER BY t.sort, t.start_date IS NULL, t.start_date, t.id`, job.id);
+    const ref = new Map(tasks.map((t, i) => [t.id, `T-${String(i + 1).padStart(3, '0')}`]));
+    const byId = new Map(tasks.map(t => [t.id, t]));
+    return tasks.map(t => {
+      const st = ymd(t.start_date), fin = ymd(t.finish_date), bud = t.budget_hours, pct = t.pct_complete;
+      const earned = bud != null ? r1(bud * (pct || 0) / 100) : null;
+      const plannedPct = st && fin ? Math.min(1, Math.max(0, (days(st, asOf) + 1) / Math.max(1, days(st, fin) + 1))) : null;
+      const planned = bud != null && plannedPct != null ? r1(bud * plannedPct) : null;
+      const until = fin || asOf;
+      const actual = st && (t.cost_code_id || t.phase)
+        ? r1(entries.filter(e => e.date >= st && e.date <= until && (t.cost_code_id ? e.code === t.cost_code_id : e.phase === t.phase)).reduce((x, e) => x + e.hours, 0)) : null;
+      const status = t.on_hold ? 'On Hold' : !t.phase && bud == null ? 'By Others' : pct == null && st && asOf >= st ? 'Update %' : pct >= 100 ? 'Complete'
+        : !(pct > 0) ? (st && asOf > st ? 'Late Start' : 'Not Started') : fin && asOf > fin ? 'Late' : 'In Progress';
+      const pred = t.predecessor_id ? byId.get(t.predecessor_id) : null;
+      const succStarts = tasks.filter(x => x.predecessor_id === t.id && x.start_date).map(x => ymd(x.start_date)).sort();
+      return { ...t, ref: ref.get(t.id), job_number: job.number, work_days: st && fin ? netDays(st, fin) : null, pred_ref: pred ? ref.get(pred.id) : null,
+        pred_conflict: !!(pred && pred.finish_date && st && st <= ymd(pred.finish_date)),
+        earned_hours: earned, planned_pct: plannedPct != null ? Math.round(plannedPct * 1000) / 10 : null, planned_hours: planned, actual_hours: actual,
+        hours_variance: actual != null ? r1((earned || 0) - actual) : null, spi: planned ? Math.round(earned / planned * 100) / 100 : null, status,
+        float_days: fin && succStarts.length ? netDays(fin, succStarts[0]) - 2 : null,
+        lookahead: !!(st && fin && status !== 'Complete' && fin >= addD(asOf, -7) && st <= addD(asOf, 14)) };
+    });
+  }
+  // the Manpower Loading tab's planned/actual hours by week, from the same tasks
+  function scheduleWeeks(job, rows, entries, cfg) {
+    const dated = rows.filter(r => r.start_date && r.finish_date);
+    const first = job.schedule_start || (dated.length ? dated.map(r => ymd(r.start_date)).sort()[0] : today());
+    const start = mondayOf(ymd(first));
+    const last = [today(), ...dated.map(r => ymd(r.finish_date))].sort().pop();
+    const n = Math.min(104, Math.max(8, Math.ceil((days(start, last) + 1) / 7)));
+    let cumP = 0, cumA = 0;
+    return Array.from({ length: n }, (_, i) => {
+      const ws = addD(start, i * 7), we = addD(ws, 6);
+      const planned = r1(dated.reduce((x, r) => {
+        const a = ymd(r.start_date), b = ymd(r.finish_date), lo = a > ws ? a : ws, hi = b < we ? b : we;
+        return lo > hi || !r.budget_hours ? x : x + r.budget_hours * (days(lo, hi) + 1) / Math.max(1, days(a, b) + 1);
+      }, 0));
+      const actual = r1(entries.filter(e => e.date >= ws && e.date <= we).reduce((x, e) => x + e.hours, 0));
+      cumP += planned; cumA += actual;
+      const crew = Math.round(planned / (cfg.hours_per_day * cfg.days_per_week * cfg.availability) * 10) / 10;
+      return { wk: i + 1, week_start: ws, week_ending: we, planned_hours: planned, planned_crew: crew, actual_hours: actual,
+        actual_crew: Math.round(actual / (cfg.hours_per_day * cfg.days_per_week) * 10) / 10, variance_hours: r1(actual - planned), cum_planned: r1(cumP), cum_actual: r1(cumA), over_max: crew > cfg.max_crew };
+    });
+  }
+  // % complete from the field: crew assigned to the job, its foreman, or someone who clocked in on it lately — not every tech who could clock in
+  const canProgress = (req, job) => isOffice(req.user) ? req.can('projects') : (req.can('daily_logs') && P.onProject(req.user, job));
+  app.get('/api/projects/:id/schedule', wrap((req, res) => {
+    const job = project(req, req.params.id), asOf = isDate(req.query.as_of || '') ? req.query.as_of : today();
+    const cfg = schedCfg(), entries = laborEntries(job), rows = taskRows(job, asOf, entries);
+    const sum = k => r1(rows.reduce((x, r) => x + (r[k] || 0), 0));
+    const totals = { budget_hours: sum('budget_hours'), earned_hours: sum('earned_hours'), planned_hours: sum('planned_hours'), actual_hours: sum('actual_hours') };
+    totals.spi = totals.planned_hours ? Math.round(totals.earned_hours / totals.planned_hours * 100) / 100 : null;
+    totals.pct_complete = totals.budget_hours ? Math.round(totals.earned_hours / totals.budget_hours * 1000) / 10 : null;
+    res.json({ rows, as_of: asOf, schedule_start: job.schedule_start, weeks: scheduleWeeks(job, rows, entries, cfg), cfg, totals,
+      lists: { phases: LISTS.phases, task_status: TASK_STATUS }, can_edit: isOffice(req.user) && req.can('projects'), can_progress: canProgress(req, job) });
+  }));
+  const cleanTask = (job, body, row = {}) => {
+    const d = clean(body, TASK_FIELDS);
+    for (const k of ['start_date', 'finish_date']) if (d[k] != null && !isDate(d[k])) throw bad(`${k.replace('_', ' ')} must be a date`);
+    const m = { ...row, ...d };
+    if (m.start_date && m.finish_date && m.finish_date < m.start_date) throw bad('Finish is before start');
+    if (d.phase && !LISTS.phases.includes(d.phase)) throw bad('Unknown phase');
+    for (const k of ['budget_hours', 'pct_complete', 'sort']) if (d[k] != null) { d[k] = Number(d[k]); if (!Number.isFinite(d[k]) || d[k] < 0) throw bad(`${k.replace('_', ' ')} must be a positive number`); }
+    if (d.pct_complete > 100) throw bad('% complete is 0 to 100');
+    if (d.on_hold !== undefined) d.on_hold = d.on_hold && d.on_hold !== '0' && d.on_hold !== 'false' ? 1 : 0;
+    if (d.cost_code_id) mustGet('cost_codes', d.cost_code_id);
+    if (d.predecessor_id) {
+      const p = mustGet('project_tasks', d.predecessor_id);
+      if (p.job_id !== job.id) throw bad('Predecessor is on another project');
+      for (let x = p, hops = 0; x; x = x.predecessor_id ? get(db, 'SELECT * FROM project_tasks WHERE id = ?', x.predecessor_id) : null)
+        if (x.id === row.id || ++hops > 500) throw bad('That predecessor would make a loop');
+    }
+    d.updated_at = new Date().toISOString();
+    return d;
+  };
+  app.post('/api/projects/:id/schedule', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true });
+    const d = cleanTask(job, req.body);
+    if (!d.name) throw bad('Task / activity is required');
+    if (d.sort == null) d.sort = (get(db, 'SELECT MAX(sort) m FROM project_tasks WHERE job_id = ?', job.id).m || 0) + 10;
+    res.json({ id: insert('project_tasks', { ...d, job_id: job.id }) });
+  }));
+  // the crew can post % complete from the field; everything else is the office's
+  app.put('/api/schedule/:id', wrap((req, res) => {
+    const row = mustGet('project_tasks', req.params.id), job = mustGet('jobs', row.job_id);
+    const full = isOffice(req.user);
+    project(req, job.id, { write: full });
+    if (!canProgress(req, job)) throw bad('You cannot update this schedule', 403);
+    const body = full ? req.body : pick(req.body || {}, ['pct_complete']);
+    if (!full && body.pct_complete === undefined) throw bad('Only % complete can be updated from the field', 403);
+    const d = cleanTask(job, body, row);
+    if (d.name === null) throw bad('Task / activity is required');
+    update('project_tasks', row.id, d); res.json({ ok: true });
+  }));
+  app.delete('/api/schedule/:id', wrap((req, res) => {
+    const row = mustGet('project_tasks', req.params.id); project(req, row.job_id, { write: true });
+    run(db, 'DELETE FROM project_tasks WHERE id = ?', row.id); res.json({ ok: true });
+  }));
+  // first pass at a schedule: one task per budgeted cost code that has no task yet, phase and hours from the budget
+  app.post('/api/projects/:id/schedule/build', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true });
+    const have = new Set(all(db, 'SELECT cost_code_id FROM project_tasks WHERE job_id = ? AND cost_code_id IS NOT NULL', job.id).map(r => r.cost_code_id));
+    const codes = all(db, `SELECT jb.cost_code_id, jb.budget_hours, cc.code, cc.name, cc.phase FROM job_budgets jb JOIN cost_codes cc ON cc.id = jb.cost_code_id
+      WHERE jb.job_id = ? AND jb.budget_hours > 0 ORDER BY cc.phase, cc.code`, job.id).filter(c => !have.has(c.cost_code_id));
+    if (!codes.length) throw bad(have.size ? 'Every budgeted labor code already has a task' : 'No labor hours budgeted by cost code yet — set the budget on the Cost Codes sheet first');
+    let sort = (get(db, 'SELECT MAX(sort) m FROM project_tasks WHERE job_id = ?', job.id).m || 0);
+    const start = job.start_date ? ymd(job.start_date) : null, finish = job.end_date ? ymd(job.end_date) : null;
+    for (const c of codes) insert('project_tasks', { job_id: job.id, name: c.name, phase: LISTS.phases.includes(c.phase) ? c.phase : null, cost_code_id: c.cost_code_id,
+      budget_hours: c.budget_hours, start_date: start, finish_date: start && finish && finish >= start ? finish : null, sort: sort += 10, updated_at: new Date().toISOString() });
+    res.json({ added: codes.length });
+  }));
+  app.put('/api/projects/:id/schedule-start', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), v = req.body && req.body.schedule_start;
+    if (v && !isDate(v)) throw bad('Schedule start must be a date');
+    update('jobs', job.id, { schedule_start: v ? mondayOf(v) : null }); res.json({ ok: true });
+  }));
+
   // ================================================================ Labor Log and Cost Log (read views over time entries / purchasing / costs)
   app.get('/api/projects/:id/labor-log', wrap((req, res) => {
     const job = project(req, req.params.id), now = new Date().toISOString();
@@ -404,11 +550,12 @@ module.exports = function workbookRoutes(app, db, X) {
   // counts for dashboards and flags
   return {
     exceptions(job) {
-      const r = rfiRows(job), sq = sqRows(job), ms = msRows(job);
-      return { rfis_open: r.filter(x => x.open).length, rfis_overdue: r.filter(x => x.overdue).length, safety_open: sq.filter(x => x.status !== 'Closed').length,
+      const r = rfiRows(job), sq = sqRows(job), ms = msRows(job), tk = taskRows(job);
+      return { tasks_late: tk.filter(x => x.status === 'Late' || x.status === 'Late Start').length, tasks_update: tk.filter(x => x.status === 'Update %').length, rfis_open: r.filter(x => x.open).length, rfis_overdue: r.filter(x => x.overdue).length, safety_open: sq.filter(x => x.status !== 'Closed').length,
         safety_overdue: sq.filter(x => x.status === 'Overdue').length, milestones_late: ms.filter(x => x.status === 'Late').length, milestones_at_risk: ms.filter(x => x.status === 'At Risk').length,
         pay_apps_over_45: payApps(job).filter(a => a.date_submitted && a.open_balance > 0.005 && days(a.date_submitted, today()) > 45).length };
     },
     LISTS,
+    taskRows,
   };
 };

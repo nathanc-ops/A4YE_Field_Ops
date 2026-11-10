@@ -365,3 +365,28 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 .wb-tabs a:hover { background: var(--surface); text-decoration: none; }
 .wb-tabs a.on { background: var(--brand); color: var(--brand-ink, #fff); font-weight: 600; }
 @media print { .wb-tabs, .side, .tabs, .top, .no-print { display: none !important; } .g702, .g703 { break-inside: avoid; border: 0; box-shadow: none; } body, .card { background: #fff !important; color: #000 !important; } }
+
+/* schedule & Gantt */
+.gantt-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); max-height: 70vh; }
+.gantt { border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap; }
+.gantt th, .gantt td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.gantt thead th { position: sticky; top: 0; background: var(--surface-2); z-index: 2; font-weight: 600; }
+.gantt thead tr:nth-child(2) th { top: 25px; }
+.gantt th.g, .gantt td.g { width: 30px; min-width: 30px; max-width: 30px; padding: 4px 0; text-align: center; border-left: 1px solid var(--border); font-size: 10px; color: var(--muted); }
+.gantt th.gm { text-align: left; padding-left: 4px; color: var(--text-2); }
+.gantt .g-task { min-width: 180px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+.gantt td.g-on { background: color-mix(in srgb, var(--info) 55%, transparent); }
+.gantt td.g-done { background: var(--good); }
+.gantt td.g-late { background: color-mix(in srgb, var(--bad) 60%, transparent); }
+.gantt .g-now { box-shadow: inset 2px 0 0 var(--warn); }
+.gantt td.gt { font-size: 10px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.gantt td.g-over { background: var(--bad-soft); color: var(--bad); font-weight: 700; }
+.gantt tfoot td { background: var(--surface-2); }
+.gantt tr.click:hover td:not(.g-on):not(.g-done):not(.g-late) { background: var(--surface-2); }
+.gantt .g-id { position: sticky; left: 0; min-width: 52px; width: 52px; background: var(--surface); z-index: 1; }
+.gantt .g-task { position: sticky; left: 52px; background: var(--surface); z-index: 1; box-shadow: inset -1px 0 0 var(--border); }
+.gantt thead th.g-id, .gantt thead th.g-task { z-index: 3; background: var(--surface-2); }
+.gantt .g-fixh, .gantt .g-foot { position: sticky; left: 0; z-index: 3; background: var(--surface-2); }
+.gantt tfoot .g-foot { z-index: 1; text-align: left; }
+.pct-in { width: 58px; padding: 2px 4px; text-align: right; font-size: 12px; }
+@media print { .gantt-wrap { max-height: none; overflow: visible; border: 0; } .gantt td.g-on, .gantt td.g-done, .gantt td.g-late { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }

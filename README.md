@@ -181,6 +181,7 @@ A commercial project's **Project** tab is laid out like `A4YE_Job_TEMPLATE.xlsx`
 | Sheet | What it does |
 |---|---|
 | Dashboard | KPIs, flags, team, crew today, hours by week |
+| Schedule | Tasks (T-001…) with phase, area, cost code, start/finish, predecessor, budget hours and % complete, drawn as a weekly Gantt. Work days (Mon–Fri), planned % against an as-of date, earned and planned hours, actual hours from the time clock on the task's code (or phase) between its dates, SPI, float to the next task, and the workbook's statuses (Not Started, In Progress, Late Start, Late, Update %, Complete, On Hold, By Others). Weekly planned hours, planned crew and actual hours run under the Gantt, and weeks over the max crew are flagged. Includes a 3-week look-ahead filter, **Build from budget** (one task per budgeted labor code), and CSV/print. The crew on the job can post % complete from the field. |
 | Cost Codes | Budget vs actual and % complete by code: earned hours, productivity, forecast |
 | Labor Log | Every punch on the project, from the A4Y Time Clock sync and the Field Ops clock |
 | Cost Log | POs (committed until received), material used, expenses and vendor bills, with open commitments |
@@ -192,11 +193,13 @@ A commercial project's **Project** tab is laid out like `A4YE_Job_TEMPLATE.xlsx`
 | RFI-Submittal / Safety-Quality / Milestones | The workbook's logs, with IDs (RFI-001, SQ-001, M-001), days open/late, and overdue / late / at-risk status |
 | Daily Logs | Work performed, delays, safety, visitors, deliveries, plus that day's time clock hours |
 
-Overdue RFIs and safety items, late milestones, and pay apps unpaid after 45 days show as project flags and on the commercial dashboard.
+Crew planning settings (hours/day, days/week, crew availability, max crew) are under Settings → Commercial projects; the defaults match the workbook's Cover tab (8 / 5 / 0.92 / 10).
+
+Overdue RFIs and safety items, late or late-starting schedule tasks, late milestones, and pay apps unpaid after 45 days show as project flags and on the commercial dashboard.
 
 A project bills **either** by pay application **or** from the job's Billing tab, never both, so work can't be billed twice.
 
-Not built yet from the workbook: the Gantt **Schedule**, **Manpower Loading** (planned vs actual crew), **Weekly History** snapshots, the **Bi-Weekly Report**, and **Estimate/Quote Import**.
+Not built yet from the workbook: the full **Manpower Loading** sheet (the Schedule shows its weekly planned/actual rows; the craft split and OT columns are still missing), **Weekly History** snapshots, the **Bi-Weekly Report**, and **Estimate/Quote Import**.
 
 ## A4Y Time Clock and cost codes
 

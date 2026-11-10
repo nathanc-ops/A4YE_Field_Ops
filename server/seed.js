@@ -193,6 +193,14 @@ function seed(db) {
     ins('job_budgets', { job_id: ti, cost_code_id: cc(code), budget_hours: h, budget_material: m, budget_other: code === '980' ? 175 : 0, percent_complete: p });
   ins('daily_logs', { job_id: ti, log_date: date(-8), user_id: mike.id, weather: 'Clear, 48°F', crew_count: 2,
     work_performed: 'Finished branch rough-in in the open office, started the conference room. Mounted the 100 A sub-panel.', delays: 'Ceiling grid going in early; need above-ceiling inspection by Thursday.' });
+  // ...and a schedule (Schedule & Gantt sheet): mobilize → rough-in → inspection → panel → trim
+  let prev = null, sort = 0;
+  for (const [name, phase, code, a, b, h, p, area] of [['Mobilize, layout & temp power', 'P1', '100', -20, -18, 8, 100, 'Suite 200'], ['Branch rough-in — open office', 'P2', '400', -17, -8, 70, 100, 'Open office'],
+      ['Branch rough-in — conference & break', 'P2', '400', -9, -2, 40, 40, 'Conference / break'], ['Above-ceiling inspection', null, null, -1, -1, null, null, 'Suite 200'],
+      ['Sub-panel & feeders', 'P4', '500', -6, 2, 16, 20, 'Elec room'], ['Trim, devices & fixtures', 'P6', '600', 3, 8, 30, null, 'Suite 200'], ['Punch & final inspection', null, null, 9, 10, null, null, 'Suite 200']]) {
+    prev = ins('project_tasks', { job_id: ti, name, phase, cost_code_id: code ? cc(code) : null, start_date: date(a), finish_date: date(b), budget_hours: h, pct_complete: p,
+      responsible: code ? 'Mike' : 'GC / AHJ', area, predecessor_id: prev, sort: sort += 10 });
+  }
 
   // More of today's work so the hourly board shows several visits per tech
   const quick = (c, title, techs, h0, h1, type = 'service', status = 'scheduled') => job({ customer_id: c.id, location_id: c.lid, title, job_type: type, status,

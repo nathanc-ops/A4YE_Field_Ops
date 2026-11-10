@@ -753,6 +753,30 @@ const MIGRATIONS = [
     for (const [k, v] of [['co_overhead_pct', '18'], ['co_profit_pct', '15'], ['material_tax_pct', '6'], ['default_retainage_pct', '5'], ['mobilization_pct', '5']])
       db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
   },
+  // 18: project schedule (the workbook's Schedule & Gantt tab) and the Cover tab's crew planning settings
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS project_tasks (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      phase TEXT, area TEXT,
+      name TEXT NOT NULL,
+      cost_code_id INTEGER REFERENCES cost_codes(id) ON DELETE SET NULL,
+      start_date TEXT, finish_date TEXT,
+      predecessor_id INTEGER REFERENCES project_tasks(id) ON DELETE SET NULL,
+      responsible TEXT,
+      budget_hours REAL,
+      pct_complete REAL,                      -- 0-100; NULL = not updated yet
+      on_hold INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      sort INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_job ON project_tasks(job_id);`);
+    addColumn(db, 'jobs', 'schedule_start', 'TEXT');
+    for (const [k, v] of [['sched_hours_per_day', '8'], ['sched_days_per_week', '5'], ['sched_crew_availability', '0.92'], ['sched_max_crew', '10']])
+      db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

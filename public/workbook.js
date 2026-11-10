@@ -1,9 +1,9 @@
 'use strict';
 /* A commercial project laid out like the A4YE job tracker workbook (A4YE_Job_TEMPLATE.xlsx).
- * Sheets, in the workbook's order: Dashboard · Cost Codes · Labor Log · Cost Log · Change Orders · SOV · Billing Entry ·
+ * Sheets, in the workbook's order: Dashboard · Schedule & Gantt · Cost Codes · Labor Log · Cost Log · Change Orders · SOV · Billing Entry ·
  * Pay Apps · Pay App (G702/G703) · RFI-Submittal · Safety-Quality · Milestones · Daily Logs. */
 const WB_SHEETS = [
-  ['dashboard', 'Dashboard'], ['codes', 'Cost Codes'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
+  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
   ['sov', 'SOV', 'bill'], ['billing', 'Billing Entry', 'bill'], ['payapps', 'Pay Apps', 'bill'], ['g702', 'Pay App (G702/G703)', 'bill'],
   ['rfi', 'RFI-Submittal'], ['safety', 'Safety-Quality'], ['milestones', 'Milestones'], ['logs', 'Daily Logs'],
 ];
@@ -20,7 +20,96 @@ async function projectTab(j, T) {
   T.innerHTML = `<div class="wb-tabs no-print">${sheets.map(([k, l]) => `<a href="#/jobs/${j.id}?tab=project&sheet=${k}" class="${k === sheet ? 'on' : ''}">${l}</a>`).join('')}</div><div id="wbs"></div>`;
   const W = $('#wbs', T);
   if (['dashboard', 'codes', 'logs'].includes(sheet)) return projectCoreSheet(j, W, sheet);
-  return ({ labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
+  return ({ schedule: wbSchedule, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
+}
+
+// ------------------------------------------------------------ Schedule & Gantt
+// Start, finish and budget hours drive the Gantt; planned % is time-based against the as-of date. One bar per task per week,
+// the done part shaded by % complete; under it the weekly planned hours and crew (the Manpower Loading math).
+const SCHED_TONE = { Complete: 'good', 'In Progress': 'info', Late: 'bad', 'Late Start': 'bad', 'Update %': 'warn', 'On Hold': 'warn', 'By Others': '', 'Not Started': '' };
+async function wbSchedule(j, W) {
+  const { params } = hashParams();
+  const asOf = params.get('asof') || '', la = params.get('la') === '1';
+  const d = await GET(`/projects/${j.id}/schedule${asOf ? `?as_of=${asOf}` : ''}`);
+  if (d.can_edit) await loadCostCodes();
+  const go = (k, v) => { const p = new URLSearchParams(params); if (v) p.set(k, v); else p.delete(k); location.hash = `#/jobs/${j.id}?${p}`; };
+  const rows = la ? d.rows.filter(r => r.lookahead) : d.rows;
+  const t = d.totals, late = d.rows.filter(r => r.status === 'Late' || r.status === 'Late Start').length, upd = d.rows.filter(r => r.status === 'Update %').length;
+  const n1 = v => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  const addDays = (s, n) => { const x = new Date(s + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const now = d.as_of, wkNow = d.weeks.find(w => w.week_start <= now && w.week_ending >= now);
+  const doneTo = r => { if (!r.start_date || !r.finish_date || !(r.pct_complete > 0)) return null;
+    const len = (Date.parse(r.finish_date) - Date.parse(r.start_date)) / 864e5 + 1; return addDays(r.start_date, Math.ceil(len * Math.min(100, r.pct_complete) / 100) - 1); };
+  const cell = (r, w) => {
+    const on = r.start_date && r.finish_date && r.start_date <= w.week_ending && r.finish_date >= w.week_start;
+    const dt = on && doneTo(r), done = dt && dt >= w.week_start;
+    const cls = ['g', on ? (done ? 'g-done' : r.status === 'Late' || r.status === 'Late Start' ? 'g-late' : 'g-on') : '', w === wkNow ? 'g-now' : ''].join(' ');
+    return `<td class="${cls}" title="${on ? esc(`${r.ref} ${r.name}: ${wbDate(r.start_date)} – ${wbDate(r.finish_date)}`) : ''}"></td>`;
+  };
+  const pctCell = r => d.can_progress && !r.on_hold ? `<input type="number" min="0" max="100" step="5" class="pct-in" data-pct="${r.id}" value="${r.pct_complete ?? ''}" placeholder="—">` : r.pct_complete == null ? '—' : `${n1(r.pct_complete)}%`;
+  const monthHead = d.weeks.map((w, i) => { const m = w.week_start.slice(0, 7); return i === 0 || d.weeks[i - 1].week_start.slice(0, 7) !== m ? `<th class="g gm" colspan="${d.weeks.filter(x => x.week_start.slice(0, 7) === m).length}">${new Date(w.week_start + 'T12:00:00Z').toLocaleString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' })}</th>` : ''; }).join('');
+  // compact by default so the Gantt is on screen; "All columns" shows the workbook's full set
+  const allCols = params.get('cols') === 'all';
+  const C = [
+    { l: 'ID', core: 1, td: r => `<b>${esc(r.ref)}</b>`, cls: 'g-id' }, { l: 'Phase', td: r => esc(r.phase || '') }, { l: 'Area / WBS', td: r => esc(r.area || '') },
+    { l: 'Task / activity', core: 1, td: r => `${esc(r.name)}${!allCols && r.pred_conflict ? ' <span class="pill warn" title="Starts before its predecessor finishes">!</span>' : ''}`, cls: 'g-task' },
+    { l: 'Code', td: r => esc(r.cost_code || '') }, { l: 'Start', core: 1, td: r => wbDate(r.start_date) }, { l: 'Finish', core: 1, td: r => wbDate(r.finish_date) },
+    { l: 'Work days', num: 1, td: r => r.work_days ?? '' },
+    { l: 'Pred.', td: r => r.pred_ref ? `${esc(r.pred_ref)}${r.pred_conflict ? ' <span class="pill warn" title="Starts before its predecessor finishes">!</span>' : ''}` : '' },
+    { l: 'Responsible', td: r => esc(r.responsible || '') }, { l: 'Budget hrs', num: 1, core: 1, td: r => n1(r.budget_hours) }, { l: '% complete', num: 1, core: 1, td: pctCell },
+    { l: 'Earned hrs', num: 1, td: r => n1(r.earned_hours) }, { l: 'Planned %', num: 1, td: r => r.planned_pct == null ? '' : n1(r.planned_pct) + '%' }, { l: 'Planned hrs', num: 1, td: r => n1(r.planned_hours) },
+    { l: 'Actual hrs', num: 1, core: 1, td: r => n1(r.actual_hours) }, { l: 'Hrs variance', num: 1, td: r => n1(r.hours_variance), st: r => r.hours_variance < 0 ? 'color:var(--bad)' : '' },
+    { l: 'SPI', num: 1, core: 1, td: r => r.spi ?? '', st: r => r.spi != null && r.spi < 0.9 ? 'color:var(--bad);font-weight:600' : '' },
+    { l: 'Status', core: 1, td: r => `<span class="pill ${SCHED_TONE[r.status] ?? ''}">${esc(r.status)}</span>` }, { l: 'Float (days)', num: 1, td: r => r.float_days ?? '', st: r => r.float_days < 0 ? 'color:var(--bad)' : '' },
+  ].filter(c => allCols || c.core);
+  const fixed = C.length;
+  W.innerHTML = `<div class="card"><div class="row spread"><h2>Schedule &amp; Gantt</h2><div class="row no-print">
+      <label class="small muted">As of <input type="date" id="sasof" value="${esc(d.as_of)}"></label>
+      <label class="small"><input type="checkbox" id="sla" ${la ? 'checked' : ''}> 3-week look-ahead</label>
+      <label class="small"><input type="checkbox" id="scols" ${allCols ? 'checked' : ''}> All columns</label>
+      ${d.can_edit ? '<button class="btn sm" id="sbuild">Build from budget</button><button class="btn primary sm" id="sadd">+ Task</button>' : ''}<button class="btn sm" id="scsv">CSV</button><button class="btn sm" onclick="print()">Print</button></div></div>
+    <p class="small muted">Start, finish and budget hours drive the Gantt. Planned % is time-based against the as-of date; earned = budget × % complete; actual hours come from the time clock on the task's cost code (or its phase) between start and finish. SPI under 1 is behind.${d.can_progress && !d.can_edit ? ' You can update % complete for your tasks.' : ''}</p>
+    <div class="grid g4" style="margin:12px 0">${kpi('Complete', t.pct_complete == null ? '—' : `${n1(t.pct_complete)}%`, `${n1(t.earned_hours)} of ${n1(t.budget_hours)} budget hrs earned`)}${kpi('SPI', t.spi ?? '—', `${n1(t.planned_hours)} hrs planned by ${wbDate(d.as_of)}`)}${kpi('Actual hours', n1(t.actual_hours), 'on scheduled codes, inside task dates')}${kpi('Needs attention', late + upd, `${late} late · ${upd} need % update`)}</div>
+    <div class="small muted no-print" style="margin-bottom:8px">Gantt week 1: <b>${wbDate(d.weeks[0] && d.weeks[0].week_start)}</b>${d.can_edit ? ' <a href="#" id="sstart">change</a>' : ''} · planned crew = planned hrs ÷ (${d.cfg.hours_per_day} h/day × ${d.cfg.days_per_week} days × ${d.cfg.availability} availability) · max crew ${d.cfg.max_crew}</div>
+    ${rows.length ? `<div class="gantt-wrap"><table class="gantt"><thead><tr><th colspan="${fixed}" class="g-fixh"></th>${monthHead}</tr>
+      <tr>${C.map(c => `<th class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.l}</th>`).join('')}${d.weeks.map(w => `<th class="g${w === wkNow ? ' g-now' : ''}" title="Week ${w.wk}: ${wbDate(w.week_start)} – ${wbDate(w.week_ending)}">${Number(w.week_start.slice(8))}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr data-id="${r.id}" class="${d.can_edit ? 'click' : ''}">${C.map(c => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}" style="${c.st ? c.st(r) : ''}">${c.td(r)}</td>`).join('')}
+        ${d.weeks.map(w => cell(r, w)).join('')}</tr>`).join('')}</tbody>
+      <tfoot>${[['Planned hrs', 'planned_hours'], ['Planned crew', 'planned_crew'], ['Actual hrs', 'actual_hours']].map(([lab, k]) => `<tr><td colspan="${fixed}" class="g-foot"><b>${lab}</b> <span class="small muted">by week</span></td>${d.weeks.map(w => `<td class="g gt${k === 'planned_crew' && w.over_max ? ' g-over' : ''}${w === wkNow ? ' g-now' : ''}" title="${esc(`Week ${w.wk} · ${lab}: ${w[k]}`)}">${w[k] ? Math.round(w[k]) : ''}</td>`).join('')}</tr>`).join('')}</tfoot>
+      </table></div>`
+    : `<div class="empty">${la ? 'Nothing in the 3-week look-ahead' : d.can_edit ? 'No tasks yet. "Build from budget" makes one task per budgeted labor cost code, or add tasks one at a time.' : 'No schedule yet'}</div>`}
+    ${d.weeks.some(w => w.over_max) ? `<div class="alert" style="margin-top:10px">Planned crew is over the max crew of ${d.cfg.max_crew} in week(s) ${d.weeks.filter(w => w.over_max).map(w => w.wk).join(', ')} — spread those tasks out or raise the max on the Settings page.</div>` : ''}</div>`;
+  $('#sasof', W).onchange = e => go('asof', e.target.value === todayStr() ? '' : e.target.value);
+  $('#sla', W).onchange = e => go('la', e.target.checked ? '1' : '');
+  $('#scols', W).onchange = e => go('cols', e.target.checked ? 'all' : '');
+  $$('[data-pct]', W).forEach(inp => inp.onchange = async () => {
+    const v = inp.value === '' ? null : Number(inp.value);
+    if (v != null && (v < 0 || v > 100)) return toast('% complete is 0 to 100', 'error');
+    if (await act(() => PUT(`/schedule/${inp.dataset.pct}`, { pct_complete: v }), 'Updated').catch(() => null)) route();
+  });
+  const csvCols = [['ref', 'Task ID'], ['job_number', 'Job#'], ['phase', 'Phase'], ['area', 'Area / WBS'], ['name', 'Task / Activity'], ['cost_code', 'Cost Code'], ['start_date', 'Start'], ['finish_date', 'Finish'],
+    ['work_days', 'Work Days'], ['pred_ref', 'Pred.'], ['responsible', 'Responsible'], ['budget_hours', 'Budget Hrs'], ['pct_complete', '% Complete'], ['earned_hours', 'Earned Hrs'], ['planned_pct', 'Planned %'],
+    ['planned_hours', 'Planned Hrs'], ['actual_hours', 'Actual Hrs'], ['hours_variance', 'Hrs Variance'], ['spi', 'SPI'], ['status', 'Status'], ['float_days', 'Float (days)'], ['notes', 'Notes']].map(([key, label]) => ({ key, label }));
+  $('#scsv', W).onclick = () => toCSV(csvCols, rows, `${j.number}_schedule.csv`);
+  if (!d.can_edit) return;
+  const open = (r = {}) => {
+    const others = d.rows.filter(x => x.id !== r.id).map(x => [x.id, `${x.ref} · ${x.name}`]);
+    const m = formModal({ title: r.id ? `Edit ${r.ref}` : 'New task', values: { ...r, on_hold: !!r.on_hold }, wide: true,
+      fields: [{ name: 'name', label: 'Task / activity', required: true, full: true }, { name: 'phase', label: 'Phase', type: 'select', options: d.lists.phases }, { name: 'area', label: 'Area / WBS' },
+        { name: 'cost_code_id', label: 'Cost code (actual hours come from it)', type: 'select', options: ccOptions('labor') }, { name: 'responsible', label: 'Responsible' },
+        { name: 'start_date', label: 'Start', type: 'date' }, { name: 'finish_date', label: 'Finish', type: 'date' }, { name: 'predecessor_id', label: 'Predecessor', type: 'select', options: others },
+        { name: 'budget_hours', label: 'Budget hours', type: 'number' }, { name: 'pct_complete', label: '% complete (0–100)', type: 'number' }, { name: 'sort', label: 'Order', type: 'number' },
+        { name: 'on_hold', label: 'On hold', type: 'checkbox' }, { name: 'notes', label: 'Notes', type: 'textarea', full: true }],
+      extra: r.id ? '<button type="button" class="btn danger sm" id="sdel" style="margin-top:8px">Delete task</button>' : '',
+      submit: async v => { v.on_hold = v.on_hold ? 1 : 0; if (r.id) await PUT(`/schedule/${r.id}`, v); else await POST(`/projects/${j.id}/schedule`, v); toast('Saved'); route(); } });
+    const x = $('#sdel', m.el); if (x) x.onclick = async () => { if (confirm(`Delete ${r.ref} ${r.name}?`)) { await act(() => DEL(`/schedule/${r.id}`), 'Deleted'); m.close(); route(); } };
+  };
+  $('#sadd', W).onclick = () => open({});
+  $$('tbody tr[data-id]', W).forEach(tr => tr.onclick = e => { if (!e.target.closest('input,a,button')) open(d.rows.find(r => r.id === Number(tr.dataset.id))); });
+  $('#sbuild', W).onclick = async () => { const r = await act(() => POST(`/projects/${j.id}/schedule/build`)).catch(() => null); if (r) { toast(`Added ${r.added} task(s) — set their start and finish dates`); route(); } };
+  if ($('#sstart', W)) $('#sstart', W).onclick = e => { e.preventDefault();
+    formModal({ title: 'Gantt start (week 1)', values: { schedule_start: d.schedule_start || '' }, fields: [{ name: 'schedule_start', label: 'Week of (snaps to Monday; blank = first task start)', type: 'date' }],
+      submit: async v => { await PUT(`/projects/${j.id}/schedule-start`, v); route(); } }); };
 }
 
 // ------------------------------------------------------------ Labor Log / Cost Log
