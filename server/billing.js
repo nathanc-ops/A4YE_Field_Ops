@@ -34,10 +34,16 @@ function contractValue(db, job) {
   return { base: r2(job.contract_amount || 0), change_orders: r2(cos.reduce((s, c) => s + c.amount, 0)), total: r2((job.contract_amount || 0) + cos.reduce((s, c) => s + c.amount, 0)) };
 }
 // Estimated total cost from the budget (hours × average loaded rate of the job's techs + material + other).
-// Average loaded labor cost per hour for the job's crew (or all techs when no one is assigned).
+// Loaded labor cost per hour used to price a labor budget: what the crew has actually cost on this job
+// (time entries carry the rate, including ones synced from the A4Y Time Clock), else the assigned crew's
+// wages, else all active techs, else the company's last 90 days of time.
 function laborRate(db, job) {
-  return get(db, `SELECT AVG(u.hourly_wage * (1 + u.burden_pct / 100.0)) r FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = ? AND u.hourly_wage > 0`, job.id).r
-    || get(db, "SELECT AVG(hourly_wage * (1 + burden_pct / 100.0)) r FROM users WHERE role = 'tech' AND active = 1 AND hourly_wage > 0").r || 0;
+  const hoursWeighted = where => get(db, `SELECT SUM(hourly_cost * h) / NULLIF(SUM(h), 0) r FROM (SELECT hourly_cost, (julianday(clock_out) - julianday(clock_in)) * 24 h
+    FROM time_entries WHERE clock_out IS NOT NULL AND hourly_cost > 0 AND ${where})`).r;
+  return hoursWeighted(`job_id = ${Number(job.id)}`)
+    || get(db, `SELECT AVG(u.hourly_wage * (1 + u.burden_pct / 100.0)) r FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = ? AND u.hourly_wage > 0`, job.id).r
+    || get(db, "SELECT AVG(hourly_wage * (1 + burden_pct / 100.0)) r FROM users WHERE role = 'tech' AND active = 1 AND hourly_wage > 0").r
+    || hoursWeighted("kind = 'job' AND clock_in > datetime('now', '-90 days')") || 0;
 }
 function budgetCost(db, job) {
   const b = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m, SUM(budget_other) o FROM job_budgets WHERE job_id = ?', job.id);
@@ -298,4 +304,4 @@ function wipReport(db) {
 }
 function money(n) { return (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' }); }
 
-module.exports = { laborRate, codesPercent, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };
+module.exports = { laborRate, codesPercent, budgetCost, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };

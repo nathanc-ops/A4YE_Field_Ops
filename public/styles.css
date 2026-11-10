@@ -345,3 +345,10 @@ input[type="color"] { height: 40px; padding: 3px; cursor: pointer; }
 .wbars > div { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; font-size: 11px; color: var(--muted); }
 .wbars i { display: block; width: 100%; background: var(--series-1); border-radius: 4px 4px 0 0; min-height: 2px; }
 select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
+
+/* commercial dashboard: job snapshot keeps readable columns and scrolls sideways */
+.snap table { min-width: 1400px; }
+.snap td, .snap th { white-space: nowrap; }
+.snap td:first-child { white-space: normal; min-width: 240px; }
+.snap td:last-child { white-space: normal; min-width: 280px; }
+@media print { .snap table { min-width: 0; } .snap td, .snap th { white-space: normal; } }

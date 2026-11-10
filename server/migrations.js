@@ -636,6 +636,33 @@ const MIGRATIONS = [
     db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('project_require_cost_code', '1')").run();
     db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('project_clock_any', '1')").run();
   },
+  // 14: the A4YE cost code list (same codes as the A4Y Time Clock and job tracker) replaces the placeholder codes;
+  //     links for syncing the A4Y Time Clock (employee id, job #, entry id)
+  db => {
+    for (const [col, def] of [['division', 'TEXT'], ['division_name', 'TEXT'], ['phase', 'TEXT'], ['details', 'TEXT']]) addColumn(db, 'cost_codes', col, def);
+    const ins = db.prepare(`INSERT INTO cost_codes (code, name, kind, active, division, division_name, phase, details) VALUES (?,?,?,1,?,?,?,?)
+      ON CONFLICT(code) DO UPDATE SET division = excluded.division, division_name = excluded.division_name, phase = excluded.phase, details = COALESCE(cost_codes.details, excluded.details)`);
+    for (const [code, name, div, divName, phase, details] of require('./a4ye_codes'))
+      ins.run(code, name, div === '80' ? 'labor' : 'both', div, divName, phase, details || null);
+    // retire the placeholder codes nobody has used yet (used ones stay, so history keeps its codes)
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(t => t.name)
+      .filter(t => t !== 'cost_codes' && db.prepare(`PRAGMA table_info(${t})`).all().some(c => c.name === 'cost_code_id'));
+    for (const [code] of DEFAULT_COST_CODES) {
+      const row = db.prepare('SELECT id FROM cost_codes WHERE code = ?').get(code);
+      if (row && !tables.some(t => db.prepare(`SELECT 1 x FROM ${t} WHERE cost_code_id = ? LIMIT 1`).get(row.id))) db.prepare('UPDATE cost_codes SET active = 0 WHERE id = ?').run(row.id);
+    }
+    addColumn(db, 'users', 'timeclock_id', 'TEXT');           // Employee ID in the A4Y Time Clock (e.g. EB3B7D64377)
+    addColumn(db, 'jobs', 'timeclock_job', 'TEXT');           // Job # in the A4Y Time Clock (e.g. 2417)
+    addColumn(db, 'time_entries', 'external_id', 'TEXT');     // Entry ID in the A4Y Time Clock
+    addColumn(db, 'time_entries', 'ext_job', 'TEXT');         // the time clock's Job #, kept so entries link once a job gets that number
+    addColumn(db, 'time_entries', 'source', 'TEXT');
+    addColumn(db, 'time_entries', 'labor_amount', 'REAL');    // the time clock's own Labor Amt (unburdened pay)
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_te_ext ON time_entries(external_id) WHERE external_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_te_extjob ON time_entries(ext_job) WHERE ext_job IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_jobs_tc ON jobs(timeclock_job);`);
+    for (const [k, v] of [['timezone', 'America/Boise'], ['timeclock_url', ''], ['timeclock_key', ''], ['timeclock_last_sync', ''], ['timeclock_auto', '1'], ['burden_default_pct', '35'], ['project_target_margin', '18']])
+      db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

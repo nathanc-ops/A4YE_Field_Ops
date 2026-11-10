@@ -58,7 +58,10 @@ function seed(db) {
     pb[code] = ins('pricebook', { code, name, kind, category, unit, unit_cost: cost, unit_price: price, labor_hours: hrs, taxable,
       qty_on_hand: kind === 'material' ? 20 : 0, reorder_point: kind === 'material' ? 8 : 0, vendor: kind === 'material' ? 'City Electric Supply' : null });
   run(db, 'UPDATE pricebook SET qty_on_hand = 3 WHERE id = ?', pb['MAT-AFCI']);
-  const cc = code => get(db, 'SELECT id FROM cost_codes WHERE code = ?', code).id;
+  // demo data was written against placeholder codes; file it under the matching A4YE codes
+  const CC_MAP = { 100: '0280', 200: '0310', 300: '0520', 400: '0810', 500: '0720', 600: '1010', 700: '1110', 750: '2110', 800: '6020', 850: '1610',
+    900: '5040', 950: '0280', 960: '0280', 970: '9010', 980: '5050', 990: '8100' };
+  const cc = code => get(db, 'SELECT id FROM cost_codes WHERE code = ?', CC_MAP[code] || code).id;
   const itemCodes = { 'SVC-DIAG': '800', 'LAB-HR': '800', 'PNL-200': '500', 'PNL-SUB100': '500', 'EV-L2': '850', 'GEN-INT': '850', 'SURGE-WH': '500', 'GFCI-REP': '600',
     'CAN-6': '700', 'FAN-INST': '700', 'CKT-20': '400', 'MAT-122': '400', 'MAT-142': '400', 'MAT-GFCI': '600', 'MAT-AFCI': '500', 'MAT-1P20': '500', 'MAT-EMT34': '400', 'MAT-BOX': '400', 'PERMIT': '980' };
   for (const [k, code] of Object.entries(itemCodes)) run(db, 'UPDATE pricebook SET cost_code_id = ? WHERE id = ?', cc(code), pb[k]);

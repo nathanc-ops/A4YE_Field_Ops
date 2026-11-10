@@ -461,6 +461,7 @@ async function jobForm(job, { customerId } = {}) {
     { name: 'start_date', label: 'Start date', type: 'date', proj: 1 }, { name: 'end_date', label: 'Target completion', type: 'date', proj: 1 },
     { name: 'gc_contact', label: 'GC / site contact', proj: 1 }, { name: 'gc_phone', label: 'Site contact phone', type: 'tel', proj: 1 },
     { name: 'gc_email', label: 'Site contact email', type: 'email', proj: 1 },
+    { name: 'timeclock_job', label: 'Time clock job # (A4Y Time Clock)', placeholder: 'e.g. 2417', proj: 1 },
   ];
   const techBoxes = `<div style="margin-top:10px"><label class="f"><span>Assigned techs</span></label><div class="row">${S.users.filter(u => u.active).map(u =>
     `<label class="check"><input type="checkbox" name="tech" value="${u.id}" ${(job.tech_ids || []).includes(u.id) ? 'checked' : ''}> ${esc(u.name)}</label>`).join('')}</div></div>`;
@@ -1439,6 +1440,7 @@ async function userForm(u) {
       { name: 'hourly_wage', label: 'Hourly wage $', type: 'number', default: 0 }, { name: 'burden_pct', label: 'Burden % (taxes, WC, benefits)', type: 'number', default: 25 },
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },
       { name: 'password', label: u.id ? 'New password (leave blank to keep)' : 'Password (8+ chars)', type: 'password', required: !u.id },
+      { name: 'timeclock_id', label: 'Time clock ID (A4Y Time Clock employee ID)', placeholder: 'e.g. EB3B7D64377' },
       { name: 'active', label: 'Active (can sign in)', type: 'checkbox', default: 1 }],
     extra: `<h3 style="margin-top:14px">Permissions</h3><div id="perms"></div>`,
     submit: async (d, form) => {

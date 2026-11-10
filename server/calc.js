@@ -345,7 +345,7 @@ function jobCostCodes(db, jobId) {
   for (const l of all(db, `SELECT bl.amount, bl.cost_code_id, cc.code, cc.name FROM bill_lines bl JOIN bills b ON b.id = bl.bill_id LEFT JOIN cost_codes cc ON cc.id = bl.cost_code_id
       WHERE bl.job_id = ? AND b.status != 'void' AND bl.job_material_id IS NULL AND b.po_id IS NULL`, jobId))
     row(l.cost_code_id, l.code, l.name).other_cost += l.amount;
-  const permitCode = get(db, "SELECT id, code, name FROM cost_codes WHERE code = '980'");
+  const permitCode = get(db, "SELECT id, code, name FROM cost_codes WHERE code IN ('5050', '980') ORDER BY active DESC, code = '5050' DESC LIMIT 1");
   for (const p of all(db, 'SELECT fee FROM permits WHERE job_id = ? AND fee > 0', jobId))
     row(permitCode && permitCode.id, permitCode && permitCode.code, permitCode && permitCode.name).other_cost += p.fee;
   return [...map.values()].map(r => {

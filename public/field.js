@@ -253,10 +253,12 @@ settingsExtras = async function (el) { // eslint-disable-line no-func-assign
       <form id="pjf"><div class="form-grid">
         ${fieldHtml({ name: 'project_require_cost_code', label: 'Require a cost code when clocking in on a project', type: 'checkbox', full: true }, s.project_require_cost_code !== '0')}
         ${fieldHtml({ name: 'project_clock_any', label: 'Techs can clock in on any open project (not only ones they are assigned to)', type: 'checkbox', full: true }, s.project_clock_any !== '0')}
+        ${fieldHtml({ name: 'project_target_margin', label: 'Target margin % (dashboard flags projects below it)', type: 'number' }, s.project_target_margin ?? 18)}
       </div><p class="small">Cost codes are under <b>Cost codes</b> on this page. To bring in the list from another system, use <a href="#/import">Import Data → Cost codes</a>.</p>
       <button class="btn primary" style="margin-top:6px">Save</button></form></div>`);
     $('#pjf').onsubmit = async e => { e.preventDefault(); const f = e.target;
-      S.settings = await act(() => PUT('/settings', { project_require_cost_code: f.project_require_cost_code.checked ? '1' : '0', project_clock_any: f.project_clock_any.checked ? '1' : '0' }), 'Project settings saved'); };
+      S.settings = await act(() => PUT('/settings', { project_require_cost_code: f.project_require_cost_code.checked ? '1' : '0', project_clock_any: f.project_clock_any.checked ? '1' : '0', project_target_margin: f.project_target_margin.value || '18' }), 'Project settings saved'); };
+    await timeclockCard(el, s);
   }
   const ts = await GET('/form-templates?all=1');
   el.insertAdjacentHTML('beforeend', `<div class="card"><div class="row spread"><h2>Checklist templates</h2><button class="btn" id="newtpl">+ Checklist</button></div>
@@ -289,3 +291,36 @@ function templateForm(t) {
 }
 
 boot();
+
+// ---------------------------------------------------------------- A4Y Time Clock sync (docs/TIMECLOCK.md)
+async function timeclockCard(el, s) {
+  const st = await GET('/timeclock/status');
+  const last = st.last;
+  el.insertAdjacentHTML('beforeend', `<div class="card"><h2>A4Y Time Clock</h2>
+    <p class="small muted">Crews keep using the A4Y Time Clock. Its entries come in here by Entry ID (re-syncing never duplicates), matched to people, projects (by <b>Time clock job #</b>) and cost codes. Setup steps: <code>docs/TIMECLOCK.md</code>.</p>
+    <p class="small">${st.configured ? `<span class="pill good">Connected</span> ${st.auto ? 'Syncs every hour.' : 'Automatic sync is off.'}` : '<span class="pill">Not connected</span> Paste the export link and key below, or upload a CSV.'}
+      ${st.entries} entries synced.${last && last.at ? ` Last sync ${fmtDT(last.at)}: ${last.created} new, ${last.updated} changed.` : ''}</p>
+    ${st.unlinked.length ? `<div class="alert" style="margin:8px 0"><b>Time clock job numbers not linked to a job yet</b> (hours are kept and attach as soon as a job gets the number under Edit → Time clock job #):
+      <div class="small" style="margin-top:4px">${st.unlinked.map(u => `#${esc(u.ext_job)} · ${u.n} entries · ${num(u.hours, 1)} h`).join('<br>')}</div></div>` : ''}
+    ${last && last.people_added && last.people_added.length ? `<div class="alert info" style="margin:8px 0">Added as inactive technicians (no login) so their hours count: ${last.people_added.map(esc).join(', ')}. Link or activate them under Team.</div>` : ''}
+    <form id="tcf"><div class="form-grid">
+      ${fieldHtml({ name: 'timeclock_url', label: 'Export link (Apps Script web app URL)', full: true, placeholder: 'https://script.google.com/macros/s/…/exec' }, s.timeclock_url)}
+      ${fieldHtml({ name: 'timeclock_key', label: s.timeclock_key_set ? 'Export key (saved — leave blank to keep)' : 'Export key', type: 'password' })}
+      ${fieldHtml({ name: 'timezone', label: 'Time zone of the time clock', type: 'select', options: ['America/Boise', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'America/Chicago', 'America/New_York'], blank: false }, s.timezone || 'America/Boise')}
+      ${fieldHtml({ name: 'timeclock_auto', label: 'Sync automatically every hour', type: 'checkbox', full: true }, s.timeclock_auto !== '0')}
+    </div><div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn primary">Save</button><button type="button" class="btn" id="tcsync" ${st.configured ? '' : 'disabled'}>Sync now</button>
+      <label class="btn">Upload CSV…<input type="file" id="tccsv" accept=".csv,text/csv" hidden></label></div></form></div>`);
+  const report = r => {
+    toast(`Time clock: ${r.created} new, ${r.updated} changed, ${r.unchanged} unchanged`);
+    const notes = [];
+    if (Object.keys(r.unmatched_jobs).length) notes.push(`Job numbers with no matching job yet: ${Object.entries(r.unmatched_jobs).map(([k, v]) => `#${k}${v ? ` ${v}` : ''}`).join(', ')}`);
+    if (r.people_added.length) notes.push(`Added as inactive technicians: ${r.people_added.join(', ')}`);
+    if (r.codes_added.length) notes.push(`New cost codes: ${r.codes_added.join(', ')}`);
+    if (notes.length) alert(notes.join('\n\n'));
+    route();
+  };
+  $('#tcf').onsubmit = async e => { e.preventDefault(); const f = e.target;
+    S.settings = await act(() => PUT('/settings', { timeclock_url: f.timeclock_url.value.trim(), timeclock_key: f.timeclock_key.value, timezone: f.timezone.value, timeclock_auto: f.timeclock_auto.checked ? '1' : '0' }), 'Time clock settings saved'); route(); };
+  $('#tcsync').onclick = async () => { const b = $('#tcsync'); b.disabled = true; b.textContent = 'Syncing…'; try { report(await act(() => POST('/timeclock/sync'))); } finally { b.disabled = false; b.textContent = 'Sync now'; } };
+  $('#tccsv').onchange = async e => { const file = e.target.files[0]; if (!file) return; const csv = await file.text(); report(await act(() => POST('/timeclock/upload', { csv }))); };
+}

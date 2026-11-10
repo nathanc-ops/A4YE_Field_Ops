@@ -225,8 +225,10 @@ const TYPES = {
     fields: [
       f('code', 'Code', ['code', 'cost code', 'number', 'cost code #', 'code #', 'phase', 'phase code', 'id'], { required: true }),
       f('name', 'Name', ['name', 'description', 'cost code name', 'title', 'phase name'], { required: true }),
-      f('kind', 'Used for (labor / material / both / other)', ['kind', 'type', 'category', 'used for', 'cost type']),
+      f('kind', 'Used for (labor / material / both / other)', ['kind', 'type', 'used for', 'cost type']),
       f('active', 'Active', ['active', 'enabled', 'status']),
+      f('category', 'Division / category (e.g. 08 Raceway)', ['category', 'division', 'div']), f('details', 'Details', ['details', 'notes', 'scope']),
+      f('hide', 'Hide (TRUE = turned off)', ['hide', 'hidden']),
     ],
   },
   vendors: {
@@ -558,15 +560,18 @@ const IMPORTERS = {
     const KIND = v => { v = String(v || '').toLowerCase(); return /both|all|labor.*mat|mat.*labor/.test(v) ? 'both' : /labou?r|hour|time/.test(v) ? 'labor' : /mat|part|suppl/.test(v) ? 'material' : v ? 'other' : 'both'; };
     const seen = new Set();
     eachRow(ctx, recs, r => {
-      const code = clip(String(r.code || '').trim(), 40), name = clip(String(r.name || '').trim(), 120);
+      // the time clock and job tracker add a type suffix (0810-L labor, -M material, -E equipment, -S sub); one code per base here
+      const code = clip(String(r.code || '').trim().replace(/-[LMES]$/i, ''), 40), name = clip(String(r.name || '').trim(), 120);
+      const div = (String(r.category || '').match(/^(\d{2})\b/) || [])[1] || (/^\d{4}$/.test(code) ? code.slice(0, 2) : null);
       if (!code) throw err('No code');
       if (!name) throw err(`Code ${code} has no name`);
       seen.add(code.toLowerCase());
+      if (r.hide != null && /^(true|yes|1|y)$/i.test(String(r.hide).trim())) r.active = 'no';
       const active = r.active == null || r.active === '' ? 1 : /^(n|no|0|false|inactive|off|disabled)$/i.test(String(r.active).trim()) ? 0 : 1;
-      const data = { name, kind: r.kind ? KIND(r.kind) : undefined, active };
+      const data = { name, kind: r.kind ? KIND(r.kind) : undefined, active, division: div || undefined, division_name: r.category ? clip(String(r.category).trim(), 80) : undefined, details: r.details ? clip(r.details, 300) : undefined };
       const existing = get(db, 'SELECT * FROM cost_codes WHERE lower(code) = ?', code.toLowerCase());
       if (existing) { if (update(db, 'cost_codes', existing.id, Object.fromEntries(Object.entries(data).filter(([k, v]) => v !== undefined && existing[k] !== v)))) ctx.updated++; }
-      else ctx.made('cost_code', insert(db, 'cost_codes', { code, name, kind: data.kind || 'both', active }));
+      else ctx.made('cost_code', insert(db, 'cost_codes', Object.fromEntries(Object.entries({ ...data, code, kind: data.kind || 'both' }).filter(([, v]) => v !== undefined))));
     });
     if (ctx.options.deactivate_missing && seen.size) {
       const off = all(db, 'SELECT id, code FROM cost_codes WHERE active = 1').filter(c => !seen.has(String(c.code).toLowerCase()));

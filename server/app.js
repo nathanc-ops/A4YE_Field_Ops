@@ -8,6 +8,7 @@ const A = require('./accounting');
 const Bill = require('./billing');
 const Geo = require('./geo');
 const P = require('./perms');
+const TC = require('./timeclock');
 
 const { all, get, run, tx } = D;
 
@@ -181,7 +182,7 @@ function createApp(db) {
     next();
   });
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
@@ -215,7 +216,7 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ users / employees
-  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active'];
+  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id'];
   app.get('/api/users', wrap((req, res) => {
     const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions';
     const s = D.settings(db);
@@ -333,7 +334,7 @@ function createApp(db) {
   const JOB_FIELDS = ['customer_id', 'location_id', 'title', 'description', 'job_type', 'priority', 'status', 'scheduled_start', 'scheduled_end',
     'lead_source', 'po_number', 'contract_amount', 'budget_hours', 'budget_materials', 'completion_notes',
     'billing_type', 'retainage_pct', 'percent_complete', 'labor_rate', 'material_markup_pct', 'trip_charge', 'nte_amount', 'bill_travel',
-    'is_project', 'project_manager_id', 'foreman_id', 'start_date', 'end_date', 'gc_contact', 'gc_phone', 'gc_email'];
+    'is_project', 'project_manager_id', 'foreman_id', 'start_date', 'end_date', 'gc_contact', 'gc_phone', 'gc_email', 'timeclock_job'];
   // A blank box means "use the default" for columns that can't be empty (the form blanks the other billing type's fields).
   const JOB_NOT_BLANK = { retainage_pct: 0, bill_travel: 1, job_type: 'service', priority: 'normal', billing_type: 'tm', is_project: 0 };
   const jobData = body => { const d = pick(body, JOB_FIELDS); for (const [k, v] of Object.entries(JOB_NOT_BLANK)) if (k in d && (d[k] === null || d[k] === '')) d[k] = v; return d; };
@@ -405,6 +406,7 @@ function createApp(db) {
       const jid = insert('jobs', { ...data, number: D.nextNumber(db, 'jobs', 'J') });
       setTechs(jid, req.body.tech_ids);
       if (data.scheduled_start) H.syncSingleAppointment(jid, data.scheduled_start, data.scheduled_end, req.body.tech_ids);
+      if (data.timeclock_job) TC.relink(db);
       return jid;
     });
     res.json({ id });
@@ -431,6 +433,7 @@ function createApp(db) {
     if (data.scheduled_start && job.status === 'unscheduled' && !data.status) data.status = 'scheduled';
     tx(db, () => {
       update('jobs', job.id, data);
+      if (data.timeclock_job) TC.relink(db);
       if (req.user.role !== 'tech') {
         setTechs(job.id, req.body.tech_ids);
         if (data.scheduled_start) H.syncSingleAppointment(job.id, data.scheduled_start, data.scheduled_end, req.body.tech_ids);
@@ -565,6 +568,23 @@ function createApp(db) {
     const codes = id => all(db, 'SELECT cost_code_id FROM job_budgets WHERE job_id = ?', id).map(r => r.cost_code_id);
     res.json({ jobs: mine.filter(j => !j.is_project), projects: projects.map(p => ({ ...p, cost_code_ids: codes(p.id) })),
       require_cost_code: D.settings(db).project_require_cost_code !== '0' });
+  }));
+  // ---- A4Y Time Clock sync (server/timeclock.js)
+  app.get('/api/timeclock/status', office, wrap((req, res) => {
+    const s = D.settings(db);
+    let last = null; try { last = JSON.parse(s.timeclock_last_sync || 'null'); } catch { /* none yet */ }
+    res.json({ configured: !!s.timeclock_url, auto: s.timeclock_auto !== '0', timezone: s.timezone, last,
+      entries: get(db, 'SELECT COUNT(*) n FROM time_entries WHERE external_id IS NOT NULL').n,
+      unlinked: all(db, `SELECT ext_job, COUNT(*) n, ROUND(SUM((julianday(COALESCE(clock_out, clock_in)) - julianday(clock_in)) * 24), 1) hours FROM time_entries
+        WHERE ext_job IS NOT NULL AND job_id IS NULL GROUP BY ext_job ORDER BY n DESC`) });
+  }));
+  app.post('/api/timeclock/sync', office, wrap(async (req, res) => res.json(await TC.pull(db, { userId: req.user.id }))));
+  app.post('/api/timeclock/upload', office, wrap((req, res) => {
+    const rows = require('./importer').parseRows(String(req.body.csv || ''));
+    if (rows.length < 2) throw bad('That file has no rows. Download the "Time Entries" tab as CSV and try again.');
+    const head = rows[0].map(h => String(h).trim());
+    if (!head.some(h => /entry id/i.test(h))) throw bad('No "Entry ID" column. Use the "Time Entries" tab of the A4Y Time Clock sheet.');
+    res.json(TC.ingest(db, rows.slice(1).map(r => Object.fromEntries(head.map((h, i) => [h, r[i]]))), { userId: req.user.id }));
   }));
   app.get('/api/time/clocked-in', office, wrap((req, res) => {
     res.json(all(db, `SELECT t.*, u.name user_name, j.number job_number, j.title job_title FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE t.clock_out IS NULL ORDER BY t.clock_in`));
@@ -1031,7 +1051,7 @@ function createApp(db) {
   }));
   app.get('/api/reports/wip', office, wrap((req, res) => res.json(Bill.wipReport(db))));
   require('./routes_import')(app, db, { wrap, bad, admin, H });
-  require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs });
+  require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs, addDays });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

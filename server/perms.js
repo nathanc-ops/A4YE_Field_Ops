@@ -73,6 +73,7 @@ const RULES = [
   R('POST,PUT,DELETE', /^\/api\/pricebook(\/|$)/, 'pricebook'),
   R('*', /^\/api\/expenses(\/|$)/, 'expenses'),
   R('POST', /^\/api\/time$/, 'timesheets'),
+  R('*', /^\/api\/timeclock\//, 'timesheets'),
   R('PUT,DELETE', /^\/api\/time\/\d+$/, 'timesheets'),
   R('GET', /^\/api\/reports\/(payroll|hours-by-job)$/, 'timesheets'),
   R('GET', /^\/api\/reports\/permits$/, 'jobs'),

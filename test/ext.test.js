@@ -42,8 +42,8 @@ before(async () => {
   tokens.tech = (await call(null, 'POST', '/login', { email: 't@x.com', password: 'longenough' })).data.token;
   ids.cust = (await call('admin', 'POST', '/customers', { name: 'Biz', type: 'commercial', location: { address: '1 Main' } })).data.id;
   const codes = (await call('admin', 'GET', '/cost-codes')).data;
-  ids.rough = codes.find(c => c.code === '400').id;
-  ids.trim = codes.find(c => c.code === '600').id;
+  ids.rough = codes.find(c => c.code === '0810').id;
+  ids.trim = codes.find(c => c.code === '1010').id;
   ids.gfci = (await call('admin', 'POST', '/pricebook', { code: 'MAT-GFCI', name: 'GFCI', kind: 'material', unit_cost: 20, unit_price: 40, qty_on_hand: 10, cost_code_id: ids.trim })).data.id;
   ids.rough_task = (await call('admin', 'POST', '/pricebook', { name: 'Rough-in per opening', kind: 'service', unit_cost: 10, unit_price: 90, labor_hours: 0.5, cost_code_id: ids.rough })).data.id;
   ids.vendor = (await call('admin', 'POST', '/vendors', { name: 'City Electric', terms_days: 30 })).data.id;
@@ -57,10 +57,10 @@ test('estimate → job builds cost-code budgets', async () => {
   await call('admin', 'PUT', `/estimates/${est}`, { status: 'approved' });
   ids.job = (await call('admin', 'POST', `/estimates/${est}/convert-to-job`, {})).data.id;
   const job = (await call('admin', 'GET', `/jobs/${ids.job}`)).data;
-  const rough = job.budgets.find(b => b.code === '400');
+  const rough = job.budgets.find(b => b.code === '0810');
   assert.equal(rough.budget_hours, 10);
   assert.equal(rough.budget_material, 200);
-  assert.equal(job.budgets.find(b => b.code === '600').budget_material, 80);
+  assert.equal(job.budgets.find(b => b.code === '1010').budget_material, 80);
   assert.equal(job.budget_hours, 10);
 });
 
@@ -98,7 +98,7 @@ test('tech status on site clocks in with appointment; cost-coded time costs to t
   const s = new Date(Date.now() - 6 * 3600e3);
   await call('admin', 'POST', '/time', { user_id: ids.tech, job_id: ids.job, cost_code_id: ids.rough, clock_in: s.toISOString(), clock_out: new Date(s.getTime() + 4 * 3600e3).toISOString() });
   const job = (await call('admin', 'GET', `/jobs/${ids.job}`)).data;
-  const rough = job.cost_codes.find(c => c.code === '400');
+  const rough = job.cost_codes.find(c => c.code === '0810');
   assert.equal(rough.hours, 4);
   assert.equal(rough.labor_cost, 200);
   assert.equal(rough.hours_variance, 6);
@@ -113,7 +113,7 @@ test('pick list pulls stock to the job and posts inventory → job materials', a
   const pb = (await call('admin', 'GET', '/pricebook')).data.find(x => x.id === ids.gfci);
   assert.equal(pb.qty_on_hand, 6);
   const job = (await call('admin', 'GET', `/jobs/${ids.job}`)).data;
-  assert.equal(job.cost_codes.find(c => c.code === '600').material_cost, 80);
+  assert.equal(job.cost_codes.find(c => c.code === '1010').material_cost, 80);
   const tb = (await call('admin', 'GET', '/accounting/trial-balance')).data;
   assert.equal(tb.rows.find(r => r.number === '5100').debit, 80);
   assert.equal(tb.rows.find(r => r.number === '1300').credit, 80);
@@ -133,7 +133,7 @@ test('PO to job: receive → job materials; bill → AP & job materials; pay bil
   // stock untouched for job delivery
   assert.equal((await call('admin', 'GET', '/pricebook')).data.find(x => x.id === ids.gfci).qty_on_hand, 6);
   let job = (await call('admin', 'GET', `/jobs/${ids.job}`)).data;
-  assert.equal(job.cost_codes.find(c => c.code === '400').material_cost, 450);
+  assert.equal(job.cost_codes.find(c => c.code === '0810').material_cost, 450);
   const before = job.costing.total_cost;
   const bill = (await call('admin', 'POST', `/purchase-orders/${po}/bill`, { vendor_invoice: 'S100-1', total: 640 })).data.id;
   const b = (await call('admin', 'GET', `/bills/${bill}`)).data;
@@ -198,7 +198,7 @@ test('Ply: push PO to API, pull items, and accept signed webhooks', async () => 
   assert.equal(r.status, 200);
   const sent = plyCalls.find(c => c.url === '/v1/purchase-orders');
   assert.equal(sent.auth, 'Bearer sk_test');
-  assert.equal(sent.body.lines[0].cost_code, '600');
+  assert.equal(sent.body.lines[0].cost_code, '1010');
   assert.equal(sent.body.job.external_id, (await call('admin', 'GET', `/jobs/${ids.job}`)).data.number);
   const P = (await call('admin', 'GET', `/purchase-orders/${po}`)).data;
   assert.ok(P.ply_id);

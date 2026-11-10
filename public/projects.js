@@ -2,38 +2,102 @@
 /* Commercial projects: list page (#/projects) and the "Project" tab on a project's job page.
  * A project is a job marked "Commercial project" (Book job → tick the box). It keeps the job's contract,
  * change orders, retainage, billing and cost-code budgets, and adds progress by cost code, crew and daily logs. */
-NAV.splice(NAV.findIndex(n => n.href === '#/jobs') + 1, 0, { href: '#/projects', label: 'Projects', icon: '🏗' });
+NAV.splice(NAV.findIndex(n => n.href === '#/jobs') + 1, 0, { href: '#/projects', label: 'Commercial Projects', icon: '🏗' });
 ROUTES.push([/^\/projects$/, () => viewProjects()]);
 
 const prodPill = p => p == null ? '—' : `<span class="pill ${p >= 1 ? 'good' : p >= 0.9 ? 'warn' : 'bad'}" title="Earned hours ÷ hours used. Above 1 is ahead of budget.">${num(p, 2)}</span>`;
 const barPct = (v, cap = 100) => `<div class="cap ${v > 100 ? 'over' : v >= 90 ? 'full' : ''}" style="margin:4px 0 0"><i style="width:${Math.min(cap, Math.max(0, v || 0))}%"></i></div>`;
 const daysLeft = d => d ? Math.round((new Date(d + 'T00:00:00') - new Date(todayStr() + 'T00:00:00')) / 864e5) : null;
 
+// Company roll-up of every commercial project — the Master Tracker's dashboard, live.
 async function viewProjects() {
   const { params } = hashParams(); const status = params.get('status') || 'active';
-  const list = await GET('/projects' + qs({ status }));
-  const seeMoney = isOffice() && can('see_costs');
-  const sum = k => list.reduce((s, p) => s + (p.summary[k] || 0), 0);
-  const under = list.reduce((s, p) => s + Math.min(0, p.summary.over_under || 0), 0);
-  $('#view').innerHTML = setTop('Commercial Projects', isOffice() && can('jobs') ? '<button class="btn primary" id="newp">+ New project</button>' : '',
-    'Contract, progress by cost code, labor hours vs budget, billing position, crew and daily logs.') + `
-    ${isOffice() ? `<div class="grid g4">${kpi('Projects', list.length, status === 'active' ? 'open' : status)}${kpi('Contract value', money0(sum('contract')), `${money0(sum('billed'))} billed`)}
-      ${kpi('Under-billed', money0(-under), 'work done but not yet billed')}${kpi('Need attention', list.filter(p => p.summary.flags.length).length, 'see flags below')}</div>` : ''}
-    <div class="card" style="margin-top:14px"><div class="tabs">${[['active', 'Active'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) => `<button class="${k === status ? 'on' : ''}" data-s="${k}">${l}</button>`).join('')}</div>
-    ${table([
-      { label: 'Project', html: p => `<b>${esc(p.number)}</b> ${esc(p.title)}<div class="muted small">${esc(p.customer_name)}${p.pm_name ? ` · PM ${esc(p.pm_name)}` : ''}${p.foreman_name ? ` · Foreman ${esc(p.foreman_name)}` : ''}</div>` },
-      { label: 'Finish', html: p => { const d = daysLeft(p.end_date); return p.end_date ? `${fmtDate(p.end_date)}<div class="small ${d < 0 ? '' : 'muted'}" style="${d < 0 ? 'color:var(--bad)' : ''}">${d < 0 ? `${-d} days late` : `${d} days left`}</div>` : '—'; } },
-      { label: '% complete', num: 1, html: p => p.summary.percent_complete == null ? '—' : `${pct(p.summary.percent_complete)}${barPct(p.summary.percent_complete)}` },
-      { label: 'Hours', num: 1, html: p => `${num(p.summary.hours, 0)}${p.summary.budget_hours ? ` / ${num(p.summary.budget_hours, 0)}${barPct(p.summary.hours_pct)}` : ''}` },
-      ...(seeMoney ? [{ label: 'Contract', num: 1, html: p => p.summary.contract != null ? money0(p.summary.contract) : '<span class="muted">T&amp;M</span>' },
-        { label: 'Billed', num: 1, html: p => `${money0(p.summary.billed)}${p.summary.billed_pct != null ? `<div class="small muted">${pct(p.summary.billed_pct)}</div>` : ''}` },
-        { label: 'Over / under', num: 1, html: p => p.summary.over_under == null ? '—' : `<span style="color:var(${p.summary.over_under < 0 ? '--bad' : '--good'})">${money0(p.summary.over_under)}</span>` },
-        { label: 'Proj. margin', num: 1, get: p => p.summary.projected_margin_pct == null ? '—' : pct(p.summary.projected_margin_pct) }] : []),
-      { label: 'On site', html: p => p.summary.crew_now.length ? `<span class="pill good">● ${p.summary.crew_now.length}</span>` : '<span class="muted">—</span>' },
-      { label: 'Flags', html: p => p.summary.flags.map(f => `<div class="small" style="color:var(--bad)">${esc(f)}</div>`).join('') || '<span class="muted small">On track</span>' },
-    ], list, { onClick: p => go(`#/jobs/${p.id}?tab=project`), empty: status === 'active' ? 'No open commercial projects. Use “+ New project”, or tick “Commercial project” when booking a job.' : 'None' })}</div>`;
-  $$('[data-s]').forEach(b => b.onclick = () => go('#/projects' + qs({ status: b.dataset.s })));
+  if (!isOffice()) return viewMyProjects();
+  const d = await GET('/projects/dashboard' + qs({ status }));
+  const t = d.totals, M = d.money;
+  const tone = (v, good, warn) => v == null ? '' : v >= good ? 'good' : v >= warn ? 'warn' : 'bad';
+  const idx = v => v == null ? '—' : num(v, 2);
+  const signed = v => v == null ? '—' : `<span style="color:var(${v < 0 ? '--bad' : '--good'})">${v < 0 ? `(${money0(-v)})` : money0(v)}</span>`;
+  const mTone = r => r.margin_pct == null ? '' : r.margin_pct < t.target_margin ? 'bad' : r.margin_pct < t.target_margin + 5 ? 'warn' : 'good';
+  const summary = M ? [
+    `Contract of <b>${money0(t.contract)}</b> across ${t.projects} project${t.projects === 1 ? '' : 's'}${t.approved_co ? ` (${money0(t.approved_co)} in approved change orders)` : ''}, projected to finish at <b>${money0(t.eac)}</b> cost for a <b>${pct(t.margin_pct)}</b> margin (target ${t.target_margin}%).`,
+    `Spent ${money0(t.actual_cost)} plus ${money0(t.open_commit)} committed against a ${money0(t.budget_cost)} budget; the work is ${pct(t.percent_complete)} complete${t.cpi != null ? `, earning ${num(t.cpi, 2)} of budget per dollar spent (CPI)` : ''}.`,
+    `Schedule: ${t.spi != null ? `SPI ${num(t.spi, 2)} — ${t.spi >= 1 ? 'ahead of' : t.spi >= 0.9 ? 'close to' : 'behind'} plan` : 'add start and finish dates to see schedule performance'}. ${num(t.hours, 0)} labor hours of ${num(t.budget_hours, 0)} budgeted.`,
+    `Billing: ${money0(t.billed)} billed, ${money0(t.cash)} collected, ${money0(t.retainage)} retainage held; ${t.over_under < 0 ? `<b>${money0(-t.over_under)} under-billed</b> (work done, not yet billed)` : `${money0(t.over_under)} over-billed`}.${t.pending_co ? ` Exposure: ${money0(t.pending_co)} in change orders not yet approved.` : ''}`,
+  ] : [`${t.projects} project${t.projects === 1 ? '' : 's'}, ${pct(t.percent_complete)} complete overall. ${num(t.hours, 0)} labor hours of ${num(t.budget_hours, 0)} budgeted${t.spi != null ? `; schedule SPI ${num(t.spi, 2)}` : ''}.`];
+  const cols = M ? [
+    { label: 'Job', html: r => `<b>${esc(r.number)}</b> ${esc(r.title)}<div class="muted small">${esc(r.customer_name)}${r.pm_name ? ` · PM ${esc(r.pm_name)}` : ''}${r.timeclock_job ? ` · clock #${esc(r.timeclock_job)}` : ''}</div>`, csv: r => `${r.number} ${r.title}` },
+    { label: '% Compl', num: 1, html: r => r.percent_complete == null ? '—' : `${pct(r.percent_complete)}${barPct(r.percent_complete)}`, csv: r => r.percent_complete },
+    { label: 'Revised contract', num: 1, html: r => r.contract == null ? '<span class="muted">T&amp;M</span>' : money0(r.contract), csv: r => r.contract },
+    { label: 'Budget cost', num: 1, get: r => r.budget_cost == null ? '—' : money0(r.budget_cost), csv: r => r.budget_cost },
+    { label: 'Actual cost', num: 1, get: r => money0(r.actual_cost), csv: r => r.actual_cost },
+    { label: 'Open commit', num: 1, get: r => r.open_commit ? money0(r.open_commit) : '—', csv: r => r.open_commit },
+    { label: 'Projected cost', num: 1, get: r => money0(r.eac), csv: r => r.eac },
+    { label: 'Margin', num: 1, html: r => r.margin == null ? '—' : `${money0(r.margin)}<div class="small"><span class="pill ${mTone(r)}">${pct(r.margin_pct)}</span></div>`, csv: r => r.margin },
+    { label: 'Margin %', num: 1, html: () => '', csv: r => r.margin_pct, hide: 1 },
+    { label: 'CPI', num: 1, html: r => r.cpi == null ? '—' : `<span class="pill ${tone(r.cpi, 1, 0.9)}">${idx(r.cpi)}</span>`, csv: r => r.cpi },
+    { label: 'SPI', num: 1, html: r => r.spi == null ? '—' : `<span class="pill ${tone(r.spi, 1, 0.9)}">${idx(r.spi)}</span>`, csv: r => r.spi },
+    { label: 'Billed', num: 1, html: r => `${money0(r.billed)}${r.contract ? `<div class="small muted">${pct(r.billed / r.contract * 100)}</div>` : ''}`, csv: r => r.billed },
+    { label: 'Over / (under)', num: 1, html: r => signed(r.over_under), csv: r => r.over_under },
+    { label: 'Hours', num: 1, html: r => `${num(r.hours, 0)}${r.budget_hours ? ` / ${num(r.budget_hours, 0)}${barPct(r.hours / r.budget_hours * 100)}` : ''}`, csv: r => r.hours },
+    { label: 'Watch', html: r => r.flags.map(f => `<div class="small" style="color:var(--bad)">${esc(f)}</div>`).join('') || '<span class="pill good">On track</span>', csv: r => r.flags.join('; ') },
+  ] : [
+    { label: 'Job', html: r => `<b>${esc(r.number)}</b> ${esc(r.title)}<div class="muted small">${esc(r.customer_name)}</div>`, csv: r => `${r.number} ${r.title}` },
+    { label: 'Finish', get: r => r.end_date ? fmtDate(r.end_date) : '—', csv: r => r.end_date },
+    { label: '% Compl', num: 1, html: r => r.percent_complete == null ? '—' : `${pct(r.percent_complete)}${barPct(r.percent_complete)}`, csv: r => r.percent_complete },
+    { label: 'SPI', num: 1, html: r => r.spi == null ? '—' : `<span class="pill ${tone(r.spi, 1, 0.9)}">${idx(r.spi)}</span>`, csv: r => r.spi },
+    { label: 'Hours', num: 1, html: r => `${num(r.hours, 0)}${r.budget_hours ? ` / ${num(r.budget_hours, 0)}${barPct(r.hours / r.budget_hours * 100)}` : ''}`, csv: r => r.hours },
+    { label: 'On site', num: 1, get: r => r.crew_now || '—', csv: r => r.crew_now },
+    { label: 'Watch', html: r => r.flags.map(f => `<div class="small" style="color:var(--bad)">${esc(f)}</div>`).join('') || '<span class="pill good">On track</span>', csv: r => r.flags.join('; ') },
+  ];
+  const ex = d.exceptions;
+  $('#view').innerHTML = setTop('Commercial Dashboard', `<div class="seg">${[['active', 'Active'], ['all', 'All projects']].map(([k, l]) => `<a href="#/projects${qs({ status: k })}" class="${k === status ? 'on' : ''}">${l}</a>`).join('')}</div>
+      <button class="btn" id="pcsv">Export CSV</button><button class="btn" onclick="print()">Print</button>${can('jobs') ? '<button class="btn primary" id="newp">+ New project</button>' : ''}`,
+    `Company roll-up of ${t.projects} commercial project${t.projects === 1 ? '' : 's'} · as of ${fmtDate(d.as_of)}`) + `
+    <div class="card"><h2>Executive summary</h2>${summary.map(x => `<p style="margin:4px 0">${x}</p>`).join('')}</div>
+    ${M ? `<h3 style="margin:16px 0 6px">Contract &amp; margin</h3><div class="grid g4">
+      ${kpi('Revised contract', money0(t.contract), `original ${money0(t.original)} + approved COs ${money0(t.approved_co)}`)}
+      ${kpi('Projected cost (EAC)', money0(t.eac), 'at current cost performance')}
+      ${kpi('Projected margin', money0(t.margin), `<span class="pill ${t.margin_pct == null ? '' : t.margin_pct < t.target_margin ? 'bad' : 'good'}">${pct(t.margin_pct)}</span> vs ${t.target_margin}% target`)}
+      ${kpi('% complete', pct(t.percent_complete), 'earned value ÷ budget')}</div>
+    <h3 style="margin:16px 0 6px">Cost</h3><div class="grid g4">
+      ${kpi('Budget cost', money0(t.budget_cost), 'cost-code budgets')}${kpi('Actual cost to date', money0(t.actual_cost), 'labor + material + other')}
+      ${kpi('Open commitments', money0(t.open_commit), 'POs sent, not yet received')}${kpi('Cost variance', signed(t.cost_variance), 'budget less cost &amp; commitments')}</div>` : ''}
+    <h3 style="margin:16px 0 6px">Performance</h3><div class="grid g4">
+      ${M ? kpi('CPI', `<span class="pill ${tone(t.cpi, 1, 0.9)}" style="font-size:inherit">${idx(t.cpi)}</span>`, 'earned ÷ actual cost (1.00 = on budget)') : kpi('% complete', pct(t.percent_complete), 'by cost-code progress')}
+      ${kpi('SPI', `<span class="pill ${tone(t.spi, 1, 0.9)}" style="font-size:inherit">${idx(t.spi)}</span>`, 'earned ÷ planned hours (straight-line plan)')}
+      ${kpi('Labor hours', `${num(t.hours, 0)}`, `of ${num(t.budget_hours, 0)} budgeted${t.budget_hours ? ` (${pct(t.hours / t.budget_hours * 100)})` : ''}`)}
+      ${kpi('On site now', t.crew_now, 'clocked in on a project')}</div>
+    ${M ? `<h3 style="margin:16px 0 6px">Billing</h3><div class="grid g4">
+      ${kpi('Billed to date', money0(t.billed), t.contract ? `${pct(t.billed / t.contract * 100)} of contract` : '')}${kpi('Cash received', money0(t.cash), 'payments recorded')}
+      ${kpi('Retainage held', money0(t.retainage), 'owed at closeout')}${kpi('Over / (under) billed', signed(t.over_under), 'billed less earned revenue')}</div>` : ''}
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h2>Exceptions &amp; watch list</h2>${table([{ label: 'Item', key: 'label' },
+        { label: 'Count', num: 1, html: e => e.count ? `<span class="pill bad">${e.count}</span>` : '<span class="pill good">0</span>' },
+        ...(M ? [{ label: 'Amount', num: 1, get: e => e.amount ? money0(e.amount) : '' }] : []),
+        { label: 'Jobs', html: e => e.jobs.map(n => { const r = d.projects.find(p => p.number === n); return r ? `<a href="#/jobs/${r.id}?tab=project">${esc(n)}</a>` : esc(n); }).join(', ') }], ex)}</div>
+      <div class="card"><h2>Labor hours by week</h2>${weekBars(d.weeks)}</div>
+    </div>
+    <div class="card snap" style="margin-top:14px"><h2>Job snapshot</h2>
+      ${table(cols.filter(c => !c.hide), d.projects, { onClick: r => go(`#/jobs/${r.id}?tab=project`), empty: status === 'active' ? 'No open commercial projects. Use “+ New project”, or tick “Commercial project” when booking a job.' : 'None' })}</div>
+    <div class="card" style="margin-top:14px"><h2>By division</h2><p class="small muted">Budget vs actual across ${status === 'active' ? 'active' : 'all'} projects, grouped by your cost-code divisions.</p>
+      ${table([{ label: 'Division', key: 'division' }, { label: 'Budget hrs', num: 1, get: x => num(x.budget_hours, 0) },
+        { label: 'Actual hrs', num: 1, html: x => `${num(x.hours, 0)}${x.budget_hours ? barPct(x.hours / x.budget_hours * 100) : ''}` },
+        ...(M ? [{ label: 'Material budget', num: 1, get: x => money0(x.budget_material) }, { label: 'Material actual', num: 1, get: x => money0(x.material_cost) }, { label: 'Total cost', num: 1, get: x => money0(x.cost) }] : [])],
+        d.divisions, { empty: 'No cost-coded budget or hours yet' })}</div>`;
+  $('#pcsv').onclick = () => toCSV(cols, d.projects, `commercial_dashboard_${d.as_of}.csv`);
   if ($('#newp')) $('#newp').onclick = () => jobForm({ is_project: 1, billing_type: 'fixed', job_type: 'commercial' });
+}
+// techs: just the projects they're on
+async function viewMyProjects() {
+  const list = await GET('/projects');
+  $('#view').innerHTML = setTop('Projects', '', 'Commercial projects you are on.') + `<div class="card">${table([
+    { label: 'Project', html: p => `<b>${esc(p.number)}</b> ${esc(p.title)}<div class="muted small">${esc(p.customer_name)}${p.foreman_name ? ` · Foreman ${esc(p.foreman_name)}` : ''}</div>` },
+    { label: 'Finish', get: p => p.end_date ? fmtDate(p.end_date) : '—' },
+    { label: '% complete', num: 1, html: p => p.summary.percent_complete == null ? '—' : `${pct(p.summary.percent_complete)}${barPct(p.summary.percent_complete)}` },
+    { label: 'Hours', num: 1, html: p => `${num(p.summary.hours, 0)}${p.summary.budget_hours ? ` / ${num(p.summary.budget_hours, 0)}` : ''}` },
+    { label: 'On site', html: p => p.summary.crew_now.length ? `<span class="pill good">● ${p.summary.crew_now.length}</span>` : '—' }],
+    list, { onClick: p => go(`#/jobs/${p.id}?tab=project`), empty: 'No projects' })}</div>`;
 }
 
 async function projectTab(j, T) {

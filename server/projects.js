@@ -64,6 +64,107 @@ module.exports = function projectRoutes(app, db, X) {
     };
   }
 
+  // ---------------------------------------------------------------- company dashboard (like the Master Tracker)
+  // Earned value: EV = budget × % complete; CPI = EV ÷ actual cost; EAC = budget ÷ CPI (never below cost + commitments);
+  // SPI = earned hours ÷ planned hours, planned on a straight line from start to target completion.
+  function evm(job, target) {
+    const b = Bill.jobBilling(db, job.id), cost = C.jobCosting(db, job.id), codes = codeRows(job), sm = summary(job);
+    const fixed = b.billing_type === 'fixed';
+    const bac = Bill.budgetCost(db, job);
+    const pct = sm.percent_complete;
+    const ac = cost.total_cost;
+    const commit = r2(get(db, `SELECT COALESCE(SUM(MAX(l.qty - l.qty_received, 0) * l.unit_cost), 0) v FROM po_lines l JOIN purchase_orders p ON p.id = l.po_id
+      WHERE p.job_id = ? AND p.status IN ('submitted','partial')`, job.id).v);
+    const ev = bac != null && pct != null ? r2(bac * pct / 100) : null;
+    const cpi = ev != null && ac > 0 ? r2(ev / ac) : null;
+    const floor = r2(ac + commit);
+    const eac = bac == null ? floor : r2(Math.max(floor, pct >= 5 && cpi ? bac / cpi : bac));
+    const contract = fixed ? b.contract.total : null;
+    const pendingCo = r2(Bill.changeOrders(db, job.id).filter(c => ['draft', 'sent', 'viewed'].includes(c.status)).reduce((t, c) => t + c.amount, 0));
+    const budgetHrs = sm.budget_hours || 0;
+    const earnedHrs = codes.some(c => c.earned_hours != null) ? codes.reduce((t, c) => t + (c.earned_hours || 0), 0) : pct != null ? budgetHrs * pct / 100 : null;
+    let plannedHrs = null;
+    if (job.start_date && job.end_date && budgetHrs) {
+      const s0 = Date.parse(job.start_date), s1 = Date.parse(job.end_date), now0 = Date.parse(today());
+      const frac = s1 > s0 ? Math.min(1, Math.max(0, (now0 - s0) / (s1 - s0))) : 1;
+      plannedHrs = r2(budgetHrs * frac);
+    }
+    const spi = earnedHrs != null && plannedHrs > 0 ? r2(earnedHrs / plannedHrs) : null;
+    const ar45 = r2(all(db, "SELECT * FROM invoices WHERE job_id = ? AND status IN ('sent','partial') AND issue_date < ?", job.id, X.addDays ? X.addDays(today(), -45) : localDate(Date.now() - 45 * 864e5))
+      .map(i => C.invoiceWithTotals(db, i)).reduce((t, i) => t + i.balance, 0));
+    const codesOver = codes.filter(c => (c.budget_hours > 0 && c.hours > c.budget_hours) || (c.budget_material > 0 && c.material_cost > c.budget_material)).length;
+    const margin = contract != null ? r2(contract - eac) : null;
+    const marginPct = contract ? r2(margin / contract * 100) : null;
+    const flags = [...sm.flags];
+    if (marginPct != null && marginPct < target) flags.unshift(`Projected margin ${marginPct}% is under the ${target}% target`);
+    if (pendingCo) flags.push(`${Math.round(pendingCo).toLocaleString()} in change orders not yet approved`);
+    if (ar45) flags.push(`${Math.round(ar45).toLocaleString()} billed over 45 days ago still unpaid`);
+    return {
+      id: job.id, number: job.number, title: job.title, customer_name: job.customer_name, status: job.status, timeclock_job: job.timeclock_job,
+      pm_name: (get(db, 'SELECT name FROM users WHERE id = ?', job.project_manager_id) || {}).name || null, start_date: job.start_date, end_date: job.end_date,
+      billing_type: b.billing_type, original: fixed ? b.contract.base : null, approved_co: fixed ? b.contract.change_orders : null, contract, pending_co: pendingCo,
+      budget_cost: bac, actual_cost: ac, open_commit: commit, eac, margin, margin_pct: marginPct, cost_variance: bac != null ? r2(bac - floor) : null,
+      percent_complete: pct, ev, cpi, spi, earned_hours: earnedHrs != null ? r2(earnedHrs) : null, planned_hours: plannedHrs,
+      billed: fixed ? b.billed_to_date : cost.revenue, retainage: fixed ? b.retainage_held : 0, cash: fixed ? b.collected : cost.collected, over_under: fixed ? b.over_under : null,
+      ar_over_45: ar45, hours: sm.hours, budget_hours: sm.budget_hours, crew_now: sm.crew_now.length, codes_over: codesOver, flags,
+    };
+  }
+  app.get('/api/projects/dashboard', wrap((req, res) => {
+    if (req.user.role === 'tech') throw bad('Office only', 403);
+    const target = Number(D.settings(db).project_target_margin ?? 18);
+    const st = req.query.status === 'all' ? '' : "AND j.status NOT IN ('completed','invoiced','cancelled')";
+    const jobs = all(db, `${jobSelect} WHERE j.is_project = 1 ${st} ORDER BY j.number`).map(fixTechs);
+    const rows = jobs.map(j => evm(j, target));
+    const sum = k => r2(rows.reduce((t, r) => t + (r[k] || 0), 0));
+    const fixedRows = rows.filter(r => r.contract != null);
+    const ev = sum('ev'), ac = rows.filter(r => r.ev != null).reduce((t, r) => t + r.actual_cost, 0);
+    const earned = rows.reduce((t, r) => t + (r.planned_hours ? r.earned_hours || 0 : 0), 0), planned = sum('planned_hours');
+    const bacWithPct = rows.filter(r => r.ev != null).reduce((t, r) => t + r.budget_cost, 0);
+    const contract = r2(fixedRows.reduce((t, r) => t + r.contract, 0)), eacFixed = r2(fixedRows.reduce((t, r) => t + r.eac, 0));
+    const totals = {
+      projects: rows.length, contract, original: sum('original'), approved_co: sum('approved_co'), pending_co: sum('pending_co'),
+      budget_cost: sum('budget_cost'), actual_cost: sum('actual_cost'), open_commit: sum('open_commit'), eac: sum('eac'),
+      margin: r2(contract - eacFixed), margin_pct: contract ? r2((contract - eacFixed) / contract * 100) : null, cost_variance: sum('cost_variance'),
+      percent_complete: bacWithPct ? r2(ev / bacWithPct * 100) : null, cpi: ac > 0 ? r2(ev / ac) : null, spi: planned > 0 ? r2(earned / planned) : null,
+      billed: sum('billed'), cash: sum('cash'), retainage: sum('retainage'), over_under: sum('over_under'), ar_over_45: sum('ar_over_45'),
+      hours: sum('hours'), budget_hours: sum('budget_hours'), crew_now: sum('crew_now'), target_margin: target,
+    };
+    const exceptions = [
+      { key: 'codes', label: 'Cost codes over budget', count: rows.reduce((t, r) => t + r.codes_over, 0), jobs: rows.filter(r => r.codes_over).map(r => r.number) },
+      { key: 'margin', label: `Projected margin under ${target}%`, count: rows.filter(r => r.margin_pct != null && r.margin_pct < target).length, jobs: rows.filter(r => r.margin_pct != null && r.margin_pct < target).map(r => r.number) },
+      { key: 'late', label: 'Past target completion', count: rows.filter(r => r.end_date && r.end_date < today()).length, jobs: rows.filter(r => r.end_date && r.end_date < today()).map(r => r.number) },
+      { key: 'spi', label: 'Behind schedule (SPI under 0.9)', count: rows.filter(r => r.spi != null && r.spi < 0.9).length, jobs: rows.filter(r => r.spi != null && r.spi < 0.9).map(r => r.number) },
+      { key: 'under', label: 'Under-billed (work done, not billed)', count: rows.filter(r => r.over_under != null && r.over_under < -1000).length, amount: r2(-rows.reduce((t, r) => t + Math.min(0, r.over_under || 0), 0)), jobs: rows.filter(r => r.over_under != null && r.over_under < -1000).map(r => r.number) },
+      { key: 'co', label: 'Change orders pending', count: rows.filter(r => r.pending_co).length, amount: totals.pending_co, jobs: rows.filter(r => r.pending_co).map(r => r.number) },
+      { key: 'ar', label: 'Pay applications outstanding over 45 days', count: rows.filter(r => r.ar_over_45).length, amount: totals.ar_over_45, jobs: rows.filter(r => r.ar_over_45).map(r => r.number) },
+      { key: 'logs', label: 'Crew on site but no daily log', count: rows.filter(r => r.flags.some(f => /daily log/.test(f))).length, jobs: rows.filter(r => r.flags.some(f => /daily log/.test(f))).map(r => r.number) },
+    ];
+    // labor hours by week across the projects (last 12 weeks) and cost by division (budget vs actual)
+    const ids = jobs.map(j => j.id);
+    const weeks = ids.length ? all(db, `SELECT date(clock_in, 'localtime', 'weekday 1', '-7 days') wk, SUM((julianday(COALESCE(clock_out, ?)) - julianday(clock_in)) * 24) h
+      FROM time_entries WHERE job_id IN (${ids.map(() => '?').join(',')}) AND clock_in > datetime('now', '-84 days') GROUP BY wk ORDER BY wk`, now(), ...ids).map(w => ({ week: w.wk, hours: r2(w.h) })) : [];
+    const divMap = new Map(all(db, 'SELECT id, division, division_name FROM cost_codes').map(c => [c.id, c]));
+    const divs = new Map();
+    for (const j of jobs) for (const c of codeRows(j)) {
+      const d = divMap.get(c.cost_code_id) || {}; const k = d.division_name || (d.division ? `${d.division}` : 'Uncoded');
+      const t = divs.get(k) || { division: k, budget_hours: 0, hours: 0, budget_material: 0, material_cost: 0, cost: 0 };
+      t.budget_hours += c.budget_hours || 0; t.hours += c.hours || 0; t.budget_material += c.budget_material || 0; t.material_cost += c.material_cost || 0; t.cost += c.total_cost || 0;
+      divs.set(k, t);
+    }
+    const divisions = [...divs.values()].map(d => ({ ...d, budget_hours: r2(d.budget_hours), hours: r2(d.hours), budget_material: r2(d.budget_material), material_cost: r2(d.material_cost), cost: r2(d.cost) }))
+      .filter(d => d.budget_hours || d.hours || d.budget_material || d.cost).sort((a, b) => a.division.localeCompare(b.division));
+    const out = { as_of: today(), totals, projects: rows, exceptions, weeks, divisions, money: req.can('see_costs') };
+    if (!out.money) { // hours and progress only
+      const keep = ['projects', 'percent_complete', 'spi', 'hours', 'budget_hours', 'crew_now', 'target_margin'];
+      out.totals = Object.fromEntries(Object.entries(totals).filter(([k]) => keep.includes(k)));
+      out.projects = rows.map(r => ({ id: r.id, number: r.number, title: r.title, customer_name: r.customer_name, status: r.status, pm_name: r.pm_name, start_date: r.start_date, end_date: r.end_date,
+        percent_complete: r.percent_complete, spi: r.spi, hours: r.hours, budget_hours: r.budget_hours, crew_now: r.crew_now, codes_over: r.codes_over, flags: r.flags.filter(f => !/[$]|margin|billed|unpaid|change orders/i.test(f)) }));
+      out.exceptions = exceptions.filter(e => ['codes', 'late', 'spi', 'logs'].includes(e.key));
+      out.divisions = divisions.map(d => ({ division: d.division, budget_hours: d.budget_hours, hours: d.hours }));
+    }
+    res.json(out);
+  }));
+
   // ---------------------------------------------------------------- list
   app.get('/api/projects', wrap((req, res) => {
     const st = req.query.status === 'all' ? '' : req.query.status === 'closed' ? "AND j.status IN ('completed','invoiced','cancelled')" : "AND j.status NOT IN ('completed','invoiced','cancelled')";

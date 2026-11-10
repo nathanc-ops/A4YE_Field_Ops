@@ -159,6 +159,27 @@ The **Projects** page lists every open project with flags:
 - A cost code is required, and the project's budgeted codes are listed first. Both are switchable under Settings → Commercial projects.
 - To load your cost-code list from another system, use **Import Data → Cost codes**.
 
+## Commercial dashboard
+
+**Commercial Projects** opens a company roll-up of every project, laid out like the A4YE Master Tracker.
+- **Executive summary.**
+- **Contract & margin:** revised contract, projected cost (EAC), and projected margin vs the target (Settings, default 18%).
+- **Cost:** budget, actual, open commitments (POs sent, not yet received) and cost variance.
+- **Performance:**
+  - CPI = earned ÷ actual cost;
+  - SPI = earned ÷ planned hours, on a straight line from start to target completion;
+  - labor hours and crew on site.
+- **Billing:** billed, cash, retainage, over/under.
+- **Exceptions & watch list, job snapshot, hours by week, and budget vs actual by division.**
+
+People without **See costs** get the hours-and-progress version. Export CSV and Print are on the page.
+
+## A4Y Time Clock and cost codes
+
+The cost code list is the A4YE list (0110 Estimating & Takeoff … 9060 Overtime Premium, divisions 01–90). The time clock's `0810-L` is code `0810` here.
+
+Time entries sync from the A4Y Time Clock Google Sheet, either hourly through a small read-only export script or by CSV upload. They're matched by Entry ID, employee, **Time clock job #** and cost code. See [docs/TIMECLOCK.md](docs/TIMECLOCK.md).
+
 ## Schedule blocks
 
 The tech board, week view and dispatch list group people by the **Title** on their Team profile:
