@@ -83,6 +83,7 @@ function fieldHtml(f, v) {
   const req = f.required ? 'required' : '';
   let input;
   if (f.type === 'customer') return customerFieldHtml(f, val);
+  if (f.type === 'job') return jobFieldHtml(f, val);
   if (f.type === 'address') return addressFieldHtml(f, val);
   if (f.type === 'hidden') return `<input type="hidden" name="${f.name}" value="${esc(val)}">`;
   if (f.type === 'select') {
@@ -98,7 +99,7 @@ function readForm(form, fields) {
   const o = {};
   for (const f of fields) {
     const el = form.elements[f.name]; if (!el) continue;
-    if (f.type === 'customer' && f.required && !el.value) throw new Error(`Choose the ${f.label.toLowerCase()} from the search list`);
+    if ((f.type === 'customer' || f.type === 'job') && f.required && !el.value) throw new Error(`Choose the ${f.label.toLowerCase()} from the search list`);
     if (f.type === 'checkbox') o[f.name] = el.checked ? 1 : 0;
     else if (f.type === 'number') o[f.name] = el.value === '' ? null : Number(el.value);
     else if (f.type === 'datetime') o[f.name] = fromLocalInput(el.value);
@@ -268,8 +269,9 @@ async function boot() {
 }
 
 // ============================================================ shared pickers
+// (kept for old callers) the most recent open jobs as select options; pickers use the 'job' search field instead
 async function jobPicker() {
-  const list = await GET('/jobs' + qs({ status: 'unscheduled,scheduled,dispatched,in_progress,on_hold,completed' }));
+  const list = await GET('/jobs' + qs({ status: 'unscheduled,scheduled,dispatched,in_progress,on_hold,completed', limit: 1000 }));
   return list.map(j => [j.id, `${j.number} · ${j.customer_name} · ${j.title}`]);
 }
 
@@ -501,11 +503,12 @@ async function viewJobs() {
   const { params } = hashParams();
   const status = params.get('status') || (isOffice() ? 'unscheduled,scheduled,dispatched,in_progress,on_hold,completed' : '');
   const q = params.get('q') || '';
-  const jobs = await GET('/jobs' + qs({ status, q }));
-  const tabs = [['unscheduled,scheduled,dispatched,in_progress,on_hold,completed', 'Open'], ['unscheduled', 'Unscheduled'], ['in_progress', 'In progress'], ['completed', 'Needs invoice'], ['invoiced', 'Invoiced'], ['cancelled', 'Cancelled'], ['', 'All']];
+  const jobs = await GET('/jobs' + qs({ status: status === 'all' ? '' : status, q }));
+  const tabs = [['unscheduled,scheduled,dispatched,in_progress,on_hold,completed', 'Open'], ['unscheduled', 'Unscheduled'], ['in_progress', 'In progress'], ['completed', 'Needs invoice'], ['invoiced', 'Invoiced'], ['all', 'All'], ['cancelled', 'Cancelled'], ['', 'All']];
   $('#view').innerHTML = setTop('Jobs', isOffice() ? '<button class="btn primary" id="new">+ Book job</button>' : '') + `<div class="card">
     <div class="row spread"><div class="tabs" style="margin:0;border:0">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
-    <form id="srch" class="row"><input name="q" placeholder="Search job #, customer, address" value="${esc(q)}" style="width:260px"></form></div>
+    <form id="srch" class="row"><input name="q" placeholder="Search job #, customer, address, PO" value="${esc(q)}" style="width:260px"></form></div>
+    ${jobs.total > jobs.length ? `<p class="small muted" style="margin:6px 0">Showing ${jobs.length.toLocaleString()} of ${jobs.total.toLocaleString()} jobs — search, or pick a status, to narrow it down.</p>` : ''}
     ${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b>${j.priority === 'emergency' ? ' <span class="pill bad">Emergency</span>' : ''}<div>${esc(j.title)}</div>` },
       { label: 'Customer', html: j => `${esc(j.customer_name)} <span class="muted small">${esc(label(j.customer_type))}</span><div class="muted small">${esc(j.address || '')}</div>` },
       { label: 'Type', html: j => `${esc(label(j.job_type))}<div>${billingPill(j.billing_type)}</div>` }, { label: 'Scheduled', get: j => fmtDT(j.scheduled_start) },
@@ -547,6 +550,7 @@ async function viewJob(id) {
      ${!['completed', 'invoiced', 'cancelled'].includes(j.status) ? '<button class="btn go" id="completejob">✓ Complete job</button>' : ''}
      ${!isOffice() && can('field_estimates') && !['invoiced', 'cancelled'].includes(j.status) ? `<a class="btn" href="#/estimates/new?job_id=${j.id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a>` : ''}
      ${isOffice() && j.status === 'cancelled' ? '<button class="btn" id="reopenjob">Reopen job</button>' : ''}
+     ${isAdmin() ? '<button class="btn" id="renum" title="Change the job number">Job #</button>' : ''}
      ${isOffice() && j.status !== 'cancelled' ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a><button class="btn primary" id="invoice">Bill job</button>` : ''}
      ${isOffice() && !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn danger" id="canceljob">Cancel job</button>' : ''}
      ${isAdmin() ? `<button class="btn danger" id="deljob" ${j.delete_blockers.length ? `title="Can't delete: has ${esc(j.delete_blockers.join(', '))}"` : ''}>Delete</button>` : ''}
@@ -556,6 +560,12 @@ async function viewJob(id) {
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div><div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => go(`#/jobs/${j.id}?tab=${b.dataset.tab}`));
   if ($('#canceljob')) $('#canceljob').onclick = () => cancelJobModal(j);
+  if ($('#renum')) $('#renum').onclick = () => formModal({
+    title: `Change job number — ${j.number}`, okLabel: 'Change number', values: { number: j.number },
+    fields: [{ name: 'number', label: 'New job number', required: true, full: true }],
+    extra: `<p class="small muted" style="margin-top:8px">Everything on the job stays attached (visits, time, invoices, estimates, costs); only the number shown changes, and a note records the old one. To match the A4Y Time Clock, set <b>Time clock job #</b> on the job instead (Edit). New jobs keep counting from the highest J- number, so renumbering to e.g. J-9000 makes the next new job J-9001.</p>`,
+    submit: async v => { const r = await PUT(`/jobs/${j.id}/number`, { number: v.number }); toast(`Job is now ${r.number}${r.next_new_job ? ` · next new job will be ${r.next_new_job}` : ''}`); route(); },
+  });
   if ($('#reopenjob')) $('#reopenjob').onclick = async () => { await act(() => POST(`/jobs/${j.id}/reopen`), 'Job reopened. Schedule a new visit when ready.'); route(); };
   if ($('#deljob')) $('#deljob').onclick = async () => {
     if (j.delete_blockers.length) return toast(`Can't delete ${j.number}: it has ${j.delete_blockers.join(', ')}. Cancel it instead, so the history is kept.`, true);
@@ -666,11 +676,11 @@ async function viewJob(id) {
 }
 
 function timeForm(t) {
-  return jobPicker().then(jobs => formModal({
+  return Promise.resolve().then(() => formModal({
     title: t.id ? 'Edit time entry' : 'Add time entry', values: t,
     fields: [
       { name: 'user_id', label: 'Employee', type: 'select', options: techOptions(), required: true },
-      { name: 'job_id', label: 'Job', type: 'select', options: jobs, blank: '— No job —' },
+      { name: 'job_id', label: 'Job (blank = no job)', type: 'job', full: true },
       { name: 'kind', label: 'Type', type: 'select', options: ['job', 'travel', 'shop', 'training', 'pto'], blank: false, default: 'job' },
       { name: 'cost_code_id', label: 'Cost code', type: 'select', options: ccOptions('labor') },
       { name: 'clock_in', label: 'Start', type: 'datetime', required: true }, { name: 'clock_out', label: 'End', type: 'datetime', required: !t.id },
@@ -1179,14 +1189,12 @@ const expenseCols = showJob => [{ label: 'Date', get: e => fmtDate(e.date) }, { 
   ...(showJob ? [{ label: 'Job', html: e => e.job_id ? `<a href="#/jobs/${e.job_id}">${esc(e.job_number)}</a>` : '<span class="muted">Overhead</span>', csv: e => e.job_number || 'Overhead' }] : []),
   { label: 'Amount', num: 1, get: e => money(e.amount), csv: e => e.amount }];
 async function expenseForm(e) {
-  const jobs = await jobPicker();
   if (isAdmin()) await loadAccounts();
-  if (e.job_id && !jobs.some(([id]) => id === e.job_id)) jobs.unshift([e.job_id, e.job_number || `Job #${e.job_id}`]);
   formModal({
     title: e.id ? 'Edit expense' : 'Add expense', values: e,
     fields: [{ name: 'date', label: 'Date', type: 'date', required: true }, { name: 'amount', label: 'Amount $', type: 'number', required: true },
       { name: 'category', label: 'Category', type: 'select', options: EXPENSE_CATS, required: true }, { name: 'vendor', label: 'Vendor' },
-      { name: 'job_id', label: 'Job (blank = company overhead)', type: 'select', options: jobs, blank: '— Overhead —', full: true },
+      { name: 'job_id', label: 'Job (blank = company overhead)', type: 'job', full: true },
       { name: 'cost_code_id', label: 'Cost code (job costs)', type: 'select', options: ccOptions() },
       { name: 'billable', label: 'Bill to customer (T&M jobs, at the job markup)', type: 'checkbox' },
       ...(isAdmin() ? [{ name: 'account_id', label: 'GL account (blank = by category)', type: 'select', options: acctOptions('expense', 'cogs', 'asset') },
@@ -1216,11 +1224,10 @@ const permitCols = showJob => [...(showJob ? [{ label: 'Job', html: p => `<a hre
   { label: 'Type', key: 'permit_type' }, { label: 'Permit #', key: 'permit_number' }, { label: 'Jurisdiction', key: 'jurisdiction' }, { label: 'Status', html: p => pill(p.status) },
   { label: 'Inspection', get: p => fmtDate(p.inspection_date) }, { label: 'Fee', num: 1, get: p => money(p.fee) }];
 async function permitForm(p) {
-  const jobs = await jobPicker();
-  if (p.job_id && !jobs.some(([id]) => id === p.job_id)) jobs.unshift([p.job_id, p.job_number || `Job #${p.job_id}`]);
+
   const m = formModal({
     title: p.id ? 'Edit permit' : 'New permit', values: p, wide: true,
-    fields: [{ name: 'job_id', label: 'Job', type: 'select', options: jobs, required: true, full: true }, { name: 'permit_type', label: 'Permit type (e.g. Service change, EVSE)' }, { name: 'permit_number', label: 'Permit #' },
+    fields: [{ name: 'job_id', label: 'Job', type: 'job', required: true, full: true }, { name: 'permit_type', label: 'Permit type (e.g. Service change, EVSE)' }, { name: 'permit_number', label: 'Permit #' },
       { name: 'jurisdiction', label: 'Jurisdiction / AHJ' }, { name: 'status', label: 'Status', type: 'select', options: PERMIT_STATUSES, blank: false },
       { name: 'applied_date', label: 'Applied', type: 'date' }, { name: 'issued_date', label: 'Issued', type: 'date' }, { name: 'inspection_date', label: 'Inspection date', type: 'date' },
       { name: 'expires_date', label: 'Expires', type: 'date' }, { name: 'fee', label: 'Fee $', type: 'number', default: 0 }, { name: 'inspector', label: 'Inspector' },

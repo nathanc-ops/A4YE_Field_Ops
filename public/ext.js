@@ -83,8 +83,6 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
   await loadUsers();
   const isNew = !a.id, fixedEst = !!a.estimate_id, fixedJob = !!a.job_id || (!isNew && !a.estimate_id);
   const choose = isNew && !fixedEst && !fixedJob;
-  const jobs = fixedEst ? [] : !isNew ? [[a.job_id, `${a.job_number} · ${a.customer_name} · ${a.job_title}`]] : await jobPicker();
-  if (a.job_id && !jobs.some(([id]) => id === Number(a.job_id))) jobs.unshift([Number(a.job_id), a.job_number || `Job #${a.job_id}`]);
   const link = a.estimate_id ? `<a class="btn" href="#/estimates/${a.estimate_id}">Open estimate</a>` : `<a class="btn" href="#/jobs/${a.job_id}">Open job</a>`;
   const techBoxes = `<div style="margin-top:10px"><label class="f"><span>Techs on this visit</span></label><div class="row">${S.users.filter(u => u.active).map(u =>
     `<label class="check"><input type="checkbox" name="tech" value="${u.id}" ${(a.tech_ids || []).includes(u.id) ? 'checked' : ''}> <span class="dot" style="background:${esc(u.color)}"></span>${esc(u.name)}</label>`).join('')}</div></div>
@@ -92,7 +90,8 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
   const estLabel = a.estimate_id ? [a.estimate_number || a.job_number, a.customer_name, a.estimate_title].filter(Boolean).join(' · ') : '';
   const fields = [
     ...(choose ? [{ name: 'visit_for', label: 'This visit is for', type: 'select', blank: false, full: true, options: [['job', 'A job'], ['estimate', 'An estimate walkthrough — starts a draft estimate']] }] : []),
-    ...(fixedEst ? [{ name: 'estimate_label', label: 'Estimate', full: true, disabled: true }] : [{ name: 'job_id', label: 'Job', type: 'select', options: jobs, full: true }]),
+    ...(fixedEst ? [{ name: 'estimate_label', label: 'Estimate', full: true, disabled: true }] : [{ name: 'job_id', label: 'Job', type: 'job', full: true, disabled: !isNew,
+      text: a.job_id && a.job_number ? `${a.job_number} · ${a.customer_name || ''}${a.job_title ? ` · ${a.job_title}` : ''}` : '' }]),
     ...(choose ? [{ name: 'customer_id', label: 'Customer', type: 'customer', full: true }, { name: 'location_id', label: 'Address', type: 'select', options: [], full: true },
       { name: 'title', label: 'What do they want priced?', full: true, placeholder: 'e.g. Panel upgrade to 200A, EV charger in garage' }] : []),
     { name: 'start', label: 'Start', type: 'datetime', required: true }, { name: 'end', label: 'End', type: 'datetime', required: true },
@@ -153,7 +152,6 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
     await act(() => DEL('/appointments/' + a.id), 'Visit deleted'); m.close(); onSaved ? onSaved() : route();
   };
   if ($('#cfsend', m.el)) $('#cfsend', m.el).onclick = () => { m.close(); confirmVisit(a.id, { after: onSaved }); };
-  if (a.id && form.job_id) form.job_id.disabled = true;
   if (form.estimate_label) form.estimate_label.readOnly = true;
   // "Open job" / "Open estimate" navigate away: close the form with them
   $$('a.btn[href^="#/"]', m.el).forEach(x => x.addEventListener('click', () => m.close()));
@@ -541,7 +539,7 @@ async function viewPurchasing() {
   $$('[data-t]').forEach(b => b.onclick = () => go('#/purchasing' + qs({ tab: b.dataset.t })));
   if ($('#newpl')) $('#newpl').onclick = async () => formModal({
     title: 'New pick list', okLabel: 'Create',
-    fields: [{ name: 'job_id', label: 'Job', type: 'select', options: await jobPicker(), required: true, full: true },
+    fields: [{ name: 'job_id', label: 'Job', type: 'job', required: true, full: true },
       { name: 'from_estimate', label: "Start with the material on the job's approved estimate", type: 'checkbox', full: true },
       { name: 'needed_by', label: 'Needed by', type: 'date' }, { name: 'assigned_to', label: 'Picker', type: 'select', options: techOptions() }, { name: 'notes', label: 'Notes', full: true }],
     extra: '<p class="small muted">Add any material, from the price book or typed in, on the next screen.</p>',
@@ -569,9 +567,8 @@ async function vendorForm(v) {
 
 async function viewPO(id) {
   const { params } = hashParams();
-  const [vendors, pb, jobs] = await Promise.all([loadVendors(true), loadPricebook(true), jobPicker()]);
+  const [vendors, pb] = await Promise.all([loadVendors(true), loadPricebook(true)]);
   let po = id === 'new' ? { lines: [], status: 'draft', job_id: params.get('job_id') ? Number(params.get('job_id')) : null, deliver_to: params.get('job_id') ? 'job' : 'shop', tax: 0, shipping: 0, order_date: todayStr() } : await GET('/purchase-orders/' + id);
-  if (po.job_id && !jobs.some(([jid]) => jid === po.job_id)) jobs.unshift([po.job_id, `${po.job_number} · ${po.job_title || ''}`]);
   const locked = ['received', 'cancelled'].includes(po.status);
   const plyOn = S.settings.ply_enabled === '1';
   const row = (l, i) => `<tr data-i="${i}">
@@ -590,7 +587,7 @@ async function viewPO(id) {
     po.job_id ? `For job <a href="#/jobs/${po.job_id}">${esc(po.job_number || '')}</a>` : 'Shop / truck stock') + `
     <form id="pof" class="stack"><div class="card"><div class="form-grid">
       ${fieldHtml({ name: 'vendor_id', label: 'Vendor', type: 'select', options: vendors.filter(v => v.active || v.id === po.vendor_id).map(v => [v.id, v.name]), required: true }, po.vendor_id)}
-      ${fieldHtml({ name: 'job_id', label: 'Job (blank = stock)', type: 'select', options: jobs, blank: '— Shop stock —' }, po.job_id)}
+      ${fieldHtml({ name: 'job_id', label: 'Job (blank = stock)', type: 'job', blank: '— Shop stock —', text: po.job_id && po.job_number ? `${po.job_number}${po.job_title ? ` · ${po.job_title}` : ''}` : '' }, po.job_id)}
       ${fieldHtml({ name: 'deliver_to', label: 'Deliver to', type: 'select', options: [['job', 'Job site'], ['shop', 'Shop (into stock)'], ['will_call', 'Will call (counter pickup)']], blank: false }, po.deliver_to)}
       ${fieldHtml({ name: 'expected_date', label: 'Needed / expected', type: 'date' }, po.expected_date)}
       ${fieldHtml({ name: 'notes', label: 'Notes to vendor', full: true }, po.notes)}
@@ -870,10 +867,8 @@ async function showEntry(id) {
 }
 async function journalForm() {
   await loadAccounts();
-  const jobs = await jobPicker();
   const acctSel = `<select data-k="account_id"><option value="">Account…</option>${S.accounts.map(a => `<option value="${a.id}">${esc(a.number)} ${esc(a.name)}</option>`).join('')}</select>`;
-  const jobSel = `<select data-k="job_id"><option value="">—</option>${jobs.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>`;
-  const line = () => `<tr><td>${acctSel}</td><td><input class="n" type="number" step="any" data-k="debit"></td><td><input class="n" type="number" step="any" data-k="credit"></td><td><input data-k="memo"></td><td>${jobSel}</td></tr>`;
+  const line = () => `<tr><td>${acctSel}</td><td><input class="n" type="number" step="any" data-k="debit"></td><td><input class="n" type="number" step="any" data-k="credit"></td><td><input data-k="memo"></td><td>${jobPickHtml({ dataK: 'job_id', placeholder: 'Job (optional)' })}</td></tr>`;
   const m = modal(`<form><h2>Journal entry</h2><div class="form-grid">${fieldHtml({ name: 'date', label: 'Date', type: 'date', required: true }, todayStr())}${fieldHtml({ name: 'memo', label: 'Memo' })}</div>
     <div class="table-wrap" style="margin-top:10px"><table class="items"><thead><tr><th>Account</th><th>Debit</th><th>Credit</th><th>Memo</th><th>Job</th></tr></thead><tbody id="jl">${line()}${line()}</tbody></table></div>
     <div class="row spread" style="margin-top:8px"><button type="button" class="btn" id="addjl">+ Line</button><span id="jbal" class="pill"></span></div>
@@ -903,7 +898,7 @@ async function viewLedger(id) {
   $$('[data-je]').forEach(a => a.onclick = e => { e.preventDefault(); showEntry(a.dataset.je); });
 }
 async function viewBill(id) {
-  const [vendors, jobs] = await Promise.all([loadVendors(true), jobPicker(), loadAccounts(true)]);
+  const [vendors] = await Promise.all([loadVendors(true), loadAccounts(true)]);
   const b = id === 'new' ? { lines: [{}], payments: [], status: 'open', bill_date: todayStr() } : await GET('/bills/' + id);
   const locked = !!b.po_id || b.status === 'void' || (b.payments || []).length > 0;
   const acctList = S.accounts.filter(a => ['cogs', 'expense', 'asset'].includes(a.type));
@@ -911,7 +906,7 @@ async function viewBill(id) {
     <td><select data-k="account_id" ${locked ? 'disabled' : ''}><option value="">Account…</option>${acctList.map(a => `<option value="${a.id}" ${a.id === l.account_id ? 'selected' : ''}>${esc(a.number)} ${esc(a.name)}</option>`).join('')}</select></td>
     <td><input data-k="description" value="${esc(l.description || '')}" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="amount" value="${l.amount ?? ''}" ${locked ? 'disabled' : ''}></td>
-    <td><select data-k="job_id" ${locked ? 'disabled' : ''}><option value="">— Overhead —</option>${jobs.map(([v, lb]) => `<option value="${v}" ${v === l.job_id ? 'selected' : ''}>${esc(lb)}</option>`).join('')}</select></td>
+    <td>${jobPickHtml({ dataK: 'job_id', value: l.job_id || '', text: l.job_id && l.job_number ? `${l.job_number}${l.job_title ? ` · ${l.job_title}` : ''}` : '', placeholder: 'Overhead — or type a job', disabled: locked })}</td>
     <td><select data-k="cost_code_id" style="width:120px" ${locked ? 'disabled' : ''}><option value="">—</option>${S.costCodes.map(c => `<option value="${c.id}" ${c.id === l.cost_code_id ? 'selected' : ''}>${esc(c.code)} ${esc(c.name)}</option>`).join('')}</select></td></tr>`;
   $('#view').innerHTML = setTop(id === 'new' ? 'New vendor bill' : `Bill ${esc(b.vendor_invoice || '#' + b.id)}`, id === 'new' ? '' : `${pill(b.status)}${b.po_id ? ` <a class="btn" href="#/purchasing/po/${b.po_id}">PO ${esc(b.po_number)}</a>` : ''}
       ${['open', 'partial'].includes(b.status) ? '<button class="btn primary" id="pay">Pay bill</button>' : ''}${b.status !== 'void' && !(b.payments || []).length ? '<button class="btn danger" id="void">Void</button>' : ''}`,
@@ -1132,7 +1127,6 @@ async function bankingTab(E, params) {
   $$('[data-cat]').forEach(b => b.onclick = async () => {
     const t = txById[b.dataset.cat];
     await loadAccounts();
-    const jobs = await jobPicker();
     const out = t.amount < 0;
     const words = String(t.description).toUpperCase().replace(/[^A-Z ]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
     formModal({
@@ -1141,7 +1135,7 @@ async function bankingTab(E, params) {
       fields: [{ name: 'account_id', label: out ? 'Expense account (or another bank/card = transfer)' : 'Income / source account (or another bank/card = transfer)', type: 'select',
           options: S.accounts.filter(a => a.id !== acct.id && (out ? ['expense', 'cogs', 'asset', 'liability', 'equity'] : ['income', 'liability', 'equity', 'asset']).includes(a.type)).map(a => [a.id, `${a.number} · ${a.name}`]), required: true, full: true },
         ...(out ? [{ name: 'category', label: 'Expense category', type: 'select', options: EXPENSE_CATS }, { name: 'vendor', label: 'Vendor' }] : []),
-        { name: 'job_id', label: 'Job (job cost)', type: 'select', options: jobs, blank: '— None / overhead —' }, { name: 'cost_code_id', label: 'Cost code', type: 'select', options: ccOptions() },
+        { name: 'job_id', label: 'Job (job cost, blank = overhead)', type: 'job' }, { name: 'cost_code_id', label: 'Cost code', type: 'select', options: ccOptions() },
         { name: 'description', label: 'Memo', full: true },
         { name: 'save_rule', label: 'Remember: next time the description contains…', type: 'checkbox' }, { name: 'rule_text', label: 'Text to match' }],
       submit: async d => { await POST(`/banking/transactions/${t.id}/categorize`, { ...d, save_rule: !!d.save_rule }); toast('Recorded and matched'); reload(); },

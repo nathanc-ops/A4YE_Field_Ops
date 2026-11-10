@@ -464,3 +464,7 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 .cf-line.warn { background: var(--warn-soft); color: var(--warn); }
 .cf-tag { font-size: 11px; } .cf-tag.warn { color: var(--warn); font-weight: 700; }
 .mail-preview { white-space: pre-wrap; font: 13px/1.45 ui-monospace, Menlo, monospace; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; margin: 0; }
+
+/* job search box inside line-item tables */
+table.items .lk-job { min-width: 200px; }
+table.items .lk-job .lk-q { width: 100%; }

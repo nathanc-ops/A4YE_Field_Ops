@@ -67,6 +67,34 @@ function initCustomerPicker(box) {
   });
 }
 
+// ------------------------------------------------------------ job picker
+// Type a job #, time clock #, customer, address, title or PO — searches every job on the server (no list size limit).
+// The chosen job's id goes in a hidden input (name=… for forms, data-k=… for table rows), which fires 'change'.
+const jobLabel = j => `${j.number} · ${j.customer_company || j.customer_name}${j.title ? ` · ${j.title}` : ''}`;
+function jobPickHtml({ name, dataK, value = '', text = '', placeholder = 'Type a job #, customer or address', disabled = false, statuses = '' }) {
+  setTimeout(initLookups);
+  return `<div class="lk lk-job" data-lk="job" data-statuses="${esc(statuses)}"><input type="hidden" ${name ? `name="${esc(name)}"` : ''} ${dataK ? `data-k="${esc(dataK)}"` : ''} value="${esc(value ?? '')}">
+    <input type="text" class="lk-q" placeholder="${esc(placeholder)}" value="${esc(text)}" data-picked="${value ? '1' : ''}" ${disabled ? 'disabled' : ''}></div>`;
+}
+function jobFieldHtml(f, val) {
+  return `<label class="f ${f.full ? 'full' : ''}"><span>${esc(f.label)}</span>${jobPickHtml({ name: f.name, value: val ?? '', text: f.text || '', placeholder: f.blank && f.blank !== true ? `${f.blank.replace(/^—\s*|\s*—$/g, '')} — or type a job #, customer, address` : undefined, disabled: f.disabled, statuses: f.statuses })}</label>`;
+}
+function initJobPicker(box) {
+  const hidden = $('input[type=hidden]', box), q = $('.lk-q', box), statuses = box.dataset.statuses || '';
+  const set = (id, text) => { hidden.value = id; q.value = text; q.dataset.picked = id ? '1' : ''; hidden.dispatchEvent(new Event('change', { bubbles: true })); };
+  if (hidden.value && !q.value) GET('/jobs/' + hidden.value).then(j => { q.value = jobLabel(j); q.dataset.picked = '1'; }).catch(() => { q.value = `Job #${hidden.value}`; });
+  q.addEventListener('input', () => { if (hidden.value) { hidden.value = ''; q.dataset.picked = ''; hidden.dispatchEvent(new Event('change', { bubbles: true })); } });
+  suggestBox(q, {
+    search: async text => {
+      const r = await GET('/jobs' + qs({ q: text, limit: 12, picker: 1, status: statuses || undefined }));
+      return { items: r, note: r.total > r.length ? `${r.total - r.length} more — keep typing to narrow it down` : '', empty: 'No job matches. Try the job #, the customer\'s name or the street.' };
+    },
+    render: j => `<b>${esc(j.number)}</b> · ${esc(j.customer_company || j.customer_name)} ${j.status === 'cancelled' ? '<span class="pill bad">cancelled</span>' : ['completed', 'invoiced'].includes(j.status) ? `<span class="pill">${esc(j.status)}</span>` : ''}
+      <div class="small muted">${esc([j.title, [j.address, j.city].filter(Boolean).join(', '), j.timeclock_job ? `clock #${j.timeclock_job}` : ''].filter(Boolean).join(' · '))}</div>`,
+    pick: j => set(j.id, jobLabel(j)),
+  });
+}
+
 // ------------------------------------------------------------ address lookup
 // f.fill maps parts to sibling field names, e.g. { city: 'loc_city', state: 'loc_state', zip: 'loc_zip', lat: 'loc_lat', lng: 'loc_lng', verified: 'loc_verified_at' }
 function addressFieldHtml(f, val) {
@@ -120,7 +148,7 @@ function initAddressField(box) {
 function initLookups() {
   for (const box of $$('.lk:not([data-ready])')) {
     box.dataset.ready = '1';
-    if (box.dataset.lk === 'customer') initCustomerPicker(box); else initAddressField(box);
+    if (box.dataset.lk === 'customer') initCustomerPicker(box); else if (box.dataset.lk === 'job') initJobPicker(box); else initAddressField(box);
   }
 }
 

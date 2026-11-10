@@ -363,7 +363,7 @@ function createApp(db) {
   // A blank box means "use the default" for columns that can't be empty (the form blanks the other billing type's fields).
   const JOB_NOT_BLANK = { retainage_pct: 0, bill_travel: 1, job_type: 'service', priority: 'normal', billing_type: 'tm', is_project: 0 };
   const jobData = body => { const d = pick(body, JOB_FIELDS); for (const [k, v] of Object.entries(JOB_NOT_BLANK)) if (k in d && (d[k] === null || d[k] === '')) d[k] = v; return d; };
-  const jobSelect = `SELECT j.*, c.name customer_name, c.type customer_type, c.phone customer_phone,
+  const jobSelect = `SELECT j.*, c.name customer_name, c.company customer_company, c.type customer_type, c.phone customer_phone,
     l.address, l.city, l.state, l.zip,
     (SELECT GROUP_CONCAT(u.name, ', ') FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = j.id) tech_names,
     (SELECT GROUP_CONCAT(jt.user_id) FROM job_techs jt WHERE jt.job_id = j.id) tech_ids
@@ -380,9 +380,24 @@ function createApp(db) {
     if (req.query.from) { where.push('j.scheduled_end >= ?'); p.push(req.query.from); }
     if (req.query.to) { where.push('j.scheduled_start < ?'); p.push(req.query.to); }
     if (req.query.customer_id) { where.push('j.customer_id = ?'); p.push(req.query.customer_id); }
-    if (req.query.q) { where.push('(j.number LIKE ? OR j.title LIKE ? OR c.name LIKE ? OR l.address LIKE ?)'); const q = `%${req.query.q}%`; p.push(q, q, q, q); }
+    // search like the customer list: every word must match somewhere (job #, time clock #, title, customer, address, PO)
+    const q = String(req.query.q || '').trim();
+    for (const word of q.split(/\s+/).filter(Boolean).slice(0, 6)) {
+      const like = `%${word.replace(/[%_\\]/g, m => '\\' + m)}%`;
+      where.push(`(j.number LIKE ?1 ESCAPE '\\' OR j.timeclock_job LIKE ?1 ESCAPE '\\' OR j.title LIKE ?1 ESCAPE '\\' OR j.po_number LIKE ?1 ESCAPE '\\'
+        OR c.name LIKE ?1 ESCAPE '\\' OR c.company LIKE ?1 ESCAPE '\\' OR l.address LIKE ?1 ESCAPE '\\' OR l.city LIKE ?1 ESCAPE '\\')`.replace(/\?1/g, () => { p.push(like); return '?'; }));
+    }
     if (req.user.role === 'tech' || req.query.mine) { where.push('EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = j.id AND jt.user_id = ?)'); p.push(req.user.id); }
-    res.json(all(db, `${jobSelect} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY COALESCE(j.scheduled_start, '9999'), j.id DESC LIMIT 1000`, ...p).map(fixTechs));
+    const w = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const limit = Math.min(Math.max(Number(req.query.limit) || 1000, 1), 1000);
+    res.set('X-Total-Count', String(get(db, `SELECT COUNT(*) n FROM jobs j JOIN customers c ON c.id = j.customer_id LEFT JOIN locations l ON l.id = j.location_id ${w}`, ...p).n));
+    // a picker search puts the job whose number was typed first, then open work, then newest; the job list keeps schedule order
+    const order = req.query.picker
+      ? `CASE WHEN lower(j.number) = lower(?) OR lower(j.number) = lower('J-' || ?) OR j.timeclock_job = ? THEN 0 WHEN j.number LIKE ? OR j.timeclock_job LIKE ? THEN 1 ELSE 2 END,
+         CASE WHEN j.status IN ('cancelled') THEN 2 WHEN j.status IN ('completed', 'invoiced') THEN 1 ELSE 0 END, j.id DESC`
+      : "COALESCE(j.scheduled_start, '9999'), j.id DESC";
+    const op = req.query.picker ? [q, q, q, `${q}%`, `${q}%`] : [];
+    res.json(all(db, `${jobSelect} ${w} ORDER BY ${order} LIMIT ?`, ...p, ...op, limit).map(fixTechs));
   }));
   app.get('/api/jobs/:id', wrap((req, res) => {
     const j = get(db, `${jobSelect} WHERE j.id = ?`, req.params.id);
@@ -435,6 +450,21 @@ function createApp(db) {
       return jid;
     });
     res.json({ id });
+  }));
+  // admins can renumber a job (e.g. to match the number used on paperwork or the time clock)
+  app.put('/api/jobs/:id/number', wrap((req, res) => {
+    if (req.user.role !== 'admin') throw bad('Only an admin can change a job number', 403);
+    const job = mustGet('jobs', req.params.id);
+    const number = String((req.body || {}).number || '').trim();
+    if (!number) throw bad('Enter the new job number');
+    if (number.length > 30 || !/^[A-Za-z0-9][A-Za-z0-9 ._\/#-]*$/.test(number)) throw bad('Job numbers use letters, numbers, spaces and - . _ / # (30 characters at most)');
+    if (number === job.number) return res.json({ ok: true, number });
+    const clash = get(db, 'SELECT number FROM jobs WHERE lower(number) = lower(?) AND id != ?', number, job.id);
+    if (clash) throw bad(`Job ${clash.number} already exists`);
+    update('jobs', job.id, { number });
+    insert('job_notes', { job_id: job.id, user_id: req.user.id, body: `Job number changed from ${job.number} to ${number}` });
+    const next = D.nextNumber(db, 'jobs', 'J');
+    res.json({ ok: true, number, next_new_job: next });
   }));
   app.put('/api/jobs/:id', wrap((req, res) => {
     const job = mustGet('jobs', req.params.id);
