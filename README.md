@@ -174,6 +174,30 @@ The **Projects** page lists every open project with flags:
 
 People without **See costs** get the hours-and-progress version. Export CSV and Print are on the page.
 
+## Project workbook (A4YE job tracker format)
+
+A commercial project's **Project** tab is laid out like `A4YE_Job_TEMPLATE.xlsx`, with sheets in the same order. Column names, dropdown lists and formulas follow the workbook.
+
+| Sheet | What it does |
+|---|---|
+| Dashboard | KPIs, flags, team, crew today, hours by week |
+| Cost Codes | Budget vs actual and % complete by code: earned hours, productivity, forecast |
+| Labor Log | Every punch on the project, from the A4Y Time Clock sync and the Field Ops clock |
+| Cost Log | POs (committed until received), material used, expenses and vendor bills, with open commitments |
+| Change Orders | Priced like the workbook: labor hrs × blended rate + material (+ tax) + equipment + sub + other, then overhead % and profit % (Settings defaults 18% / 15% / 6%). Type, status, days added, days open. Approved COs add to the contract and to the SOV. |
+| SOV | A mobilization line, one line per budgeted division, and one per approved CO. Suggested values come from the budget, with overrides; it warns when the total doesn't equal the contract. |
+| Billing Entry | For each application: work completed this period and materials stored, by SOV line |
+| Pay Apps | Work to date, stored, gross, retainage to date and per app, net due, paid, days to pay, open balance. **Invoice** creates the invoice and locks the app. |
+| Pay App (G702/G703) | Printable Application and Certificate for Payment with its continuation sheet |
+| RFI-Submittal / Safety-Quality / Milestones | The workbook's logs, with IDs (RFI-001, SQ-001, M-001), days open/late, and overdue / late / at-risk status |
+| Daily Logs | Work performed, delays, safety, visitors, deliveries, plus that day's time clock hours |
+
+Overdue RFIs and safety items, late milestones, and pay apps unpaid after 45 days show as project flags and on the commercial dashboard.
+
+A project bills **either** by pay application **or** from the job's Billing tab, never both, so work can't be billed twice.
+
+Not built yet from the workbook: the Gantt **Schedule**, **Manpower Loading** (planned vs actual crew), **Weekly History** snapshots, the **Bi-Weekly Report**, and **Estimate/Quote Import**.
+
 ## A4Y Time Clock and cost codes
 
 The cost code list is the A4YE list (0110 Estimating & Takeoff … 9060 Overtime Premium, divisions 01–90). The time clock's `0810-L` is code `0810` here.

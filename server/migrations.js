@@ -679,6 +679,80 @@ const MIGRATIONS = [
     for (const [k, v] of [['ply_env', 'production'], ['ply_from_location_id', ''], ['ply_po_location_id', ''], ['ply_auto_sync', '1'], ['ply_last_sync', ''], ['ply_locations', '[]']])
       db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
   },
+  // 17: commercial projects in the A4YE job tracker format — schedule of values, pay applications (AIA G702/G703),
+  //     change order log fields, RFI & submittal log, safety & quality log, milestones
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS sov_lines (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      division TEXT NOT NULL,                 -- MOB, 01-90, or CO
+      co_estimate_id INTEGER REFERENCES estimates(id) ON DELETE SET NULL,
+      description TEXT NOT NULL,
+      calc_value REAL NOT NULL DEFAULT 0,     -- suggested (from budget / CO)
+      override_value REAL,                    -- what you typed, when it differs
+      notes TEXT,
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_sov_job ON sov_lines(job_id, sort);
+    CREATE TABLE IF NOT EXISTS pay_apps (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      app_no INTEGER NOT NULL,
+      period_to TEXT NOT NULL,
+      retainage_pct REAL,                     -- override for this app (else the job's)
+      status TEXT NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft','Submitted','Approved','Paid','Short Paid','Disputed')),
+      date_submitted TEXT, date_paid TEXT, amount_paid REAL,
+      customer_ref TEXT, notes TEXT,
+      invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(job_id, app_no)
+    );
+    CREATE TABLE IF NOT EXISTS pay_app_lines (
+      id INTEGER PRIMARY KEY,
+      pay_app_id INTEGER NOT NULL REFERENCES pay_apps(id) ON DELETE CASCADE,
+      sov_line_id INTEGER NOT NULL REFERENCES sov_lines(id) ON DELETE CASCADE,
+      work_this_period REAL NOT NULL DEFAULT 0,
+      stored_balance REAL NOT NULL DEFAULT 0, -- materials presently stored at the end of this period
+      UNIQUE(pay_app_id, sov_line_id)
+    );
+    CREATE TABLE IF NOT EXISTS rfis (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      type TEXT NOT NULL DEFAULT 'RFI',
+      number TEXT, subject TEXT NOT NULL, spec_section TEXT,
+      cost_code_id INTEGER REFERENCES cost_codes(id),
+      date_sent TEXT, date_needed TEXT, date_returned TEXT,
+      status TEXT NOT NULL DEFAULT 'Open', ball_in_court TEXT,
+      cost_impact REAL, sched_impact_days REAL,
+      co_estimate_id INTEGER REFERENCES estimates(id) ON DELETE SET NULL,
+      notes TEXT, created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS safety_items (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      date TEXT NOT NULL, type TEXT NOT NULL, description TEXT NOT NULL,
+      severity TEXT, reported_by TEXT, corrective_action TEXT, owner TEXT,
+      due_date TEXT, closed_date TEXT, recordable INTEGER NOT NULL DEFAULT 0, lost_time_days REAL,
+      ref TEXT, created_by INTEGER REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS project_milestones (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      name TEXT NOT NULL, phase TEXT,
+      baseline_date TEXT, forecast_date TEXT, actual_date TEXT,
+      owner TEXT, critical INTEGER NOT NULL DEFAULT 0, impacts_billing INTEGER NOT NULL DEFAULT 0,
+      notes TEXT, sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_rfi_job ON rfis(job_id); CREATE INDEX IF NOT EXISTS idx_sq_job ON safety_items(job_id); CREATE INDEX IF NOT EXISTS idx_ms_job ON project_milestones(job_id);`);
+    // change order log fields (a change order is an estimate with change_order = 1)
+    for (const [c, d] of [['co_type', 'TEXT'], ['co_status', 'TEXT'], ['co_days_added', 'REAL'], ['co_reference', 'TEXT'], ['co_submitted_at', 'TEXT']]) addColumn(db, 'estimates', c, d);
+    addColumn(db, 'jobs', 'mobilization_pct', 'REAL');
+    for (const [k, v] of [['co_overhead_pct', '18'], ['co_profit_pct', '15'], ['material_tax_pct', '6'], ['default_retainage_pct', '5'], ['mobilization_pct', '5']])
+      db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

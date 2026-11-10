@@ -51,6 +51,13 @@ module.exports = function projectRoutes(app, db, X) {
     for (const c of codes) if (c.budget_hours && c.percent_complete != null && c.percent_complete < 100 && c.hours > c.budget_hours) flags.push(`${c.code} ${c.name}: hours used up at ${c.percent_complete}% complete`);
     if (job.end_date && job.end_date < t && !['completed', 'invoiced', 'cancelled'].includes(job.status)) flags.push('Past target completion date');
     if (fixed && b.over_under != null && b.over_under < -Math.max(1000, b.contract.total * 0.05)) flags.push(`Under-billed by ${Math.round(-b.over_under).toLocaleString()} — bill for work done`);
+    const wx = X.hooks && X.hooks.exceptions ? X.hooks.exceptions(job) : null;
+    if (wx) {
+      if (wx.rfis_overdue) flags.push(`${wx.rfis_overdue} RFI/submittal(s) past their needed date`);
+      if (wx.safety_overdue) flags.push(`${wx.safety_overdue} safety/quality item(s) past due`);
+      if (wx.milestones_late) flags.push(`${wx.milestones_late} milestone(s) late`);
+      if (wx.pay_apps_over_45) flags.push(`${wx.pay_apps_over_45} pay application(s) unpaid after 45 days`);
+    }
     const workedRecently = get(db, "SELECT COUNT(DISTINCT date(clock_in, 'localtime')) n FROM time_entries WHERE job_id = ? AND clock_in > datetime('now', '-3 days')", job.id).n;
     if (workedRecently && (!lastLog || lastLog < localDate(Date.now() - 2 * 864e5))) flags.push('Crew has been on site but no daily log in 2+ days');
     return {
@@ -60,7 +67,7 @@ module.exports = function projectRoutes(app, db, X) {
       cost_to_date: cost.total_cost, estimated_cost: fixed ? b.estimated_cost : null, projected_margin_pct: fixed ? b.projected_margin_pct : cost.margin_pct,
       projected_profit: fixed ? b.projected_profit : cost.profit,
       hours: cost.hours, budget_hours: r2(budgetHours), forecast_hours: r2(forecastHours), hours_pct: budgetHours ? r2(cost.hours / budgetHours * 100) : null,
-      crew_now: crewNow, last_log_date: lastLog, flags,
+      crew_now: crewNow, last_log_date: lastLog, flags, logs: wx,
     };
   }
 
@@ -106,7 +113,7 @@ module.exports = function projectRoutes(app, db, X) {
       budget_cost: bac, actual_cost: ac, open_commit: commit, eac, margin, margin_pct: marginPct, cost_variance: bac != null ? r2(bac - floor) : null,
       percent_complete: pct, ev, cpi, spi, earned_hours: earnedHrs != null ? r2(earnedHrs) : null, planned_hours: plannedHrs,
       billed: fixed ? b.billed_to_date : cost.revenue, retainage: fixed ? b.retainage_held : 0, cash: fixed ? b.collected : cost.collected, over_under: fixed ? b.over_under : null,
-      ar_over_45: ar45, hours: sm.hours, budget_hours: sm.budget_hours, crew_now: sm.crew_now.length, codes_over: codesOver, flags,
+      ar_over_45: ar45, hours: sm.hours, budget_hours: sm.budget_hours, crew_now: sm.crew_now.length, codes_over: codesOver, flags, logs: sm.logs,
     };
   }
   app.get('/api/projects/dashboard', wrap((req, res) => {
@@ -137,6 +144,9 @@ module.exports = function projectRoutes(app, db, X) {
       { key: 'under', label: 'Under-billed (work done, not billed)', count: rows.filter(r => r.over_under != null && r.over_under < -1000).length, amount: r2(-rows.reduce((t, r) => t + Math.min(0, r.over_under || 0), 0)), jobs: rows.filter(r => r.over_under != null && r.over_under < -1000).map(r => r.number) },
       { key: 'co', label: 'Change orders pending', count: rows.filter(r => r.pending_co).length, amount: totals.pending_co, jobs: rows.filter(r => r.pending_co).map(r => r.number) },
       { key: 'ar', label: 'Pay applications outstanding over 45 days', count: rows.filter(r => r.ar_over_45).length, amount: totals.ar_over_45, jobs: rows.filter(r => r.ar_over_45).map(r => r.number) },
+      { key: 'rfi', label: 'RFIs / submittals overdue', count: rows.reduce((t, r) => t + (r.logs ? r.logs.rfis_overdue : 0), 0), jobs: rows.filter(r => r.logs && r.logs.rfis_overdue).map(r => r.number) },
+      { key: 'safety', label: 'Safety / quality items overdue', count: rows.reduce((t, r) => t + (r.logs ? r.logs.safety_overdue : 0), 0), jobs: rows.filter(r => r.logs && r.logs.safety_overdue).map(r => r.number) },
+      { key: 'ms', label: 'Milestones late', count: rows.reduce((t, r) => t + (r.logs ? r.logs.milestones_late : 0), 0), jobs: rows.filter(r => r.logs && r.logs.milestones_late).map(r => r.number) },
       { key: 'logs', label: 'Crew on site but no daily log', count: rows.filter(r => r.flags.some(f => /daily log/.test(f))).length, jobs: rows.filter(r => r.flags.some(f => /daily log/.test(f))).map(r => r.number) },
     ];
     // labor hours by week across the projects (last 12 weeks) and cost by division (budget vs actual)
@@ -159,7 +169,7 @@ module.exports = function projectRoutes(app, db, X) {
       out.totals = Object.fromEntries(Object.entries(totals).filter(([k]) => keep.includes(k)));
       out.projects = rows.map(r => ({ id: r.id, number: r.number, title: r.title, customer_name: r.customer_name, status: r.status, pm_name: r.pm_name, start_date: r.start_date, end_date: r.end_date,
         percent_complete: r.percent_complete, spi: r.spi, hours: r.hours, budget_hours: r.budget_hours, crew_now: r.crew_now, codes_over: r.codes_over, flags: r.flags.filter(f => !/[$]|margin|billed|unpaid|change orders/i.test(f)) }));
-      out.exceptions = exceptions.filter(e => ['codes', 'late', 'spi', 'logs'].includes(e.key));
+      out.exceptions = exceptions.filter(e => ['codes', 'late', 'spi', 'rfi', 'safety', 'ms', 'logs'].includes(e.key));
       out.divisions = divisions.map(d => ({ division: d.division, budget_hours: d.budget_hours, hours: d.hours }));
     }
     res.json(out);
@@ -246,5 +256,5 @@ module.exports = function projectRoutes(app, db, X) {
     run(db, 'DELETE FROM daily_logs WHERE id = ?', l.id); res.json({ ok: true });
   }));
 
-  return { summary };
+  return { summary, codeRows, canSee };
 };

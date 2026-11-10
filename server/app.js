@@ -165,7 +165,8 @@ function createApp(db) {
   // Per-employee permissions for office staff: one rule table (perms.js) decides which area a request belongs to.
   const COST_KEYS = new Set(['unit_cost', 'est_cost', 'est_margin_pct', 'hourly_cost', 'hourly_wage', 'burden_pct', 'labor_cost', 'materials_cost', 'material_cost',
     'other_cost', 'total_cost', 'cost_to_date', 'estimated_cost', 'projected_profit', 'projected_margin_pct', 'profit', 'margin_pct', 'budget_cost', 'budget_material',
-    'budget_other', 'budget_materials', 'material_variance', 'loaded_rate', 'loaded_cost', 'permit_fees', 'forecast_cost', 'cost_variance']);
+    'budget_other', 'budget_materials', 'material_variance', 'loaded_rate', 'loaded_cost', 'permit_fees', 'forecast_cost', 'cost_variance',
+    'committed_cost', 'invoiced_cost', 'open_commit', 'cost_to_date', 'gain_loss', 'margin', 'labor_rate', 'approved_cost']);
   const stripCosts = v => {
     if (Array.isArray(v)) { v.forEach(stripCosts); return v; }
     if (v && typeof v === 'object') for (const k of Object.keys(v)) { if (COST_KEYS.has(k)) delete v[k]; else stripCosts(v[k]); }
@@ -1024,7 +1025,10 @@ function createApp(db) {
   require('./routes_field')(app, db, { wrap, bad, office, admin, pick, insert, update, mustGet, H });
   // ------------------------------------------------------------ job billing (fixed price vs T&M)
   app.get('/api/jobs/:id/billing', office, wrap((req, res) => { mustGet('jobs', req.params.id); res.json(Bill.jobBilling(db, Number(req.params.id), req.query.through)); }));
-  app.post('/api/jobs/:id/bill-fixed', office, wrap((req, res) => res.json({ id: Bill.billFixed(db, Number(req.params.id), req.body) })));
+  app.post('/api/jobs/:id/bill-fixed', office, wrap((req, res) => {
+    if (get(db, 'SELECT 1 x FROM pay_apps WHERE job_id = ?', req.params.id)) throw bad('This project bills by pay application (Project → Billing Entry / Pay Apps). Billing it here too would bill the work twice.');
+    res.json({ id: Bill.billFixed(db, Number(req.params.id), req.body) });
+  }));
   app.post('/api/jobs/:id/bill-tm', office, wrap((req, res) => res.json({ id: Bill.billTM(db, Number(req.params.id), req.body) })));
   const MS_TEMPLATES = { standard: [['Deposit', 30], ['Rough-in complete', 40], ['Final / trim complete', 30]], half: [['Deposit', 50], ['Completion', 50]],
     commercial: [['Mobilization', 10], ['Underground / rough-in', 35], ['Service & distribution', 25], ['Trim & devices', 20], ['Final / punch list', 10]] };
@@ -1051,7 +1055,9 @@ function createApp(db) {
   }));
   app.get('/api/reports/wip', office, wrap((req, res) => res.json(Bill.wipReport(db))));
   require('./routes_import')(app, db, { wrap, bad, admin, H });
-  require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs, addDays });
+  const hooks = {};
+  const PR = require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs, addDays, hooks });
+  hooks.exceptions = require('./workbook')(app, db, { wrap, bad, insert, update, mustGet, pick, P: PR }).exceptions;
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

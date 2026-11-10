@@ -358,3 +358,10 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 .addmat-row .grow { flex: 1 1 260px; min-width: 220px; }
 .addmat-row input, .addmat-row select { width: auto; }
 .addmat-row .lk input { width: 100%; }
+
+/* project workbook sheets (A4YE job tracker format) */
+.wb-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 12px; padding: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+.wb-tabs a { padding: 5px 10px; border-radius: 6px; font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.wb-tabs a:hover { background: var(--surface); text-decoration: none; }
+.wb-tabs a.on { background: var(--brand); color: var(--brand-ink, #fff); font-weight: 600; }
+@media print { .wb-tabs, .side, .tabs, .top, .no-print { display: none !important; } .g702, .g703 { break-inside: avoid; border: 0; box-shadow: none; } body, .card { background: #fff !important; color: #000 !important; } }

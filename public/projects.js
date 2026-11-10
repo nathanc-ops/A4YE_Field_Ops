@@ -100,12 +100,13 @@ async function viewMyProjects() {
     list, { onClick: p => go(`#/jobs/${p.id}?tab=project`), empty: 'No projects' })}</div>`;
 }
 
-async function projectTab(j, T) {
+// the Dashboard, Cost Codes and Daily Logs sheets of a project (the other sheets live in workbook.js)
+async function projectCoreSheet(j, T, sheet) {
   const [p] = await Promise.all([GET(`/projects/${j.id}`), loadCostCodes()]);
   const s = p.summary, seeMoney = (isOffice() && can('see_costs')) || (!isOffice() && can('see_costs'));
   const d = daysLeft(j.end_date);
   const pctSrc = { entered: 'entered on the job', cost_codes: 'from cost-code progress', cost: 'from cost to date vs budget' }[s.percent_source] || '';
-  T.innerHTML = `
+  T.innerHTML = `${sheet === 'dashboard' ? `
     ${s.flags.length ? `<div class="alert" style="margin-bottom:14px"><b>Needs attention:</b><ul style="margin:6px 0 0 18px;padding:0">${s.flags.map(f => `<li>${esc(f)}</li>`).join('')}</ul></div>` : ''}
     <div class="grid g4">
       ${kpi('% complete', s.percent_complete == null ? '—' : pct(s.percent_complete), pctSrc)}
@@ -128,7 +129,7 @@ async function projectTab(j, T) {
           p.today_crew, { empty: 'No time on this project today' })}
         <h3 style="margin-top:14px">Hours by week</h3>${weekBars(p.weeks)}</div>
     </div>
-    <div class="card" style="margin-top:14px"><div class="row spread"><h2>Progress by cost code</h2>
+    ` : ''}${sheet === 'codes' ? `<div class="card"><div class="row spread"><h2>Progress by cost code</h2>
       ${p.can_edit_progress ? '<button class="btn primary sm" id="psave">Save progress</button>' : ''}</div>
       <p class="small muted">Enter how far along each cost code is. Earned hours = budget × % complete. Productivity = earned ÷ used (above 1 is ahead). Forecast = hours used ÷ % complete. Budgets are set on the <a href="#/jobs/${j.id}?tab=budget">Cost codes &amp; budget</a> tab.</p>
       ${table([
@@ -141,7 +142,7 @@ async function projectTab(j, T) {
         { label: 'Forecast hrs', num: 1, html: r => r.forecast_variance != null && r.forecast_variance < 0 ? `<span style="color:var(--bad)">${num(r.forecast_hours)}</span>` : num(r.forecast_hours) },
         ...(seeMoney ? [{ label: 'Material', num: 1, html: r => `${money0(r.material_cost)}${r.budget_material ? `<div class="small muted">of ${money0(r.budget_material)}</div>` : ''}` }] : []),
       ], p.cost_codes, { empty: 'No cost-code budget or hours yet. Add a budget on the Cost codes & budget tab.' })}</div>
-    <div class="card" style="margin-top:14px"><div class="row spread"><h2>Daily logs</h2>${p.can_log ? '<button class="btn primary sm" id="plog">+ Daily log</button>' : ''}</div><div id="logs">Loading…</div></div>`;
+    ` : ''}${sheet === 'logs' ? `<div class="card"><div class="row spread"><h2>Daily logs</h2>${p.can_log ? '<button class="btn primary sm" id="plog">+ Daily log</button>' : ''}</div><div id="logs">Loading…</div></div>` : ''}`;
 
   if ($('#pedit')) $('#pedit').onclick = () => jobForm(j);
   if ($('#psave')) $('#psave').onclick = async () => {
@@ -151,6 +152,7 @@ async function projectTab(j, T) {
     if (r && r.percent_complete != null) toast(`Project is ${pct(r.percent_complete)} complete`);
     route();
   };
+  if (sheet !== 'logs') return;
   const logs = await GET(`/projects/${j.id}/logs`);
   $('#logs', T).innerHTML = logs.length ? logs.map(l => `<div class="dlog" data-log="${l.id}">
       <div class="row spread"><b>${new Date(l.log_date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</b>

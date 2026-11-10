@@ -304,4 +304,4 @@ function wipReport(db) {
 }
 function money(n) { return (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' }); }
 
-module.exports = { laborRate, codesPercent, budgetCost, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };
+module.exports = { newInvoice, laborRate, codesPercent, budgetCost, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };
