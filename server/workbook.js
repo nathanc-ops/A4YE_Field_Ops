@@ -765,6 +765,112 @@ module.exports = function workbookRoutes(app, db, X) {
     update('project_reports', row.id, { status: 'draft', issued_at: null, issued_by: null, snapshot: null }); res.json({ ok: true });
   }));
 
+  // ================================================================ Estimate Import → Import Quote → budget
+  // Paste the quote workbook's scope-tab rows (columns A–P, straight from Excel) and they become the project's budget by
+  // cost code, like the job template: the code is read from the Phase Code (LAB-P2-0810-L, P2-0810-L, 0810-L or 0810),
+  // subtotal and no-quantity rows are skipped, hours = qty × adjusted hrs/unit (or NECA hrs × factor), material $ =
+  // Ext. Material or qty × material/unit. Labor $ uses Ext. Labor when given, else hours × the job's crew rate.
+  // Cost types S (sub), E (equipment) and O (other) budget as "other"; everything else as material.
+  const QCOLS = ['phase_code', 'phase', 'tag', 'description', 'qty', 'unit', 'material_unit', 'neca_hours', 'factor', 'adj_hours', 'labor_unit', 'total_unit', 'ext_material', 'ext_labor', 'ext_cost', 'notes'];
+  const num = v => { if (v == null) return null; const t = String(v).replace(/[$,\s]/g, '').replace(/^\((.*)\)$/, '-$1'); if (t === '' || t === '-') return null; const n = Number(t); return Number.isFinite(n) ? n : null; };
+  const isCode = x => /^\d{4}$/.test(x || '');
+  function parseQuote(job, text, { source = null, overrides = {} } = {}) {
+    if (!text || !String(text).trim()) throw bad('Paste the quote rows first');
+    const raw = String(text).replace(/\r/g, '').split('\n');
+    if (raw.length > 2000) throw bad('That is more than 2,000 rows — import one scope tab at a time');
+    const delim = raw.some(l => l.includes('\t')) ? '\t' : ',';
+    const splitCsv = l => { const out = []; let cur = '', q = false; for (let i = 0; i < l.length; i++) { const ch = l[i];
+      if (q) { if (ch === '"' && l[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === ',') { out.push(cur); cur = ''; } else cur += ch; }
+      out.push(cur); return out; };
+    const codes = new Map(all(db, 'SELECT id, code, name, phase FROM cost_codes').map(c => [c.code, c]));
+    const rate = Bill.laborRate(db, job);
+    const lines = [];
+    raw.forEach((l, i) => {
+      if (!l.trim()) return;
+      const cells = delim === '\t' ? l.split('\t') : splitCsv(l);
+      const r = Object.fromEntries(QCOLS.map((k, c) => [k, (cells[c] ?? '').trim()]));
+      if (/^phase\s*code$/i.test(r.phase_code) || /^description$/i.test(r.description)) return;   // a pasted header row
+      const qty = num(r.qty), ov = overrides[i] || {};
+      const include = !!r.description && qty != null && qty !== 0 && !/subtotal/i.test(`${r.phase_code} ${r.phase} ${r.description}`);
+      const seg = r.phase_code.split('-').map(x => x.trim());
+      let code = '', area = '', type = '';
+      if (isCode(seg[2])) { code = seg[2]; area = seg[0]; type = seg[3] || ''; } else if (isCode(seg[0])) { code = seg[0]; type = seg[1] || ''; } else if (isCode(seg[1])) { code = seg[1]; type = seg[2] || ''; }
+      if (ov.code) code = /^\d+$/.test(String(ov.code)) ? String(ov.code).padStart(4, '0').slice(0, 4) : String(ov.code).slice(0, 4);
+      if (ov.area != null && ov.area !== '') area = ov.area;
+      type = (type || 'L').toUpperCase();
+      const cc = codes.get(code);
+      const hrsUnit = num(r.adj_hours) ?? (num(r.neca_hours) != null ? num(r.neca_hours) * (num(r.factor) ?? 1) : 0);
+      const material = include ? (num(r.ext_material) ?? r2((qty || 0) * (num(r.material_unit) || 0))) : 0;
+      const hours = include ? r2((qty || 0) * hrsUnit) : 0;
+      const labor = include ? (num(r.ext_labor) ?? r2(hours * rate)) : 0;
+      const status = !include ? 'Skipped — no qty, or a subtotal row' : !code ? 'NO COST CODE — type one' : !cc ? `Code ${code} is not on the cost code list` : 'OK';
+      lines.push({ row: i, ...r, qty, include, code, area, cost_type: type, cost_code_id: cc ? cc.id : null, cost_code_name: cc ? cc.name : null, code_phase: cc ? cc.phase : null,
+        hours_unit: hrsUnit, material, hours, labor, total: r2(material + labor), status, source });
+    });
+    const ok = lines.filter(x => x.status === 'OK');
+    const byCode = {};
+    for (const x of ok) { const b = byCode[x.cost_code_id] = byCode[x.cost_code_id] || { cost_code_id: x.cost_code_id, code: x.code, name: x.cost_code_name, phase: x.code_phase, budget_hours: 0, budget_material: 0, budget_other: 0, labor: 0 };
+      b.budget_hours += x.hours; b.labor += x.labor; if (['S', 'E', 'O'].includes(x.cost_type)) b.budget_other += x.material; else b.budget_material += x.material; }
+    const current = new Map(all(db, 'SELECT * FROM job_budgets WHERE job_id = ?', job.id).map(b => [b.cost_code_id, b]));
+    const budget = Object.values(byCode).map(b => ({ ...b, budget_hours: r2(b.budget_hours), budget_material: r2(b.budget_material), budget_other: r2(b.budget_other), labor: r2(b.labor),
+      current_hours: current.get(b.cost_code_id)?.budget_hours ?? null, current_material: current.get(b.cost_code_id)?.budget_material ?? null })).sort((a, b) => a.code.localeCompare(b.code));
+    const t = k => r2(ok.reduce((x, l) => x + l[k], 0));
+    return { lines, budget, labor_rate: r2(rate), totals: { lines: ok.length, skipped: lines.filter(x => !x.include).length, need_code: lines.filter(x => x.include && x.status !== 'OK').length,
+      hours: t('hours'), material: t('material'), labor: t('labor'), total: t('total') }, removed: [...current.values()].filter(b => !byCode[b.cost_code_id]).length };
+  }
+  app.post('/api/projects/:id/quote-import/preview', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), b = req.body || {};
+    res.json(parseQuote(job, b.text, { source: b.source, overrides: b.overrides || {} }));
+  }));
+  app.post('/api/projects/:id/quote-import', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), b = req.body || {}, mode = b.mode === 'add' ? 'add' : 'replace';
+    const p = parseQuote(job, b.text, { source: b.source, overrides: b.overrides || {} });
+    if (!p.totals.lines) throw bad('No importable lines — every row was skipped or needs a cost code');
+    if (p.totals.need_code && !b.skip_uncoded) throw bad(`${p.totals.need_code} line(s) need a cost code — fix them or choose to skip them`);
+    const importId = `${Date.now().toString(36)}-${req.user.id}`;
+    const progress = new Map(all(db, 'SELECT cost_code_id, percent_complete FROM job_budgets WHERE job_id = ? AND percent_complete IS NOT NULL', job.id).map(r => [r.cost_code_id, r.percent_complete]));
+    if (mode === 'replace') { run(db, 'DELETE FROM job_budgets WHERE job_id = ?', job.id); run(db, 'DELETE FROM project_quote_lines WHERE job_id = ?', job.id); }
+    for (const x of p.budget) {
+      run(db, `INSERT INTO job_budgets (job_id, cost_code_id, budget_hours, budget_material, budget_other) VALUES (?,?,?,?,?)
+        ON CONFLICT(job_id, cost_code_id) DO UPDATE SET budget_hours = budget_hours + excluded.budget_hours, budget_material = budget_material + excluded.budget_material, budget_other = budget_other + excluded.budget_other`,
+        job.id, x.cost_code_id, x.budget_hours, x.budget_material, x.budget_other);
+    }
+    for (const [cc, pct] of progress) run(db, 'UPDATE job_budgets SET percent_complete = ? WHERE job_id = ? AND cost_code_id = ?', pct, job.id, cc);
+    let sort = get(db, 'SELECT MAX(sort) m FROM project_quote_lines WHERE job_id = ?', job.id).m || 0;
+    for (const x of p.lines.filter(l => l.status === 'OK'))
+      insert('project_quote_lines', { job_id: job.id, import_id: importId, source: b.source || null, area: x.area || null, cost_code_id: x.cost_code_id, cost_type: x.cost_type, phase_code: x.phase_code || null,
+        tag: x.tag || null, description: x.description, qty: x.qty, unit: x.unit || null, material_unit: num(x.material_unit), hours_unit: x.hours_unit, ext_material: x.material, ext_hours: x.hours,
+        ext_labor: x.labor, ext_total: x.total, notes: x.notes || null, sort: sort += 1, imported_by: req.user.id });
+    const t = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m FROM job_budgets WHERE job_id = ?', job.id);
+    update('jobs', job.id, { budget_hours: r2(t.h || 0), budget_materials: r2(t.m || 0) });
+    res.json({ ok: true, import_id: importId, mode, lines: p.totals.lines, codes: p.budget.length, totals: p.totals });
+  }));
+  // the Import Quote sheet: every imported line, by cost code
+  app.get('/api/projects/:id/quote-lines', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true });
+    const rows = all(db, `SELECT q.*, cc.code cost_code, cc.name cost_code_name, cc.phase, u.name imported_by_name FROM project_quote_lines q LEFT JOIN cost_codes cc ON cc.id = q.cost_code_id
+      LEFT JOIN users u ON u.id = q.imported_by WHERE q.job_id = ? ORDER BY q.sort, q.id`, job.id);
+    const t = k => r2(rows.reduce((x, r) => x + (r[k] || 0), 0));
+    res.json({ rows, totals: { ext_material: t('ext_material'), ext_hours: t('ext_hours'), ext_labor: t('ext_labor'), ext_total: t('ext_total') },
+      imports: all(db, `SELECT import_id, source, COUNT(*) lines, MIN(imported_at) imported_at, SUM(ext_total) total FROM project_quote_lines WHERE job_id = ? GROUP BY import_id, source ORDER BY MIN(id)`, job.id) });
+  }));
+  app.delete('/api/projects/:id/quote-import/:importId', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true });
+    const lines = all(db, 'SELECT * FROM project_quote_lines WHERE job_id = ? AND import_id = ?', job.id, req.params.importId);
+    if (!lines.length) throw bad('Import not found', 404);
+    // take that import's amounts back out of the budget
+    for (const l of lines) {
+      const other = ['S', 'E', 'O'].includes(l.cost_type);
+      run(db, `UPDATE job_budgets SET budget_hours = MAX(0, budget_hours - ?), budget_material = MAX(0, budget_material - ?), budget_other = MAX(0, budget_other - ?) WHERE job_id = ? AND cost_code_id = ?`,
+        l.ext_hours, other ? 0 : l.ext_material, other ? l.ext_material : 0, job.id, l.cost_code_id);
+    }
+    run(db, 'DELETE FROM job_budgets WHERE job_id = ? AND budget_hours < 0.005 AND budget_material < 0.005 AND budget_other < 0.005 AND percent_complete IS NULL', job.id);
+    run(db, 'DELETE FROM project_quote_lines WHERE job_id = ? AND import_id = ?', job.id, req.params.importId);
+    const t = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m FROM job_budgets WHERE job_id = ?', job.id);
+    update('jobs', job.id, { budget_hours: r2(t.h || 0), budget_materials: r2(t.m || 0) });
+    res.json({ ok: true, removed: lines.length });
+  }));
+
   // counts for dashboards and flags
   return {
     exceptions(job) {

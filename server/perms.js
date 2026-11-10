@@ -61,6 +61,7 @@ const RULES = [
   R('PUT', /^\/api\/projects\/\d+\/progress$/, 'projects'),
   R('PUT,POST', /^\/api\/projects\/\d+\/biweekly(\/issue)?$/, 'projects'),
   R('POST', /^\/api\/project-reports\/\d+\/reopen$/, 'projects'),
+  R('POST,DELETE', /^\/api\/projects\/\d+\/quote-import(\/|$)/, 'projects'),
   R('*', /^\/api\/projects\/\d+\/(sov|pay-apps)(\/|$)/, 'invoices'),
   R('*', /^\/api\/pay-apps\//, 'invoices'),
   R('POST', /^\/api\/projects\/\d+\/change-orders$/, 'estimates'),

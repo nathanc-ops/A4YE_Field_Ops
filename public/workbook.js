@@ -3,7 +3,7 @@
  * Sheets, in the workbook's order: Dashboard · Schedule & Gantt · Cost Codes · Labor Log · Cost Log · Change Orders · SOV · Billing Entry ·
  * Pay Apps · Pay App (G702/G703) · RFI-Submittal · Safety-Quality · Milestones · Daily Logs. */
 const WB_SHEETS = [
-  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['history', 'Weekly History'], ['report', 'Bi-Weekly Report', 'office'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
+  ['dashboard', 'Dashboard'], ['import', 'Estimate Import', 'budget'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['history', 'Weekly History'], ['report', 'Bi-Weekly Report', 'office'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
   ['sov', 'SOV', 'bill'], ['billing', 'Billing Entry', 'bill'], ['payapps', 'Pay Apps', 'bill'], ['g702', 'Pay App (G702/G703)', 'bill'],
   ['rfi', 'RFI-Submittal'], ['safety', 'Safety-Quality'], ['milestones', 'Milestones'], ['logs', 'Daily Logs'],
 ];
@@ -14,13 +14,13 @@ const statusPill = (st) => { const tone = { Approved: 'good', Paid: 'good', Comp
 
 async function projectTab(j, T) {
   const { params } = hashParams();
-  const okSheet = ([, , need]) => !need || (need === 'office' && isOffice()) || (need === 'cost' && isOffice() && can('see_costs')) || (need === 'bill' && isOffice() && can('invoices') && j.billing_type === 'fixed');
+  const okSheet = ([, , need]) => !need || (need === 'office' && isOffice()) || (need === 'cost' && isOffice() && can('see_costs')) || (need === 'bill' && isOffice() && can('invoices') && j.billing_type === 'fixed') || (need === 'budget' && isOffice() && can('projects'));
   const sheets = WB_SHEETS.filter(okSheet);
   const sheet = sheets.some(([k]) => k === params.get('sheet')) ? params.get('sheet') : 'dashboard';
   T.innerHTML = `<div class="wb-tabs no-print">${sheets.map(([k, l]) => `<a href="#/jobs/${j.id}?tab=project&sheet=${k}" class="${k === sheet ? 'on' : ''}">${l}</a>`).join('')}</div><div id="wbs"></div>`;
   const W = $('#wbs', T);
   if (['dashboard', 'codes', 'logs'].includes(sheet)) return projectCoreSheet(j, W, sheet);
-  return ({ schedule: wbSchedule, manpower: wbManpower, history: wbHistory, report: wbReport, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
+  return ({ import: wbImport, schedule: wbSchedule, manpower: wbManpower, history: wbHistory, report: wbReport, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
 }
 
 // ------------------------------------------------------------ Schedule & Gantt
@@ -281,6 +281,63 @@ async function wbReport(j, W) {
     try { await PUT(`/projects/${j.id}/biweekly`, { period_end: pe, ...narr() }); await act(() => POST(`/projects/${j.id}/biweekly/issue`, { period_end: pe }), 'Report issued'); route(); } catch (e) { toast(e.message, true); }
   };
   if ($('#rreopen', W)) $('#rreopen', W).onclick = async () => { if (confirm('Reopen this report? The frozen numbers are discarded and it goes back to live numbers.')) { await act(() => POST(`/project-reports/${rep.id}/reopen`), 'Reopened').catch(() => null); route(); } };
+}
+
+// ------------------------------------------------------------ Estimate Import → Import Quote → budget
+async function wbImport(j, W) {
+  const seeCost = can('see_costs');
+  const q = await GET(`/projects/${j.id}/quote-lines`);
+  let pv = null, overrides = {};
+  const m0 = v => seeCost ? money0(v) : '—', n1 = v => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+  W.innerHTML = `<div class="card"><div class="row spread"><h2>Estimate Import</h2></div>
+      <p class="small muted">Copy each scope tab's line items from the quote workbook (columns A–P: Phase Code, Phase, Tag, Description, Qty, Unit, Material $/Unit, NECA Hrs/Unit, Prod. Factor, Adj. Hrs/Unit, Labor $/Unit, Total Unit Cost, Ext. Material, Ext. Labor $, Ext. Cost, Notes) and paste them below — one tab at a time or stacked. The cost code is read from the Phase Code (<code>LAB-P2-0810-L</code>, <code>0810-L</code> or <code>0810</code>); subtotal and no-quantity rows are skipped. A CSV in the same column order works too.</p>
+      <div class="form-grid" style="margin-top:8px"><label class="f"><span>Scope tab / quote file</span><input id="qsrc" placeholder="e.g. Rough-In tab, Quote rev 2"></label>
+        <label class="f"><span>…or load a CSV</span><input type="file" id="qfile" accept=".csv,.tsv,.txt"></label>
+        <label class="f full"><span>Paste quote rows</span><textarea id="qtext" rows="7" placeholder="Paste from Excel here" style="font-family:ui-monospace,monospace;font-size:12px"></textarea></label></div>
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="qprev">Preview</button></div>
+      <div id="qpv"></div></div>
+    <div class="card" style="margin-top:14px"><div class="row spread"><h2>Import Quote — the budget's source</h2>${q.rows.length ? '<button class="btn sm" id="qcsv">CSV</button>' : ''}</div>
+      <p class="small muted">Every imported line, as it fed the cost-code budget. Undo an import to take its hours and dollars back out of the budget.</p>
+      ${q.imports.length ? table([{ label: 'Imported', get: x => wbDate(x.imported_at) }, { label: 'Source', get: x => x.source || '—' }, { label: 'Lines', num: 1, key: 'lines' },
+        { label: 'Total', num: 1, get: x => m0(x.total) }, { label: '', html: x => `<button class="btn sm danger" data-undo="${esc(x.import_id)}">Undo</button>` }], q.imports) : ''}
+      <div style="margin-top:10px">${table([{ label: 'Area', key: 'area' }, { label: 'Phase', key: 'phase' }, { label: 'Code', html: r => `<b>${esc(r.cost_code || '')}</b> <span class="small muted">${esc(r.cost_code_name || '')}</span>` }, { label: 'Type', key: 'cost_type' },
+        { label: 'Tag', key: 'tag' }, { label: 'Description', key: 'description' }, { label: 'Qty', num: 1, get: r => n1(r.qty) }, { label: 'Unit', key: 'unit' }, { label: 'Hrs/unit', num: 1, get: r => n1(r.hours_unit) },
+        { label: 'Ext material', num: 1, get: r => m0(r.ext_material) }, { label: 'Ext hrs', num: 1, get: r => n1(r.ext_hours) }, { label: 'Ext labor', num: 1, get: r => m0(r.ext_labor) }, { label: 'Ext total', num: 1, get: r => m0(r.ext_total) }, { label: 'Source', key: 'source' }],
+        q.rows, { empty: 'Nothing imported yet — the budget on the Cost Codes sheet was entered by hand.', foot: q.rows.length ? ['TOTAL', '', '', '', '', '', '', '', '', { v: m0(q.totals.ext_material), num: 1 }, { v: n1(q.totals.ext_hours), num: 1 }, { v: m0(q.totals.ext_labor), num: 1 }, { v: m0(q.totals.ext_total), num: 1 }, ''] : null })}</div></div>`;
+  $('#qfile', W).onchange = e => { const f = e.target.files[0]; if (!f) return; const rd = new FileReader(); rd.onload = () => { $('#qtext', W).value = rd.result; if (!$('#qsrc', W).value) $('#qsrc', W).value = f.name; }; rd.readAsText(f); };
+  const body = () => ({ text: $('#qtext', W).value, source: $('#qsrc', W).value || null, overrides });
+  const preview = async () => {
+    try { pv = await POST(`/projects/${j.id}/quote-import/preview`, body()); } catch (e) { return toast(e.message, true); }
+    const t = pv.totals, tone = st => st === 'OK' ? 'good' : /Skipped/.test(st) ? '' : 'bad';
+    $('#qpv', W).innerHTML = `<div class="grid g4" style="margin:14px 0">${kpi('Lines to import', t.lines, `${t.skipped} skipped${t.need_code ? ` · <b style="color:var(--bad)">${t.need_code} need a code</b>` : ''}`)}${kpi('Labor hours', n1(t.hours), seeCost ? `${m0(t.labor)} labor at ${money(pv.labor_rate)}/h unless the quote gave Ext. Labor` : '')}
+        ${kpi('Material / other', m0(t.material), '')}${kpi('Quote total', m0(t.total), 'material + labor')}</div>
+      ${t.need_code ? '<div class="alert">Some lines have no usable cost code. Type a 4-digit code in the Code box on those lines and preview again, or tick “skip lines without a code”.</div>' : ''}
+      <h3 style="margin:12px 0 6px">Budget by cost code</h3>
+      ${table([{ label: 'Code', html: b => `<b>${esc(b.code)}</b> ${esc(b.name || '')}` }, { label: 'Phase', key: 'phase' }, { label: 'Hours', num: 1, get: b => n1(b.budget_hours) }, { label: 'Material', num: 1, get: b => m0(b.budget_material) },
+        { label: 'Sub / equip / other', num: 1, get: b => m0(b.budget_other) }, { label: 'Labor $ (quote)', num: 1, get: b => m0(b.labor) }, { label: 'Current hrs', num: 1, get: b => b.current_hours == null ? '—' : n1(b.current_hours) }], pv.budget, { empty: 'No importable lines' })}
+      <h3 style="margin:14px 0 6px">Lines</h3>
+      <div class="table-wrap"><table><thead><tr><th>Row</th><th>Status</th><th>Phase code</th><th>Code</th><th>Area</th><th>Type</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Hrs</th><th class="num">Material</th><th class="num">Labor $</th></tr></thead><tbody>
+        ${pv.lines.map(l => `<tr style="${l.include ? '' : 'opacity:.55'}"><td>${l.row + 1}</td><td><span class="pill ${tone(l.status)}">${esc(l.status)}</span></td><td>${esc(l.phase_code)}</td>
+          <td>${l.include ? `<input class="pct-in" style="width:62px" data-ovc="${l.row}" value="${esc(l.code)}" placeholder="code">` : esc(l.code)}</td><td>${l.include ? `<input class="pct-in" style="width:70px;text-align:left" data-ova="${l.row}" value="${esc(l.area)}">` : esc(l.area)}</td>
+          <td>${esc(l.cost_type)}</td><td>${esc(l.description)}</td><td class="num">${n1(l.qty)}</td><td>${esc(l.unit)}</td><td class="num">${n1(l.hours)}</td><td class="num">${m0(l.material)}</td><td class="num">${m0(l.labor)}</td></tr>`).join('')}</tbody></table></div>
+      <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:12px"><label class="small">Apply as <select id="qmode"><option value="replace">Replace the budget (the quote is the whole job)</option><option value="add">Add to the budget (addendum / another scope tab)</option></select></label>
+        ${t.need_code ? '<label class="small"><input type="checkbox" id="qskip"> Skip lines without a code</label>' : ''}<button class="btn sm" id="qre">Preview again</button><button class="btn primary" id="qgo" ${t.lines ? '' : 'disabled'}>Import ${t.lines} line(s)</button></div>
+      ${pv.removed ? `<p class="small muted">Replace removes the budget on ${pv.removed} cost code(s) not in this quote. % complete already reported is kept on codes that stay.</p>` : ''}`;
+    $$('[data-ovc]', W).forEach(i => i.onchange = () => { overrides[i.dataset.ovc] = { ...(overrides[i.dataset.ovc] || {}), code: i.value.trim() }; });
+    $$('[data-ova]', W).forEach(i => i.onchange = () => { overrides[i.dataset.ova] = { ...(overrides[i.dataset.ova] || {}), area: i.value.trim() }; });
+    $('#qre', W).onclick = preview;
+    $('#qgo', W).onclick = async () => {
+      const mode = $('#qmode', W).value;
+      if (mode === 'replace' && !confirm('Replace this project\'s cost-code budget with the quote? Previously imported quote lines are replaced too.')) return;
+      try { const r = await POST(`/projects/${j.id}/quote-import`, { ...body(), mode, skip_uncoded: !!($('#qskip', W) && $('#qskip', W).checked) });
+        toast(`Imported ${r.lines} line(s) into ${r.codes} cost code(s)`); route(); } catch (e) { toast(e.message, true); }
+    };
+  };
+  $('#qprev', W).onclick = () => { overrides = {}; preview(); };
+  $$('[data-undo]', W).forEach(b => b.onclick = async () => { if (confirm('Undo this import? Its hours and dollars come back out of the budget.')) { await act(() => DEL(`/projects/${j.id}/quote-import/${encodeURIComponent(b.dataset.undo)}`), 'Import undone').catch(() => null); route(); } });
+  if ($('#qcsv', W)) $('#qcsv', W).onclick = () => toCSV([{ label: 'Area', key: 'area' }, { label: 'Phase', key: 'phase' }, { label: 'Cost Code', key: 'cost_code' }, { label: 'Cost Type', key: 'cost_type' }, { label: 'Tag', key: 'tag' },
+    { label: 'Description', key: 'description' }, { label: 'Qty', key: 'qty' }, { label: 'Unit', key: 'unit' }, { label: 'Material $/Unit', key: 'material_unit' }, { label: 'Labor Hrs/Unit', key: 'hours_unit' },
+    { label: 'Ext Material/Other $', key: 'ext_material' }, { label: 'Ext Labor Hrs', key: 'ext_hours' }, { label: 'Ext Labor $', key: 'ext_labor' }, { label: 'Ext Total $', key: 'ext_total' }, { label: 'Source', key: 'source' }, { label: 'Import Date', key: 'imported_at' }, { label: 'Notes', key: 'notes' }], q.rows, `${j.number}_import_quote.csv`);
 }
 
 // ------------------------------------------------------------ Labor Log / Cost Log

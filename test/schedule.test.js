@@ -211,3 +211,60 @@ test('bi-weekly report: all sections, GC copy hides our costs, issuing freezes t
   assert.equal((await call('admin', 'GET', `/projects/${ids.job}/biweekly?period_end=2099-01-01`)).status, 400);
   assert.equal((await call('tech', 'GET', `/projects/${ids.job}/biweekly`)).status, 403);
 });
+
+test('estimate import: parse pasted quote rows, codes from the phase code, skip subtotals, replace/add budgets, undo an import', async () => {
+  const job = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Warehouse', is_project: 1, billing_type: 'fixed', contract_amount: 50000 })).data.id;
+  const T = (...c) => c.join('\t');
+  const text = [
+    T('Phase Code', 'Phase', 'Tag', 'Description', 'Qty', 'Unit', 'Material $/Unit', 'NECA', 'Factor', 'Adj', 'Labor $/Unit', 'Total', 'Ext Mat', 'Ext Lab', 'Ext Cost', 'Notes'),
+    T('LAB-P2-0810-L', 'Rough-In', 'A1', '3/4" EMT', '1,000', 'ft', '$1.20', '0.04', '1.1', '', '', '', '', '', '', 'from takeoff'),
+    T('1010-L', 'Trim', '', 'Duplex receptacles', '40', 'ea', '3.5', '', '', '0.5', '', '', '', '$900', '', ''),
+    T('P2-0810-M', 'Rough-In', '', 'EMT fittings', '1', 'lot', '', '', '', '', '', '', '450', '', '', ''),
+    T('9999', '', '', 'Mystery item', '2', 'ea', '10', '1', '', '', '', '', '', '', '', ''),
+    T('', '', '', 'Rough-in subtotal', '1', '', '', '', '', '', '', '', '', '', '', ''),
+    T('0810', '', '', 'Notes row, no qty', '', '', '', '', '', '', '', '', '', '', '', ''),
+    T('', 'Sub', '', 'Fire alarm subcontract', '1', 'ls', '12000', '', '', '', '', '', '', '', '', ''),
+  ].join('\n');
+  const pv = await call('admin', 'POST', `/projects/${job}/quote-import/preview`, { text, source: 'Rough-In tab' });
+  assert.equal(pv.status, 200, JSON.stringify(pv.data));
+  const L = pv.data.lines;
+  assert.equal(L.length, 7, 'header row dropped');
+  const emt = L.find(l => l.description === '3/4" EMT');
+  assert.equal(emt.code, '0810'); assert.equal(emt.area, 'LAB'); assert.equal(emt.cost_type, 'L'); assert.equal(emt.status, 'OK');
+  assert.equal(emt.hours, 44, '1000 × 0.04 × 1.1'); assert.equal(emt.material, 1200);
+  const rec = L.find(l => l.description === 'Duplex receptacles');
+  assert.equal(rec.hours, 20); assert.equal(rec.labor, 900, 'Ext. Labor wins'); assert.equal(rec.material, 140);
+  assert.equal(L.find(l => l.description === 'EMT fittings').cost_type, 'M');
+  assert.match(L.find(l => l.description === 'Mystery item').status, /not on the cost code list/);
+  assert.match(L.find(l => /subtotal/.test(l.description)).status, /Skipped/);
+  assert.match(L.find(l => /no qty/.test(l.description)).status, /Skipped/);
+  assert.match(L.find(l => /Fire alarm/.test(l.description)).status, /NO COST CODE/);
+  assert.equal(pv.data.totals.need_code, 2);
+  // refuse while lines need codes, unless told to skip them
+  assert.equal((await call('admin', 'POST', `/projects/${job}/quote-import`, { text })).status, 400);
+  const fa = L.find(l => /Fire alarm/.test(l.description)).row;
+  const ov = { [fa]: { code: '1610' } };
+  const pv2 = (await call('admin', 'POST', `/projects/${job}/quote-import/preview`, { text, overrides: ov })).data;
+  const faLine = pv2.lines.find(l => l.row === fa);
+  assert.equal(faLine.status, 'OK', 'override gives the sub line a code');
+  const r = await call('admin', 'POST', `/projects/${job}/quote-import`, { text, overrides: ov, skip_uncoded: true, source: 'Rough-In tab' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const b = db.prepare('SELECT cc.code, jb.* FROM job_budgets jb JOIN cost_codes cc ON cc.id = jb.cost_code_id WHERE jb.job_id = ? ORDER BY cc.code').all(job);
+  const b0810 = b.find(x => x.code === '0810');
+  assert.equal(b0810.budget_hours, 44); assert.equal(b0810.budget_material, 1650, 'EMT + fittings');
+  assert.equal(b.find(x => x.code === '1610').budget_material, 12000, 'type L default → material');
+  assert.equal(db.prepare('SELECT budget_hours FROM jobs WHERE id = ?').get(job).budget_hours, 64);
+  // % complete survives a replace; a second import in add mode stacks; undo takes it back out
+  db.prepare("UPDATE job_budgets SET percent_complete = 25 WHERE job_id = ? AND cost_code_id = (SELECT id FROM cost_codes WHERE code = '0810')").run(job);
+  const add = T('0810-L', '', '', 'More EMT', '500', 'ft', '1.2', '0.04', '', '', '', '', '', '', '', '');
+  const a = await call('admin', 'POST', `/projects/${job}/quote-import`, { text: add, mode: 'add', source: 'Addendum 1' });
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  let r0810 = db.prepare("SELECT * FROM job_budgets WHERE job_id = ? AND cost_code_id = (SELECT id FROM cost_codes WHERE code = '0810')").get(job);
+  assert.equal(r0810.budget_hours, 64); assert.equal(r0810.percent_complete, 25);
+  const ql = (await call('admin', 'GET', `/projects/${job}/quote-lines`)).data;
+  assert.equal(ql.imports.length, 2);
+  assert.equal((await call('admin', 'DELETE', `/projects/${job}/quote-import/${a.data.import_id}`)).status, 200);
+  r0810 = db.prepare("SELECT * FROM job_budgets WHERE job_id = ? AND cost_code_id = (SELECT id FROM cost_codes WHERE code = '0810')").get(job);
+  assert.equal(r0810.budget_hours, 44);
+  assert.equal((await call('tech', 'POST', `/projects/${job}/quote-import/preview`, { text })).status, 403);
+});

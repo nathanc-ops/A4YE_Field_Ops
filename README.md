@@ -181,6 +181,7 @@ A commercial project's **Project** tab is laid out like `A4YE_Job_TEMPLATE.xlsx`
 | Sheet | What it does |
 |---|---|
 | Dashboard | KPIs, flags, team, crew today, hours by week |
+| Estimate Import | Paste the quote workbook's scope-tab rows (columns A–P, straight from Excel) or load a CSV. The cost code comes from the Phase Code (`LAB-P2-0810-L`, `P2-0810-L`, `0810-L`, `0810`); subtotal and no-quantity rows are skipped; lines without a usable code can be given one in the preview. Hours = qty × adjusted hrs/unit (or NECA hrs × production factor); material = Ext. Material or qty × material/unit; cost types S/E/O budget as "other". **Replace** makes the quote the whole budget (keeping % complete already reported on codes that stay); **Add** stacks an addendum or another tab. Every imported line is kept (the workbook's Import Quote tab), and any import can be undone. |
 | Schedule | Tasks (T-001…) with phase, area, cost code, start/finish, predecessor, budget hours and % complete, drawn as a weekly Gantt. Work days (Mon–Fri), planned % against an as-of date, earned and planned hours, actual hours from the time clock on the task's code (or phase) between its dates, SPI, float to the next task, and the workbook's statuses (Not Started, In Progress, Late Start, Late, Update %, Complete, On Hold, By Others). Weekly planned hours, planned crew and actual hours run under the Gantt, and weeks over the max crew are flagged. Includes a 3-week look-ahead filter, **Build from budget** (one task per budgeted labor code), and CSV/print. The crew on the job can post % complete from the field. |
 | Manpower Loading | Per week: planned hours and crew from the Schedule, actual hours and crew from the time clock, variance, cumulative planned/actual, Foreman / Journeyman / Apprentice / Office hours, OT hours and OT %, people on site, and weeks over the max crew. Class is the job's foreman, else the employee's title (Apprentice…, Foreman…, office staff = Office, everyone else Journeyman). OT is hours past the weekly overtime threshold across all of that person's jobs, the same rule payroll uses. The Commercial Projects dashboard rolls every open project into a company manpower view (4 weeks back, 16 ahead) with planned crew by project. |
 | Weekly History | One row per week since the job started, cumulative through each week ending: revised contract and budget (approved COs by approval date), % complete, PV / EV / AC, open commitments, CPI, planned / earned / actual hours, SPI, projected cost and margin, billed, cash received, pending COs, open RFIs and safety items, crew. Drawn as an earned-value S-curve (hours instead of dollars for anyone without cost access). The current % complete is recorded automatically every week (hourly, so the week's last value sticks); the PM can type over any past week with what was actually reported, and the automatic capture never overwrites a typed week. Weeks before tracking started fall back to hours burned ÷ budget hours, like the workbook. |
@@ -202,7 +203,7 @@ Overdue RFIs and safety items, late or late-starting schedule tasks, late milest
 
 A project bills **either** by pay application **or** from the job's Billing tab, never both, so work can't be billed twice.
 
-Not built yet from the workbook: **Estimate/Quote Import**.
+Every tab of the job template now has a sheet here. Two shortcuts to know about: schedule float only measures the gap to the next task that names this one as its predecessor (no full critical path), and a late predecessor doesn't move the tasks after it.
 
 ## A4Y Time Clock and cost codes
 
@@ -227,7 +228,7 @@ Spellings like "Journeyman Electrician", "JW", "1st-year apprentice" and "Helper
 - **Payroll tax filing.** Labor is accrued at loaded cost and you record what payroll actually paid. Gross-to-net, tax deposits and W-2s still need a payroll provider.
 - **Ply, live.** The connector follows Ply's published API (OpenAPI spec at docs.getply.com) and is tested against a stand-in that enforces it, but hasn't run against a live Ply account yet. Try it on one pick list and one PO first.
 - **SMS and offline mode.** The tech view is mobile-friendly but needs a signal.
-- **Excel files and direct connections to the old system.** Imports take CSV files. Save Excel sheets as CSV first. There's no live connection to ServiceTitan or Successware.
+- **Excel files and direct connections to the old system.** Imports take CSV files (the project Estimate Import also takes rows pasted straight from Excel). Save other Excel sheets as CSV first. There's no live connection to ServiceTitan or Successware.
 - **Multi-company and audit log.** It's single-company, and edits are not versioned.
 - **Hosting is on you.** `deploy/` sets up a DigitalOcean server (see docs/DEPLOY.md), but you own the server, its bills and its backups. Test a restore before you rely on it.
 

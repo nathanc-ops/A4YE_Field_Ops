@@ -808,6 +808,23 @@ const MIGRATIONS = [
       UNIQUE (job_id, period_end)
     );`);
   },
+  // 21: the quote's line items as imported (the workbook's Estimate Import → Import Quote), the source of a project's budget
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS project_quote_lines (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      import_id TEXT NOT NULL,                -- one paste / file = one import
+      source TEXT,                            -- scope tab or quote file
+      area TEXT, cost_code_id INTEGER REFERENCES cost_codes(id), cost_type TEXT,
+      phase_code TEXT, tag TEXT, description TEXT NOT NULL,
+      qty REAL, unit TEXT, material_unit REAL, hours_unit REAL,
+      ext_material REAL NOT NULL DEFAULT 0, ext_hours REAL NOT NULL DEFAULT 0, ext_labor REAL NOT NULL DEFAULT 0, ext_total REAL NOT NULL DEFAULT 0,
+      notes TEXT, sort INTEGER NOT NULL DEFAULT 0,
+      imported_by INTEGER REFERENCES users(id), imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_quote_job ON project_quote_lines(job_id);`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
