@@ -198,7 +198,7 @@ test('Ply: push PO to API, pull items, and accept signed webhooks', async () => 
   assert.equal(r.status, 200);
   const sent = plyCalls.find(c => c.url === '/v1/purchase-orders');
   assert.equal(sent.auth, 'Bearer sk_test');
-  assert.equal(sent.body.lines[0].cost_code, '1010');
+  assert.equal(sent.body.lines[0].cost_code, '1010-M'); // A4YE Full Code for material
   assert.equal(sent.body.job.external_id, (await call('admin', 'GET', `/jobs/${ids.job}`)).data.number);
   const P = (await call('admin', 'GET', `/purchase-orders/${po}`)).data;
   assert.ok(P.ply_id);

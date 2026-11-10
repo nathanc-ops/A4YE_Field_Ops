@@ -56,15 +56,17 @@ function toPlyPO(db, poId) {
     external_id: po.number, vendor: { ply_id: po.ply_vendor_id || undefined, name: po.vendor_name, email: po.vendor_email },
     job: jobRef(db, po.job_id), deliver_to: po.deliver_to, order_date: po.order_date, needed_by: po.expected_date, notes: po.notes,
     lines: lines.map(l => ({ external_line_id: String(l.id), sku: l.sku, ply_item_id: l.ply_item_id || undefined, description: l.description,
-      quantity: l.qty, unit_cost: l.unit_cost, cost_code: l.ply_code || l.cost_code })),
+      quantity: l.qty, unit_cost: l.unit_cost, cost_code: matCode(l.ply_code, l.cost_code) })),
   };
 }
+// A4YE cost codes are 4-digit bases; for material the job tracker uses Full Code base-M (e.g. 0810-M).
+const matCode = (ply, code) => ply || (code && /^\d{4}$/.test(code) ? `${code}-M` : code) || undefined;
 function toPlyPickList(db, plId) {
   const p = get(db, 'SELECT * FROM pick_lists WHERE id = ?', plId);
-  const lines = all(db, `SELECT pl.*, pb.code sku, pb.ply_item_id, cc.code cost_code, cc.ply_code FROM pick_list_lines pl
+  const lines = all(db, `SELECT pl.*, COALESCE(pl.unit, pb.unit) unit, pb.code sku, pb.ply_item_id, cc.code cost_code, cc.ply_code FROM pick_list_lines pl
     LEFT JOIN pricebook pb ON pb.id = pl.pricebook_id LEFT JOIN cost_codes cc ON cc.id = pl.cost_code_id WHERE pick_list_id = ?`, plId);
   return { external_id: p.number, job: jobRef(db, p.job_id), needed_by: p.needed_by, notes: p.notes,
-    lines: lines.map(l => ({ external_line_id: String(l.id), sku: l.sku, ply_item_id: l.ply_item_id || undefined, description: l.description, quantity: l.qty, cost_code: l.ply_code || l.cost_code })) };
+    lines: lines.map(l => ({ external_line_id: String(l.id), sku: l.sku, ply_item_id: l.ply_item_id || undefined, description: l.description, quantity: l.qty, unit: l.unit || undefined, note: l.note || undefined, cost_code: matCode(l.ply_code, l.cost_code) })) };
 }
 
 async function pushJob(db, jobId) {

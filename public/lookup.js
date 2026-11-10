@@ -123,3 +123,21 @@ function initLookups() {
     if (box.dataset.lk === 'customer') initCustomerPicker(box); else initAddressField(box);
   }
 }
+
+// ------------------------------------------------------------ price book item search (materials / equipment)
+// Type a code or any words of the name; picking fills the hidden pricebook_id and calls onPick(item).
+// Leaving it as free text means a custom (hand-typed) item.
+async function pricebookSearch(input, hidden, { onPick, kinds = ['material', 'equipment'] } = {}) {
+  const items = (await loadPricebook()).filter(p => p.active !== 0 && kinds.includes(p.kind));
+  input.addEventListener('input', () => { if (hidden.value) { hidden.value = ''; if (onPick) onPick(null); } });
+  suggestBox(input, {
+    minChars: 1, delay: 80,
+    search: async q => {
+      const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+      const hit = items.filter(p => words.every(w => `${p.code || ''} ${p.name} ${p.category || ''}`.toLowerCase().includes(w))).slice(0, 12);
+      return { items: hit, empty: 'Not in the price book: it will be added as a custom item' };
+    },
+    render: p => `<b>${esc(p.code ? p.code + ' · ' : '')}${esc(p.name)}</b><div class="small muted">${esc(p.unit || 'ea')}${isOffice() ? ` · ${num(p.qty_on_hand)} on hand` : ''}${isOffice() && can('see_costs') ? ` · cost ${money(p.unit_cost)}` : ''}</div>`,
+    pick: p => { hidden.value = p.id; input.value = p.name; input.dataset.picked = '1'; if (onPick) onPick(p); },
+  });
+}

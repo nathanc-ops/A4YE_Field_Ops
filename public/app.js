@@ -683,19 +683,26 @@ function timeForm(t) {
 }
 
 async function materialForm(jobId) {
-  const pb = await loadPricebook(true);
-  const mats = pb.filter(p => p.kind === 'material' || p.kind === 'equipment');
+  await loadPricebook(true);
   const fields = [
-    { name: 'pricebook_id', label: 'From price book', type: 'select', options: mats.map(p => [p.id, `${p.code ? p.code + ' · ' : ''}${p.name}${isOffice() ? ` (${num(p.qty_on_hand)} on hand)` : ''}`]), blank: '— Custom item —', full: true },
-    { name: 'description', label: 'Description (custom items)', full: true },
+    { name: 'pricebook_id', type: 'hidden' },
+    { name: 'description', label: 'Material: search the price book, or type any item', full: true, required: true, placeholder: 'e.g. 12/2 MC, 4" square box, EMT 3/4' },
     { name: 'qty', label: 'Quantity', type: 'number', default: 1, required: true },
     { name: 'cost_code_id', label: 'Cost code (blank = item default)', type: 'select', options: ccOptions('material') },
     { name: 'source', label: 'Came from', type: 'select', options: [['stock', 'Truck / shop stock'], ['supply_house', 'Supply house (bought for job)'], ['customer', 'Customer supplied']], blank: false },
-    { name: 'unit_cost', label: 'Unit cost (custom / override)', type: 'number' },
-    { name: 'unit_price', label: 'Unit sell price (custom)', type: 'number' },
+    { name: 'unit_cost', label: 'Unit cost (blank = price book)', type: 'number' },
+    { name: 'unit_price', label: 'Unit sell price (custom items)', type: 'number' },
     { name: 'billable', label: 'Billable to customer', type: 'checkbox', default: 1 },
-  ].filter(f => isOffice() || f.name !== 'unit_cost');
-  formModal({ title: 'Log material used', fields, submit: async d => { await POST(`/jobs/${jobId}/materials`, d); toast('Material logged'); route(); } });
+  ].filter(f => (isOffice() && can('see_costs')) || f.name !== 'unit_cost');
+  const m = formModal({ title: 'Log material used', fields, submit: async d => {
+    if (!d.pricebook_id) delete d.pricebook_id;
+    await POST(`/jobs/${jobId}/materials`, d); toast('Material logged'); route();
+  } });
+  const form = $('form', m.el);
+  const inp = form.elements.description, wrap = document.createElement('div');
+  wrap.className = 'lk'; inp.replaceWith(wrap); wrap.append(inp);
+  await pricebookSearch(inp, form.elements.pricebook_id, { onPick: p => { if (p && p.cost_code_id && !form.cost_code_id.value) form.cost_code_id.value = p.cost_code_id; } });
+  inp.focus();
 }
 
 // ============================================================ customers

@@ -328,8 +328,10 @@ module.exports = function routesExt(app, db, X) {
   app.get('/api/pick-lists/:id', wrap((req, res) => {
     const pl = get(db, `SELECT pl.*, j.number job_number, j.title job_title, u.name assigned_name FROM pick_lists pl JOIN jobs j ON j.id = pl.job_id LEFT JOIN users u ON u.id = pl.assigned_to WHERE pl.id = ?`, req.params.id);
     if (!pl) throw bad('Not found', 404);
-    pl.lines = all(db, `SELECT l.*, pb.code sku, pb.qty_on_hand, pb.unit, cc.code cost_code FROM pick_list_lines l LEFT JOIN pricebook pb ON pb.id = l.pricebook_id
-      LEFT JOIN cost_codes cc ON cc.id = l.cost_code_id WHERE pick_list_id = ? ORDER BY pb.category, l.description`, pl.id);
+    pl.lines = all(db, `SELECT l.*, pb.code sku, pb.qty_on_hand, COALESCE(l.unit, pb.unit) unit, COALESCE(l.unit_cost, pb.unit_cost) unit_cost, cc.code cost_code, cc.name cost_code_name, u.name added_by_name
+      FROM pick_list_lines l LEFT JOIN pricebook pb ON pb.id = l.pricebook_id LEFT JOIN cost_codes cc ON cc.id = l.cost_code_id LEFT JOIN users u ON u.id = l.added_by
+      WHERE pick_list_id = ? ORDER BY l.id`, pl.id);
+    pl.can_edit = !['picked', 'delivered', 'cancelled'].includes(pl.status) && (req.user.role !== 'tech' || canTouchPick(req.user, pl));
     res.json(pl);
   }));
   // New pick list for a job. from_estimate pulls material lines off the approved estimate.
@@ -341,20 +343,53 @@ module.exports = function routesExt(app, db, X) {
       const est = get(db, "SELECT id FROM estimates WHERE job_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1", job.id);
       if (!est) throw bad('This job has no approved estimate to pull materials from');
       const chosen = new Set(C.estimateChosenItems(db, est.id).map(i => i.id));
-      lines = all(db, `SELECT ei.id, ei.pricebook_id, ei.description, ei.qty, COALESCE(ei.cost_code_id, pb.cost_code_id) cost_code_id FROM estimate_items ei
-        JOIN pricebook pb ON pb.id = ei.pricebook_id WHERE ei.estimate_id = ? AND pb.kind = 'material'`, est.id).filter(l => chosen.has(l.id));
-      if (!lines.length) throw bad('The approved estimate has no stocked material lines — add lines manually');
+      // price-book material lines, plus lines typed into the estimate by hand that aren't labor/service/fees
+      const LABOR = /\b(labor|labour|hours?|hrs|service call|trip|permit|inspection|mobiliz|travel|fee|warranty|design|engineering|programming|commissioning|testing)\b/i;
+      lines = all(db, `SELECT ei.id, ei.pricebook_id, ei.description, ei.qty, ei.unit_cost, COALESCE(ei.cost_code_id, pb.cost_code_id) cost_code_id, pb.kind
+        FROM estimate_items ei LEFT JOIN pricebook pb ON pb.id = ei.pricebook_id WHERE ei.estimate_id = ?`, est.id)
+        .filter(l => chosen.has(l.id) && (l.pricebook_id ? l.kind === 'material' : !LABOR.test(l.description || '')));
+      if (!lines.length) throw bad('The approved estimate has no material lines. Create the pick list without it and add material by hand.');
     }
-    for (const l of lines) if (l.description) insert('pick_list_lines', { pick_list_id: id, pricebook_id: l.pricebook_id || null, description: l.description, qty: Number(l.qty) || 1, cost_code_id: l.cost_code_id || null });
-    res.json({ id });
+    for (const l of lines) if (l.description) insert('pick_list_lines', { pick_list_id: id, ...pickLine(l, req.user) });
+    res.json({ id, lines: get(db, 'SELECT COUNT(*) n FROM pick_list_lines WHERE pick_list_id = ?', id).n });
   }));
+  // A line from the price book (description/unit/cost filled from it) or typed by hand.
+  function pickLine(l, user) {
+    const pb = l.pricebook_id ? get(db, 'SELECT * FROM pricebook WHERE id = ?', l.pricebook_id) : null;
+    const desc = String(l.description || (pb && pb.name) || '').trim().slice(0, 300);
+    if (!desc) throw bad('Describe the material');
+    const qty = Number(l.qty);
+    if (!(qty > 0)) throw bad(`Quantity for "${desc}" must be more than 0`);
+    const cost = l.unit_cost === '' || l.unit_cost == null ? null : Number(l.unit_cost);
+    return { pricebook_id: pb ? pb.id : null, description: desc, qty, cost_code_id: l.cost_code_id || (pb && pb.cost_code_id) || null,
+      unit: l.unit ? String(l.unit).slice(0, 20) : null, unit_cost: Number.isFinite(cost) && cost >= 0 ? cost : null, note: l.note ? String(l.note).slice(0, 300) : null, added_by: user.id };
+  }
+  // techs can add to pick lists for jobs they're on or lists assigned to them (field requests)
+  const canTouchPick = (user, pl) => pl.assigned_to === user.id || !!get(db, 'SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?', pl.job_id, user.id);
   app.put('/api/pick-lists/:id', wrap((req, res) => {
     const pl = mustGet('pick_lists', req.params.id);
     if (['delivered', 'cancelled'].includes(pl.status)) throw bad(`Pick list is ${pl.status}`);
-    if (req.user.role !== 'tech') update('pick_lists', pl.id, pick(req.body, ['needed_by', 'assigned_to', 'notes', ...(req.body.status === 'cancelled' ? ['status'] : [])]));
+    const tech = req.user.role === 'tech';
+    if (tech && !canTouchPick(req.user, pl)) throw bad('Not your pick list', 403);
+    if (!tech) update('pick_lists', pl.id, pick(req.body, ['needed_by', 'assigned_to', 'notes', ...(req.body.status === 'cancelled' ? ['status'] : [])]));
+    const editable = pl.status !== 'picked';
+    for (const id of req.body.remove || []) {
+      if (tech) throw bad('Ask the office to remove lines', 403);
+      const l = get(db, 'SELECT * FROM pick_list_lines WHERE id = ? AND pick_list_id = ?', id, pl.id);
+      if (!l) continue;
+      if (l.job_material_id) throw bad(`"${l.description}" was already picked and charged to the job`);
+      run(db, 'DELETE FROM pick_list_lines WHERE id = ?', l.id);
+    }
     for (const l of req.body.lines || []) {
-      if (l.id) run(db, 'UPDATE pick_list_lines SET qty_picked = ? WHERE id = ? AND pick_list_id = ?', Number(l.qty_picked) || 0, l.id, pl.id);
-      else if (l.description && req.user.role !== 'tech') insert('pick_list_lines', { pick_list_id: pl.id, pricebook_id: l.pricebook_id || null, description: l.description, qty: Number(l.qty) || 1, cost_code_id: l.cost_code_id || null });
+      if (l.id) {
+        const cur = get(db, 'SELECT * FROM pick_list_lines WHERE id = ? AND pick_list_id = ?', l.id, pl.id);
+        if (!cur || cur.job_material_id) continue;
+        if (l.qty_picked !== undefined) run(db, 'UPDATE pick_list_lines SET qty_picked = ? WHERE id = ?', Math.max(0, Number(l.qty_picked) || 0), cur.id);
+        if (!tech && editable && l.qty !== undefined) { const q = Number(l.qty); if (!(q > 0)) throw bad(`Quantity for "${cur.description}" must be more than 0`); run(db, 'UPDATE pick_list_lines SET qty = ? WHERE id = ?', q, cur.id); }
+      } else if (l.description || l.pricebook_id) {
+        if (!editable) throw bad('This pick list is already picked. Start a new one for more material.');
+        insert('pick_list_lines', { pick_list_id: pl.id, ...pickLine(l, req.user), ...(tech ? { unit_cost: null } : {}) });
+      }
     }
     if (pl.status === 'open' && (req.body.lines || []).some(l => Number(l.qty_picked) > 0)) run(db, "UPDATE pick_lists SET status = 'picking' WHERE id = ?", pl.id);
     res.json({ ok: true });
@@ -365,8 +400,10 @@ module.exports = function routesExt(app, db, X) {
     if (['delivered', 'cancelled'].includes(pl.status)) throw bad(`Pick list is ${pl.status}`);
     for (const l of all(db, 'SELECT * FROM pick_list_lines WHERE pick_list_id = ? AND qty_picked > 0 AND job_material_id IS NULL', pl.id)) {
       const pb = l.pricebook_id ? get(db, 'SELECT * FROM pricebook WHERE id = ?', l.pricebook_id) : null;
-      const mid = insert('job_materials', { job_id: pl.job_id, pricebook_id: l.pricebook_id, description: l.description, qty: l.qty_picked, unit_cost: pb ? pb.unit_cost : 0,
-        unit_price: pb ? pb.unit_price : 0, billable: 1, source: pb ? 'stock' : 'customer', cost_code_id: l.cost_code_id || (pb && pb.cost_code_id), user_id: userId, used_on: today() });
+      const unitCost = l.unit_cost != null ? l.unit_cost : pb ? pb.unit_cost : 0;
+      const markup = 1 + (Number(D.settings(db).default_material_markup_pct) || 35) / 100;
+      const mid = insert('job_materials', { job_id: pl.job_id, pricebook_id: l.pricebook_id, description: l.description, qty: l.qty_picked, unit_cost: unitCost,
+        unit_price: pb ? pb.unit_price : Math.round(unitCost * markup * 100) / 100, billable: 1, source: pb ? 'stock' : 'pick list', cost_code_id: l.cost_code_id || (pb && pb.cost_code_id), user_id: userId, used_on: today() });
       if (pb) run(db, 'UPDATE pricebook SET qty_on_hand = qty_on_hand - ? WHERE id = ?', l.qty_picked, pb.id);
       run(db, 'UPDATE pick_list_lines SET job_material_id = ? WHERE id = ?', mid, l.id);
       A.postJobMaterial(db, mid);
@@ -382,13 +419,13 @@ module.exports = function routesExt(app, db, X) {
   // Shortages → one draft PO to the chosen vendor, delivered to the job.
   app.post('/api/pick-lists/:id/po-shortages', office, wrap((req, res) => {
     const pl = mustGet('pick_lists', req.params.id);
-    const lines = all(db, `SELECT l.*, pb.qty_on_hand, pb.unit_cost, pb.vendor_id FROM pick_list_lines l LEFT JOIN pricebook pb ON pb.id = l.pricebook_id WHERE pick_list_id = ?`, pl.id)
+    const lines = all(db, `SELECT l.*, l.unit_cost line_cost, pb.qty_on_hand, pb.unit_cost, pb.vendor_id FROM pick_list_lines l LEFT JOIN pricebook pb ON pb.id = l.pricebook_id WHERE pick_list_id = ?`, pl.id)
       .map(l => ({ ...l, short: r2(l.qty - Math.max(0, l.qty_on_hand ?? 0)) })).filter(l => l.short > 0);
     if (!lines.length) throw bad('Nothing is short — everything is in stock');
     const vendorId = req.body.vendor_id || lines.find(l => l.vendor_id)?.vendor_id;
     if (!vendorId) throw bad('Pick a vendor for the shortage PO');
     const id = insert('purchase_orders', { vendor_id: vendorId, job_id: pl.job_id, deliver_to: 'job', number: D.nextNumber(db, 'purchase_orders', 'PO'), created_by: req.user.id, notes: `Shortages from ${pl.number}` });
-    savePOLines(id, lines.map(l => ({ pricebook_id: l.pricebook_id, description: l.description, qty: l.short, unit_cost: l.unit_cost || 0, cost_code_id: l.cost_code_id })));
+    savePOLines(id, lines.map(l => ({ pricebook_id: l.pricebook_id, description: l.description, qty: l.short, unit_cost: l.line_cost ?? l.unit_cost ?? 0, cost_code_id: l.cost_code_id })));
     res.json({ id });
   }));
   app.post('/api/pick-lists/:id/send-to-ply', office, wrap(async (req, res) => res.json(await Ply.pushPickList(db, Number(req.params.id)))));

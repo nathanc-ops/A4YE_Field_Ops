@@ -422,7 +422,8 @@ function jobPurchasingTab(j, T) {
     title: 'New pick list', okLabel: 'Create',
     fields: [{ name: 'from_estimate', label: 'Pull material lines from the approved estimate', type: 'checkbox', default: (j.estimates || []).some(e => e.status === 'approved') ? 1 : 0, full: true },
       { name: 'needed_by', label: 'Needed by', type: 'date' }, { name: 'assigned_to', label: 'Picker', type: 'select', options: techOptions() }, { name: 'notes', label: 'Notes', full: true }],
-    submit: async d => { const r = await POST(`/jobs/${j.id}/pick-lists`, { ...d, from_estimate: !!d.from_estimate }); toast('Pick list created'); go('#/pick/' + r.id); },
+    extra: '<p class="small muted">You can add any material, from the price book or typed in, on the next screen.</p>',
+    submit: async d => { const r = await POST(`/jobs/${j.id}/pick-lists`, { ...d, from_estimate: !!d.from_estimate }); toast(r.lines ? `Pick list created with ${r.lines} line(s)` : 'Pick list created: add material below'); go('#/pick/' + r.id); },
   });
 }
 
@@ -445,7 +446,7 @@ async function viewPurchasing() {
       { onClick: p => go('#/purchasing/po/' + p.id), empty: 'No purchase orders' })}</div>`;
   } else if (tab === 'pick') {
     const list = await GET('/pick-lists');
-    body = `<div class="card"><p class="small muted">Create pick lists from a job's Purchasing tab. Completing a pick pulls the items from stock and charges them to the job at cost.</p>
+    body = `<div class="card"><div class="row spread"><p class="small muted" style="margin:0">Completing a pick pulls the items from stock and charges them to the job at cost.</p><button class="btn primary" id="newpl">+ Pick list</button></div>
       ${table([{ label: '#', html: p => `<b>${esc(p.number)}</b>` }, { label: 'Job', html: p => `<a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a> ${esc(p.job_title)}` }, { label: 'Lines', num: 1, key: 'line_count' },
         { label: 'Needed by', get: p => fmtDate(p.needed_by) }, { label: 'Picker', get: p => p.assigned_name || '—' }, { label: 'Status', html: p => pill(p.status) }, { label: 'Ply', html: p => p.ply_id ? '<span class="pill good">sent</span>' : '' }],
       list, { onClick: p => go('#/pick/' + p.id), empty: 'No pick lists' })}</div>`;
@@ -457,6 +458,14 @@ async function viewPurchasing() {
   }
   $('#view').innerHTML = top + tabs + body;
   $$('[data-t]').forEach(b => b.onclick = () => go('#/purchasing' + qs({ tab: b.dataset.t })));
+  if ($('#newpl')) $('#newpl').onclick = async () => formModal({
+    title: 'New pick list', okLabel: 'Create',
+    fields: [{ name: 'job_id', label: 'Job', type: 'select', options: await jobPicker(), required: true, full: true },
+      { name: 'from_estimate', label: "Start with the material on the job's approved estimate", type: 'checkbox', full: true },
+      { name: 'needed_by', label: 'Needed by', type: 'date' }, { name: 'assigned_to', label: 'Picker', type: 'select', options: techOptions() }, { name: 'notes', label: 'Notes', full: true }],
+    extra: '<p class="small muted">Add any material, from the price book or typed in, on the next screen.</p>',
+    submit: async d => { const r = await POST(`/jobs/${d.job_id}/pick-lists`, { ...d, from_estimate: !!d.from_estimate }); toast(r.lines ? `Pick list created with ${r.lines} line(s)` : 'Pick list created: add material below'); go('#/pick/' + r.id); },
+  });
   $$('[data-s]').forEach(b => b.onclick = () => go('#/purchasing' + qs({ tab, status: b.dataset.s })));
   if ($('#newv')) $('#newv').onclick = () => vendorForm({});
   $('#reorder').onclick = async () => {
@@ -561,22 +570,64 @@ async function viewPO(id) {
 }
 
 async function viewPickList(id) {
-  const p = await GET('/pick-lists/' + id);
+  const [p] = await Promise.all([GET('/pick-lists/' + id), loadCostCodes()]);
   const done = ['picked', 'delivered', 'cancelled'].includes(p.status);
   const plyOn = S.settings.ply_enabled === '1';
+  const office = isOffice(), seeCost = office && can('see_costs');
+  const edit = p.can_edit;          // add / change lines (office), add lines (tech on the job)
+  const lineCols = [
+    { label: 'Item', html: l => `<b>${esc(l.description)}</b><div class="small muted">${[l.sku, !l.pricebook_id ? 'custom item' : '', l.note, l.added_by_name ? `added by ${l.added_by_name}` : ''].filter(Boolean).map(esc).join(' · ')}</div>`, csv: l => l.description },
+    { label: 'Code', get: l => l.cost_code || '—', csv: l => l.cost_code || '' },
+    { label: 'Need', num: 1, html: l => office && edit && !l.job_material_id ? `<input class="n need-qty" type="number" step="any" min="0" data-need="${l.id}" value="${l.qty}" style="width:76px"> ${esc(l.unit || '')}` : `${num(l.qty)} ${esc(l.unit || '')}`, csv: l => l.qty },
+    { label: 'Unit', html: () => '', csv: l => l.unit || 'ea', hide: 1 },
+    ...(office ? [{ label: 'On hand', num: 1, html: l => l.pricebook_id ? (l.qty_on_hand < l.qty ? `<span class="pill bad">${num(l.qty_on_hand)}</span>` : num(l.qty_on_hand)) : '—', csv: l => l.pricebook_id ? l.qty_on_hand : '' }] : []),
+    ...(seeCost ? [{ label: 'Unit cost', num: 1, get: l => l.unit_cost != null ? money(l.unit_cost) : '—', csv: l => l.unit_cost ?? '' }] : []),
+    { label: 'Picked', html: l => done || l.job_material_id ? num(l.qty_picked) : `<input class="pick-qty" type="number" step="any" min="0" data-line="${l.id}" value="${l.qty_picked || ''}" placeholder="${l.qty}">`, csv: l => l.qty_picked || 0 },
+    ...(done ? [] : [{ label: '', html: l => l.job_material_id ? '' : `<button type="button" class="btn sm" data-all="${l.id}" data-q="${l.qty}">All</button>${office && edit ? ` <button type="button" class="btn sm danger" data-rm="${l.id}" title="Remove line">✕</button>` : ''}` }]),
+  ];
   $('#view').innerHTML = setTop(`Pick list ${esc(p.number)}`, `${pill(p.status)}
-      ${!done ? '<button class="btn go" id="complete">Complete pick</button>' : ''}${p.status === 'picked' ? '<button class="btn primary" id="deliver">Mark delivered</button>' : ''}
-      ${isOffice() && !done ? '<button class="btn" id="short">PO for shortages</button>' : ''}${isOffice() && plyOn ? '<button class="btn" id="ply">Send to Ply</button>' : ''}<button class="btn" onclick="print()">Print</button>`,
-    `Job <a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a> ${esc(p.job_title)}${p.needed_by ? ` · needed ${fmtDate(p.needed_by)}` : ''}${p.assigned_name ? ` · picker ${esc(p.assigned_name)}` : ''}`) + `
-    <div class="card"><form id="pk">${table([{ label: 'Item', html: l => `<b>${esc(l.description)}</b><div class="small muted">${esc(l.sku || '')}</div>` }, { label: 'Code', get: l => l.cost_code || '—' },
-      { label: 'Need', num: 1, get: l => `${num(l.qty)} ${l.unit || ''}` }, { label: 'On hand', num: 1, html: l => l.pricebook_id ? (l.qty_on_hand < l.qty ? `<span class="pill bad">${num(l.qty_on_hand)}</span>` : num(l.qty_on_hand)) : '—' },
-      { label: 'Picked', html: l => done ? num(l.qty_picked) : `<input class="pick-qty" type="number" step="any" min="0" data-line="${l.id}" value="${l.qty_picked || ''}" placeholder="${l.qty}">` },
-      ...(done ? [] : [{ label: '', html: l => `<button type="button" class="btn sm" data-all="${l.id}" data-q="${l.qty}">All</button>` }])], p.lines, { empty: 'No lines' })}
-      ${!done ? '<div class="row" style="margin-top:12px"><button class="btn">Save progress</button></div>' : ''}</form>
+      ${!done && p.lines.length ? '<button class="btn go" id="complete">Complete pick</button>' : ''}${p.status === 'picked' ? '<button class="btn primary" id="deliver">Mark delivered</button>' : ''}
+      ${office && !done && p.lines.length ? '<button class="btn" id="short">PO for shortages</button>' : ''}${office && plyOn && p.lines.length ? `<button class="btn" id="ply">${p.ply_id ? 'Re-send to Ply' : 'Send to Ply'}</button>` : ''}
+      <button class="btn" id="plcsv">CSV</button><button class="btn" onclick="print()">Print</button>`,
+    `Job <a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a> ${esc(p.job_title)}${p.needed_by ? ` · needed ${fmtDate(p.needed_by)}` : ''}${p.assigned_name ? ` · picker ${esc(p.assigned_name)}` : ''}${p.ply_synced_at ? ` · sent to Ply ${fmtDT(p.ply_synced_at + 'Z')}` : ''}`) + `
+    <div class="card"><form id="pk">${table(lineCols.filter(c => !c.hide), p.lines, { empty: edit ? 'No material on this list yet. Add it below.' : 'No lines' })}
+      ${!done && p.lines.length ? '<div class="row no-print" style="margin-top:12px"><button class="btn">Save</button></div>' : ''}</form>
+      ${edit ? `<div class="addmat no-print"><h3 style="margin:16px 0 6px">Add material</h3>
+        <form id="addm" class="addmat-row">
+          <div class="lk grow"><input type="hidden" name="pricebook_id"><input name="description" placeholder="Search the price book, or type any item" autocomplete="off" required></div>
+          <input name="qty" type="number" step="any" min="0" placeholder="Qty" required style="width:80px">
+          <input name="unit" placeholder="Unit (ea, ft, box)" style="width:120px">
+          ${seeCost ? '<input name="unit_cost" type="number" step="any" min="0" placeholder="Unit cost" style="width:110px">' : ''}
+          <select name="cost_code_id" style="width:220px"><option value="">Cost code…</option>${ccOptions('material').map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
+          <input name="note" placeholder="Note (size, color, brand)" style="width:200px">
+          <button class="btn primary">+ Add</button>
+        </form>
+        <p class="small muted">${office ? 'Price book items fill in the unit, cost and cost code. Custom items charge the job at the cost you enter.' : 'Your additions go to the office with your name on them.'}</p></div>` : ''}
       ${p.notes ? `<p>📝 ${esc(p.notes)}</p>` : ''}</div>`;
-  const lines = () => $$('[data-line]').map(i => ({ id: Number(i.dataset.line), qty_picked: Number(i.value) || 0 }));
-  $$('[data-all]').forEach(b => b.onclick = () => { $(`[data-line="${b.dataset.all}"]`).value = b.dataset.q; });
+  const lines = () => $$('[data-line]').map(i => ({ id: Number(i.dataset.line), qty_picked: Number(i.value) || 0, ...(office && $(`[data-need="${i.dataset.line}"]`) ? { qty: Number($(`[data-need="${i.dataset.line}"]`).value) } : {}) }));
+  $$('[data-all]').forEach(b => b.onclick = () => { const need = $(`[data-need="${b.dataset.all}"]`); $(`[data-line="${b.dataset.all}"]`).value = need ? need.value : b.dataset.q; });
+  $$('[data-rm]').forEach(b => b.onclick = async () => { const l = p.lines.find(x => x.id === Number(b.dataset.rm)); if (confirm(`Remove "${l.description}" from the list?`)) { await act(() => PUT('/pick-lists/' + id, { remove: [l.id] }), 'Removed'); route(); } });
   if ($('#pk') && !done) $('#pk').onsubmit = async e => { e.preventDefault(); await act(() => PUT('/pick-lists/' + id, { lines: lines() }), 'Saved'); route(); };
+  $('#plcsv').onclick = () => toCSV(lineCols, p.lines, `${p.number}_${p.job_number}.csv`);
+  const af = $('#addm');
+  if (af) {
+    await pricebookSearch(af.description, af.pricebook_id, { onPick: it => {
+      if (!it) return;
+      if (it.unit && !af.unit.value) af.unit.value = it.unit;
+      if (af.unit_cost && !af.unit_cost.value) af.unit_cost.value = it.unit_cost ?? '';
+      if (it.cost_code_id) af.cost_code_id.value = it.cost_code_id;
+      af.qty.focus();
+    } });
+    af.onsubmit = async e => {
+      e.preventDefault();
+      const d = { pricebook_id: af.pricebook_id.value || null, description: af.description.value.trim(), qty: Number(af.qty.value), unit: af.unit.value.trim() || null,
+        unit_cost: af.unit_cost ? af.unit_cost.value : undefined, cost_code_id: af.cost_code_id.value || null, note: af.note.value.trim() || null };
+      if (!(d.qty > 0)) { af.qty.focus(); return toast('Enter a quantity', true); }
+      await act(() => PUT('/pick-lists/' + id, { lines: [d] }), `Added ${d.description}`);
+      await route(); const n = $('#addm'); if (n) n.description.focus();
+    };
+    if (!p.lines.length) af.description.focus();
+  }
   const on = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
   on('#complete', async () => {
     const l = lines(); if (!l.some(x => x.qty_picked > 0)) return toast('Enter picked quantities first', true);

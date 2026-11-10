@@ -352,3 +352,9 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 .snap td:first-child { white-space: normal; min-width: 240px; }
 .snap td:last-child { white-space: normal; min-width: 280px; }
 @media print { .snap table { min-width: 0; } .snap td, .snap th { white-space: normal; } }
+
+/* pick list: add material row */
+.addmat-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.addmat-row .grow { flex: 1 1 260px; min-width: 220px; }
+.addmat-row input, .addmat-row select { width: auto; }
+.addmat-row .lk input { width: 100%; }

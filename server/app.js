@@ -520,7 +520,7 @@ function createApp(db) {
       const pb = mustGet('pricebook', b.pricebook_id);
       Object.assign(data, { pricebook_id: pb.id, description: b.description || pb.name, unit_cost: pb.unit_cost, unit_price: pb.unit_price });
       if (!data.cost_code_id) data.cost_code_id = pb.cost_code_id || null;
-      if (req.user.role !== 'tech' && b.unit_cost !== undefined && b.unit_cost !== '') data.unit_cost = Number(b.unit_cost);
+      if (req.user.role !== 'tech' && b.unit_cost != null && b.unit_cost !== '' && Number.isFinite(Number(b.unit_cost))) data.unit_cost = Number(b.unit_cost); // blank = price book cost
       if ((data.source === 'stock')) run(db, 'UPDATE pricebook SET qty_on_hand = qty_on_hand - ? WHERE id = ?', data.qty, pb.id);
     } else {
       if (!b.description) throw bad('Description is required');

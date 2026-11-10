@@ -663,6 +663,13 @@ const MIGRATIONS = [
     for (const [k, v] of [['timezone', 'America/Boise'], ['timeclock_url', ''], ['timeclock_key', ''], ['timeclock_last_sync', ''], ['timeclock_auto', '1'], ['burden_default_pct', '35'], ['project_target_margin', '18']])
       db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
   },
+  // 15: pick list lines typed in by hand (not from the price book) carry their own unit, cost and a note
+  db => {
+    addColumn(db, 'pick_list_lines', 'unit', 'TEXT');
+    addColumn(db, 'pick_list_lines', 'unit_cost', 'REAL');
+    addColumn(db, 'pick_list_lines', 'note', 'TEXT');
+    addColumn(db, 'pick_list_lines', 'added_by', 'INTEGER REFERENCES users(id)');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
