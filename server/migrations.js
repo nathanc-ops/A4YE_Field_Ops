@@ -840,6 +840,10 @@ const MIGRATIONS = [
       'job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,\n      estimate_id INTEGER REFERENCES estimates(id) ON DELETE CASCADE,'));
     db.exec('CREATE INDEX IF NOT EXISTS idx_appt_estimate ON appointments(estimate_id)');
   }, { foreignKeysOff: true }),
+  // 25: appointment confirmation emails — when the customer was told, which address, and the time they were told
+  db => {
+    for (const [c, d] of [['confirmed_at', 'TEXT'], ['confirmed_to', 'TEXT'], ['confirmed_start', 'TEXT'], ['confirmed_end', 'TEXT'], ['confirm_count', 'INTEGER NOT NULL DEFAULT 0']]) addColumn(db, 'appointments', c, d);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

@@ -55,6 +55,28 @@ function warnConflicts(r) {
     toast('⚠ Double-booked: ' + r.conflicts.map(c => `${c.name} on ${c.job_number} ${fmtTime(c.start)}–${fmtTime(c.end)}`).join('; '), true);
 }
 
+// Appointment confirmation email: preview the exact email, edit the address, add a line, send. Without SMTP set up on the
+// server the send is recorded and the text copied, so it can be pasted into a text message or the office email.
+async function confirmVisit(apptId, { cancelled = false, after } = {}) {
+  const c = await GET(`/appointments/${apptId}/confirmation`);
+  const title = cancelled ? 'Tell the customer it\'s cancelled' : c.changed ? 'Email the customer the new time' : c.confirmed_at ? 'Resend the confirmation' : 'Email the customer a confirmation';
+  formModal({ title, okLabel: c.smtp ? 'Send' : 'Record & copy text', wide: true, values: { to: c.to, message: '' },
+    fields: [{ name: 'to', label: `To${c.customer ? ` — ${c.customer}` : ''}`, full: true, required: true, placeholder: 'No email on file — type one' },
+      { name: 'message', label: 'Add a line (optional)', type: 'textarea', full: true, placeholder: 'e.g. Please park in the driveway — the street is posted' }],
+    extra: `<p class="small muted" style="margin:10px 0 4px">${cancelled ? 'A cancellation notice' : 'The email'} goes out like this${cancelled ? '' : ', with a calendar invite attached'}. Dispatch notes are never included.${c.smtp ? '' : ' <b>Email isn\'t set up on this server</b>, so the text is copied for you to paste.'}</p>
+      <pre class="mail-preview">${esc(cancelled ? '' : c.text)}</pre>`,
+    submit: async v => {
+      const r = await POST(`/appointments/${apptId}/confirm`, { to: v.to, message: v.message, cancelled });
+      if (r.status === 'sent') toast(`${cancelled ? 'Cancellation' : 'Confirmation'} sent to ${v.to}`);
+      else if (r.status === 'failed') throw new Error(`Email failed: ${r.error || 'unknown error'}`);
+      else { try { await navigator.clipboard.writeText(r.text); toast('Email isn\'t set up — the text is copied, paste it into a text or email'); } catch { prompt('Email isn\'t set up. Copy this text:', r.text); } }
+      if (after) after(); else route();
+    } });
+  if (cancelled) { const pre = $('.mail-preview'); if (pre) pre.remove(); }
+}
+const confirmBadge = a => a.needs_reconfirm ? '<span class="cf-tag warn" title="Moved after the customer was emailed — they have the old time">⚠✉</span> '
+  : a.confirmed_at ? '<span class="cf-tag" title="Customer emailed a confirmation">✉</span> ' : '';
+
 // A visit is for a job, or for an estimate (a walkthrough to price the work). A new visit with nothing picked yet can be
 // either; "estimate walkthrough" books the visit and starts a draft estimate for the customer in one step.
 async function apptForm(a = {}, { onSaved, mode } = {}) {
@@ -66,7 +88,7 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
   const link = a.estimate_id ? `<a class="btn" href="#/estimates/${a.estimate_id}">Open estimate</a>` : `<a class="btn" href="#/jobs/${a.job_id}">Open job</a>`;
   const techBoxes = `<div style="margin-top:10px"><label class="f"><span>Techs on this visit</span></label><div class="row">${S.users.filter(u => u.active).map(u =>
     `<label class="check"><input type="checkbox" name="tech" value="${u.id}" ${(a.tech_ids || []).includes(u.id) ? 'checked' : ''}> <span class="dot" style="background:${esc(u.color)}"></span>${esc(u.name)}</label>`).join('')}</div></div>
-    ${a.id ? `<div class="row" style="margin-top:12px">${link}<button type="button" class="btn danger" id="delappt">Delete visit</button></div>` : ''}`;
+    ${a.id ? `<div class="cf-line ${a.needs_reconfirm ? 'warn' : ''}">${a.needs_reconfirm ? `⚠ Moved after the customer was emailed — they still have the old time.` : a.confirmed_at ? `✉ Confirmation emailed to ${esc(a.confirmed_to || 'the customer')} ${fmtDT(a.confirmed_at + 'Z')}` : 'The customer hasn\'t been emailed about this visit.'} <button type="button" class="btn sm" id="cfsend">${a.needs_reconfirm ? 'Email the new time' : a.confirmed_at ? 'Resend' : 'Email confirmation'}</button></div><div class="row" style="margin-top:12px">${link}<button type="button" class="btn danger" id="delappt">Delete visit</button></div>` : '<label class="check" style="margin-top:10px"><input type="checkbox" name="confirm_email" checked> Email the customer a confirmation (with a calendar invite)</label>'}`;
   const estLabel = a.estimate_id ? [a.estimate_number || a.job_number, a.customer_name, a.estimate_title].filter(Boolean).join(' · ') : '';
   const fields = [
     ...(choose ? [{ name: 'visit_for', label: 'This visit is for', type: 'select', blank: false, full: true, options: [['job', 'A job'], ['estimate', 'An estimate walkthrough — starts a draft estimate']] }] : []),
@@ -86,19 +108,25 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
       d.tech_ids = $$('input[name=tech]:checked', form).map(i => Number(i.value));
       const base = { start: d.start, end: d.end, status: d.status, notes: d.notes, tech_ids: d.tech_ids };
       let r;
+      const wantConfirm = !a.id && $('input[name=confirm_email]', form) && $('input[name=confirm_email]', form).checked;
+      // a confirmed visit that moved: the customer has the old time
+      const moved = a.id && a.confirmed_at && (new Date(d.start).toISOString() !== new Date(a.start).toISOString() || new Date(d.end).toISOString() !== new Date(a.end).toISOString());
+      const next = id => { if (wantConfirm && id) return setTimeout(() => confirmVisit(id), 50);
+        if (moved && !['cancelled', 'done'].includes(d.status) && confirm('The customer was emailed the old time. Email them the new one?')) return setTimeout(() => confirmVisit(a.id), 50); };
       if (a.id) r = await PUT('/appointments/' + a.id, base);
       else if (fixedEst) r = await POST('/appointments', { ...base, estimate_id: a.estimate_id });
       else if (choose && d.visit_for === 'estimate') {
         if (!d.customer_id) throw new Error('Pick the customer');
         r = await POST('/estimate-visits', { ...base, customer_id: d.customer_id, location_id: d.location_id || null, title: d.title });
         toast('Walkthrough booked — a draft estimate is waiting for its line items'); warnConflicts(r);
-        return onSaved ? onSaved(r) : route();
+        onSaved ? onSaved(r) : route(); return next(r.id);
       } else {
         if (!d.job_id) throw new Error('Pick the job');
         r = await POST('/appointments', { ...base, job_id: d.job_id });
       }
       toast(a.id ? 'Visit updated' : 'Visit scheduled'); warnConflicts(r);
       onSaved ? onSaved(r) : route();
+      next(a.id || r.id);
     },
   });
   const form = $('form', m.el), row = n => form[n] && form[n].closest('label');
@@ -118,7 +146,13 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
       if (c.locations.length === 1) sel.value = c.locations[0].id;
     });
   }
-  if (a.id) $('#delappt', m.el).onclick = async () => { if (confirm('Delete this visit?')) { await act(() => DEL('/appointments/' + a.id), 'Visit deleted'); m.close(); onSaved ? onSaved() : route(); } };
+  if (a.id) $('#delappt', m.el).onclick = async () => {
+    if (!confirm('Delete this visit?')) return;
+    const tell = a.confirmed_at && confirm('The customer was emailed a confirmation. Send them a cancellation notice first?');
+    if (tell) { try { await POST(`/appointments/${a.id}/confirm`, { cancelled: true }); toast('Cancellation sent'); } catch (e) { toast(e.message, true); } }
+    await act(() => DEL('/appointments/' + a.id), 'Visit deleted'); m.close(); onSaved ? onSaved() : route();
+  };
+  if ($('#cfsend', m.el)) $('#cfsend', m.el).onclick = () => { m.close(); confirmVisit(a.id, { after: onSaved }); };
   if (a.id && form.job_id) form.job_id.disabled = true;
   if (form.estimate_label) form.estimate_label.readOnly = true;
   // "Open job" / "Open estimate" navigate away: close the form with them
@@ -201,7 +235,7 @@ async function viewBoard(date, seg) {
     placed.set(`${r.id}:${a.id}`, a);
     return `<div class="hb-appt st-${a.status} ${a.priority === 'emergency' ? 'emergency' : ''} ${a.kind === 'estimate' ? 'est' : ''}" data-appt="${a.id}" data-row="${r.id}" style="left:${left}px;width:${width}px;top:${5 + lane * 58}px"
       title="${esc(`${fmtTime(a.start)}–${fmtTime(a.end)} ${a.job_number} ${a.customer_name} — ${a.job_title}${a.tech_names ? ' · ' + a.tech_names : ''}`)}">
-      <div class="t">${fmtTime(a.start)}–${fmtTime(a.end)} · ${a.kind === 'estimate' ? '<span class="est-tag">EST</span> ' : ''}${esc(a.job_number)}</div>
+      <div class="t">${fmtTime(a.start)}–${fmtTime(a.end)} · ${confirmBadge(a)}${a.kind === 'estimate' ? '<span class="est-tag">EST</span> ' : ''}${esc(a.job_number)}</div>
       <div class="d"><b>${esc(a.customer_name)}</b> · ${esc(a.job_title)}</div>
       <div class="d small">${esc([a.address, a.city].filter(Boolean).join(', '))}${a.tech_ids.length > 1 ? ` · 👥 ${a.tech_ids.length}` : ''}</div>
       ${isOffice() ? '<span class="rs"></span>' : ''}</div>`;

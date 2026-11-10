@@ -458,3 +458,9 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 /* estimate visits (walkthroughs to price work) */
 .hb-appt.est, .chip.est { border-style: dashed !important; background-image: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--text) 5%, transparent) 8px 10px); }
 .est-tag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 0 4px; border-radius: 3px; background: var(--info-soft); color: var(--info); vertical-align: 1px; }
+
+/* appointment confirmations */
+.cf-line { margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); font-size: 13px; display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.cf-line.warn { background: var(--warn-soft); color: var(--warn); }
+.cf-tag { font-size: 11px; } .cf-tag.warn { color: var(--warn); font-weight: 700; }
+.mail-preview { white-space: pre-wrap; font: 13px/1.45 ui-monospace, Menlo, monospace; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; max-height: 260px; overflow: auto; margin: 0; }

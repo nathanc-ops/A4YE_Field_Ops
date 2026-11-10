@@ -245,6 +245,16 @@ A visit on the schedule can be for a job **or for an estimate**: a walkthrough t
 - **For the tech:** the tech booked on the visit sees it in their day, can open that estimate and build the price on site (the usual field-estimating guardrails apply), and En route / On site / Done clock their travel and site time against the visit.
 - **Cancelling** an estimate cancels its upcoming visits; finished visits stay as they were.
 
+### Appointment confirmation emails
+
+Any visit (job or estimate walkthrough) can email the customer a confirmation with a calendar invite (.ics) attached. Booking a visit offers it with a checkbox, and an existing visit has **Email confirmation / Resend** in its form. You see the exact email before it goes and can change the address or add a line.
+
+- Times are written in the **company time zone** (Settings → A4Y Time Clock → Company time zone, default America/Boise), whatever time zone the server runs in.
+- **Dispatch notes are never included.** The email has the date and time, address, what the visit is for, and the first names of who's coming, plus your phone number. Replies go to the company email in Settings.
+- **Moving a confirmed visit** asks whether to email the new time, and the visit shows ⚠✉ on the board until the customer is told. The calendar invite keeps the same ID, so it moves the event in their calendar instead of adding a second one.
+- **Deleting a confirmed visit** offers to send a cancellation notice.
+- Without email set up on the server, the send is recorded and the text is copied so you can paste it into a text message.
+
 ## Schedule blocks
 
 The tech board, week view and dispatch list group people by the **Title** on their Team profile:

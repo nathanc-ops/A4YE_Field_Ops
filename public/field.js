@@ -312,7 +312,7 @@ async function timeclockCard(el, s) {
     <form id="tcf"><div class="form-grid">
       ${fieldHtml({ name: 'timeclock_url', label: 'Export link (Apps Script web app URL)', full: true, placeholder: 'https://script.google.com/macros/s/…/exec' }, s.timeclock_url)}
       ${fieldHtml({ name: 'timeclock_key', label: s.timeclock_key_set ? 'Export key (saved — leave blank to keep)' : 'Export key', type: 'password' })}
-      ${fieldHtml({ name: 'timezone', label: 'Time zone of the time clock', type: 'select', options: ['America/Boise', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'America/Chicago', 'America/New_York'], blank: false }, s.timezone || 'America/Boise')}
+      ${fieldHtml({ name: 'timezone', label: 'Company time zone (the time clock and customer appointment emails)', type: 'select', options: ['America/Boise', 'America/Denver', 'America/Los_Angeles', 'America/Phoenix', 'America/Chicago', 'America/New_York'], blank: false }, s.timezone || 'America/Boise')}
       ${fieldHtml({ name: 'timeclock_auto', label: 'Sync automatically every hour', type: 'checkbox', full: true }, s.timeclock_auto !== '0')}
     </div><div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn primary">Save</button><button type="button" class="btn" id="tcsync" ${st.configured ? '' : 'disabled'}>Sync now</button>
       <label class="btn">Upload CSV…<input type="file" id="tccsv" accept=".csv,text/csv" hidden></label></div></form></div>`);

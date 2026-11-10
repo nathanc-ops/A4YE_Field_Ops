@@ -17,14 +17,14 @@ function getTransport() {
   return transport;
 }
 
-async function send(db, { to, cc, replyTo, subject, text, html, related }) {
+async function send(db, { to, cc, replyTo, subject, text, html, related, attachments }) {
   const t = getTransport();
   const info = run(db, 'INSERT INTO outbox (to_email, subject, body, status, related) VALUES (?,?,?,?,?)',
     [to, cc].filter(Boolean).join(', '), subject, text, t ? 'queued' : 'not_configured', related || null);
   const id = Number(info.lastInsertRowid);
   if (!t) return { status: 'not_configured', id };
   try {
-    await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, cc: cc || undefined, replyTo: replyTo || undefined, subject, text, html });
+    await t.sendMail({ from: process.env.SMTP_FROM || process.env.SMTP_USER, to, cc: cc || undefined, replyTo: replyTo || undefined, subject, text, html, attachments: attachments || undefined });
     run(db, "UPDATE outbox SET status = 'sent' WHERE id = ?", id);
     return { status: 'sent', id };
   } catch (e) {

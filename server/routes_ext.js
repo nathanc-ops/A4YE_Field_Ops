@@ -25,7 +25,9 @@ module.exports = function routesExt(app, db, X) {
     FROM appointments a LEFT JOIN jobs j ON j.id = a.job_id LEFT JOIN estimates e ON e.id = a.estimate_id
     JOIN customers c ON c.id = COALESCE(j.customer_id, e.customer_id) LEFT JOIN locations l ON l.id = COALESCE(j.location_id, e.location_id)
     WHERE ${where} ORDER BY a.start`, ...params).map(a => ({ ...a, tech_ids: a.tech_ids ? String(a.tech_ids).split(',').map(Number) : [],
-      kind: a.estimate_id ? 'estimate' : 'job', href: a.estimate_id ? `#/estimates/${a.estimate_id}` : `#/jobs/${a.job_id}` }));
+      kind: a.estimate_id ? 'estimate' : 'job', href: a.estimate_id ? `#/estimates/${a.estimate_id}` : `#/jobs/${a.job_id}`,
+      // confirmed by email, then moved: the customer still has the old time
+      needs_reconfirm: !!a.confirmed_at && (a.confirmed_start !== a.start || a.confirmed_end !== a.end) && !['done', 'cancelled'].includes(a.status) }));
 
   function setApptTechs(apptId, jobId, ids) {
     if (!Array.isArray(ids)) return;

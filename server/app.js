@@ -1065,6 +1065,7 @@ function createApp(db) {
   hooks.exceptions = WB.exceptions;
   require('./job_import')(app, db, { wrap, bad, insert, update, WB });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
+  require('./appt_confirm')(app, db, { wrap, bad, mustGet, H });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');
