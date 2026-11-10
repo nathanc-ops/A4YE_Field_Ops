@@ -268,3 +268,41 @@ test('estimate import: parse pasted quote rows, codes from the phase code, skip 
   assert.equal(r0810.budget_hours, 44);
   assert.equal((await call('tech', 'POST', `/projects/${job}/quote-import/preview`, { text })).status, 403);
 });
+
+test('emailing the bi-weekly report: issued only, GC copy behind a link, outbox + sent tracking, reopen kills the link', async () => {
+  db.prepare('UPDATE jobs SET gc_email = ?, gc_contact = ? WHERE id = ?').run('ray@summitgc.com', 'Ray Patel', ids.job);
+  const rc = (await call('admin', 'GET', `/projects/${ids.job}/biweekly/recipients`)).data;
+  assert.equal(rc.to, 'ray@summitgc.com'); assert.equal(rc.cc, 'o@x.com'); assert.equal(rc.smtp, false);
+  // the earlier test reopened today's report → draft: refused
+  let r = await call('admin', 'POST', `/projects/${ids.job}/biweekly/email`, { to: 'ray@summitgc.com' });
+  assert.equal(r.status, 400); assert.match(r.data.error, /Issue the report first/);
+  await call('admin', 'PUT', `/projects/${ids.job}/biweekly`, { decisions: 'Approve fixture substitution' });
+  await call('admin', 'POST', `/projects/${ids.job}/biweekly/issue`, {});
+  assert.equal((await call('admin', 'POST', `/projects/${ids.job}/biweekly/email`, { to: 'not an email' })).status, 400);
+  assert.equal((await call('admin', 'POST', `/projects/${ids.job}/biweekly/email`, { to: '' })).status, 400);
+  r = await call('admin', 'POST', `/projects/${ids.job}/biweekly/email`, { to: 'ray@summitgc.com, pm@summitgc.com', cc: 'o@x.com', message: 'See attached progress.' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.status, 'not_configured', 'no SMTP in tests: recorded, link returned');
+  assert.match(r.data.url, /\/p\/report\/[A-Za-z0-9_-]{20,}$/);
+  const ob = db.prepare("SELECT * FROM outbox WHERE related LIKE 'report:%' ORDER BY id DESC").get();
+  assert.equal(ob.to_email, 'ray@summitgc.com, pm@summitgc.com, o@x.com');
+  assert.match(ob.subject, /Bi-weekly report: J-\d+ Clinic TI/);
+  assert.match(ob.body, /Decisions needed from you:\nApprove fixture substitution/);
+  assert.match(ob.body, /Full report: http/);
+  assert.doesNotMatch(ob.body, /margin|budget cost/i, 'no internal numbers in the email');
+  const token = r.data.url.split('/').pop();
+  // the public link: GC copy, no login
+  const pub = await fetch(`${base}/api/public/report/${token}`).then(x => x.json());
+  assert.equal(pub.data.gc_copy, true); assert.equal(pub.data.phases, undefined); assert.equal(pub.data.financial.budget_cost, undefined);
+  assert.equal(pub.report.decisions, 'Approve fixture substitution');
+  assert.equal((await fetch(`${base}/p/report/${token}`)).status, 200);
+  const rep = (await call('admin', 'GET', `/projects/${ids.job}/biweekly`)).data.report;
+  assert.ok(rep.sent_at); assert.match(rep.sent_to, /ray@summitgc.com/); assert.ok(rep.viewed_at, 'the GC opened it'); assert.equal(rep.public_url, r.data.url);
+  // a second send reuses the same link
+  const r2 = await call('admin', 'POST', `/projects/${ids.job}/biweekly/email`, { to: 'ray@summitgc.com' });
+  assert.equal(r2.data.url, r.data.url);
+  // reopening kills the link
+  await call('admin', 'POST', `/project-reports/${rep.id}/reopen`);
+  assert.equal((await fetch(`${base}/api/public/report/${token}`)).status, 404);
+  assert.equal((await call('tech', 'POST', `/projects/${ids.job}/biweekly/email`, { to: 'ray@summitgc.com' })).status, 403);
+});

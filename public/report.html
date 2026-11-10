@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/brand/favicon.png">
+  <meta name="theme-color" content="#000000">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body { background: var(--bg); }
+    .wrap { max-width: 1100px; margin: 20px auto; padding: 0 16px 60px; }
+    .bar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 10px; }
+    .rp-grid-wrap { overflow-x: auto; }
+    @media (max-width: 700px) { .rp-kv th, .rp-kv td { display: block; width: auto; } .rp-head { flex-direction: column; } .rp-per { text-align: left; } }
+  </style>
+</head>
+<body>
+  <div class="wrap"><div class="bar no-print"><button class="btn" onclick="print()">Print / save as PDF</button></div><div id="doc"><div class="empty">Loading…</div></div></div>
+<script>
+'use strict';
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money0 = n => (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+const wbDate = d => d ? new Date(String(d).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '—';
+const statusPill = st => { const tone = { Complete: 'good', 'On Track': 'good', Approved: 'good', 'In Progress': 'info', Submitted: 'info', Open: 'info', Pending: 'warn', 'At Risk': 'warn',
+  'Update %': 'warn', 'On Hold': 'warn', Overdue: 'bad', Late: 'bad', 'Late Start': 'bad', Rejected: 'bad' }[st] ?? ''; return `<span class="pill ${tone}">${esc(st || '—')}</span>`; };
+</script>
+<script src="/report_doc.js"></script>
+<script>
+(async () => {
+  const token = location.pathname.split('/')[3];
+  let tok = null; try { tok = localStorage.getItem('fo_token'); } catch { /* private mode */ }
+  try {
+    const r = await fetch(`/api/public/report/${encodeURIComponent(token)}`, { headers: tok ? { Authorization: 'Bearer ' + tok } : {} });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Not found');
+    document.title = `Report ${d.data.info.number} · ${d.data.info.title}`;
+    document.getElementById('doc').innerHTML = reportDoc(d.data, d.report, { gc: true, preparedBy: d.report.prepared_by_name || '' });
+  } catch (e) { document.getElementById('doc').innerHTML = `<div class="card"><h2>Report unavailable</h2><p>${esc(e.message)}</p></div>`; }
+})();
+</script>
+</body>
+</html>

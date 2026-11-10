@@ -141,6 +141,8 @@ function createApp(db) {
       job, location: job && job.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', job.location_id) : null };
   }
   app.get('/api/public/:kind(estimate|invoice)/:token', wrap((req, res) => res.json(publicDoc(req.params.kind, req.params.token, { staff: staffFrom(req) }))));
+  // an issued bi-weekly project report, GC copy only (built in workbook.js)
+  app.get('/api/public/report/:token', wrap((req, res) => { if (!app.locals.publicReport) throw bad('Not found', 404); res.json(app.locals.publicReport(req.params.token, { staff: !!staffFrom(req) })); }));
   app.post('/api/public/estimate/:token/respond', wrap((req, res) => {
     const e = get(db, 'SELECT * FROM estimates WHERE public_token = ?', req.params.token);
     if (!e) throw bad('Not found', 404);
@@ -1057,13 +1059,14 @@ function createApp(db) {
   require('./routes_import')(app, db, { wrap, bad, admin, H });
   const hooks = {};
   const PR = require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs, addDays, hooks });
-  hooks.exceptions = require('./workbook')(app, db, { wrap, bad, insert, update, mustGet, pick, P: PR }).exceptions;
+  hooks.exceptions = require('./workbook')(app, db, { wrap, bad, insert, update, mustGet, pick, P: PR, baseUrl }).exceptions;
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');
   app.use(express.static(pub));
   app.get('/p/:kind(estimate|invoice)/:token', (req, res) => res.sendFile(path.join(pub, 'doc.html')));
+  app.get('/p/report/:token', (req, res) => res.sendFile(path.join(pub, 'report.html')));
   app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(pub, 'index.html')));
 
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars

@@ -6,6 +6,7 @@
 const D = require('./db');
 const C = require('./calc');
 const Bill = require('./billing');
+const mailer = require('./mailer');
 const { all, get, run } = D;
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 const localDate = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
@@ -31,7 +32,7 @@ const CO_TO_EST = { Draft: 'draft', Pending: 'draft', Submitted: 'sent', Approve
 const EST_TO_CO = { draft: 'Draft', sent: 'Submitted', viewed: 'Submitted', approved: 'Approved', declined: 'Rejected', expired: 'Rejected', cancelled: 'Void' };
 
 module.exports = function workbookRoutes(app, db, X) {
-  const { wrap, bad, insert, update, mustGet, pick, P } = X;
+  const { wrap, bad, insert, update, mustGet, pick, P, baseUrl } = X;
   const s = () => D.settings(db);
   const isOffice = u => u.role === 'admin' || u.role === 'office';
   const project = (req, id, { write = false } = {}) => {
@@ -734,7 +735,7 @@ module.exports = function workbookRoutes(app, db, X) {
   const periodEnd = q => { const pe = isDate(q || '') ? q : today(); if (pe > today()) throw bad('The period has not ended yet'); return pe; };
   app.get('/api/projects/:id/reports', wrap((req, res) => {
     const job = project(req, req.params.id, { write: true });
-    res.json(all(db, `SELECT r.id, r.period_end, r.status, r.issued_at, u.name prepared_by_name FROM project_reports r LEFT JOIN users u ON u.id = r.prepared_by
+    res.json(all(db, `SELECT r.id, r.period_end, r.status, r.issued_at, r.sent_at, r.sent_to, r.viewed_at, u.name prepared_by_name FROM project_reports r LEFT JOIN users u ON u.id = r.prepared_by
       WHERE r.job_id = ? ORDER BY r.period_end DESC`, job.id));
   }));
   app.get('/api/projects/:id/biweekly', wrap((req, res) => {
@@ -742,7 +743,7 @@ module.exports = function workbookRoutes(app, db, X) {
     let data = row && row.status === 'issued' && row.snapshot ? JSON.parse(row.snapshot) : biweekly(job, pe);
     if (req.query.gc === '1' || !req.can('see_costs')) data = gcCopy(data);
     const prep = row && row.prepared_by ? get(db, 'SELECT name FROM users WHERE id = ?', row.prepared_by) : null;
-    res.json({ data, report: row ? { ...pick(row, ['id', 'status', 'issued_at', ...NARRATIVE]), prepared_by_name: prep && prep.name } : null, can_see_costs: req.can('see_costs') });
+    res.json({ data, report: row ? { ...pick(row, ['id', 'status', 'issued_at', 'sent_at', 'sent_to', 'viewed_at', ...NARRATIVE]), prepared_by_name: prep && prep.name, public_url: row.public_token && row.status === 'issued' ? `${baseUrl(req)}/p/report/${row.public_token}` : null } : null, can_see_costs: req.can('see_costs') });
   }));
   app.put('/api/projects/:id/biweekly', wrap((req, res) => {
     const job = project(req, req.params.id, { write: true }), pe = periodEnd(req.body && req.body.period_end), row = reportRow(job, pe);
@@ -759,10 +760,60 @@ module.exports = function workbookRoutes(app, db, X) {
     update('project_reports', row.id, { status: 'issued', issued_at: new Date().toISOString(), issued_by: req.user.id, snapshot: JSON.stringify(biweekly(job, pe)) });
     res.json({ ok: true, id: row.id });
   }));
+  // ---- email an issued report to the GC: always the GC copy, as a link to the frozen report (no attachment to go stale)
+  const EMAIL = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
+  const emails = (v, label) => { const list = String(v || '').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean);
+    for (const e of list) if (!EMAIL.test(e)) throw bad(`${label}: "${e}" is not an email address`);
+    if (list.length > 10) throw bad(`${label}: 10 addresses at most`); return list; };
+  const htmlEsc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmtD = d => d ? new Date(String(d).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '';
+  const usd = n => n == null ? '—' : (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+  app.get('/api/projects/:id/biweekly/recipients', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true });
+    const c = get(db, 'SELECT email, name FROM customers WHERE id = ?', job.customer_id) || {};
+    res.json({ to: job.gc_email || c.email || '', gc_contact: job.gc_contact || c.name || '', cc: req.user.email || '', smtp: !!process.env.SMTP_HOST });
+  }));
+  app.post('/api/projects/:id/biweekly/email', wrap(async (req, res) => {
+    const job = project(req, req.params.id, { write: true }), b = req.body || {}, pe = periodEnd(b.period_end);
+    const to = emails(b.to, 'To'), cc = emails(b.cc, 'Cc');
+    if (!to.length) throw bad('Who should get it? Add the GC\'s email');
+    let row = reportRow(job, pe);
+    if (!row || row.status !== 'issued') throw bad('Issue the report first — only an issued report, with its numbers frozen, can be sent');
+    if (!row.public_token) { update('project_reports', row.id, { public_token: D.token() }); row = reportRow(job, pe); }
+    const d = gcCopy(JSON.parse(row.snapshot)), F = d.financial, cfg = s();
+    const url = `${baseUrl(req)}/p/report/${row.public_token}`;
+    const greet = String(b.greeting || '').trim() || (job.gc_contact ? `Hi ${String(job.gc_contact).split(/\s+/)[0]},` : 'Hello,');
+    const msg = String(b.message || '').trim() || `Here is our bi-weekly report for ${job.title}, ${fmtD(d.period_start)} to ${fmtD(d.period_end)}.`;
+    const facts = [['% complete', F.pct_complete == null ? '—' : `${F.pct_complete}%`], ['Schedule (SPI)', F.spi == null ? '—' : Number(F.spi).toFixed(2)],
+      ['Revised contract', usd(F.revised_contract)], ['Billed to date', usd(F.billed)], ['Pending change orders', usd(F.pending_co)],
+      ['Open RFIs / submittals', d.rfis.length], ['Tasks in the next two weeks', d.lookahead.length]];
+    const subject = `Bi-weekly report: ${job.number} ${job.title} (period ending ${fmtD(pe)})`;
+    const text = [greet, '', msg, '', ...facts.map(([k, v]) => `${k}: ${v}`), ...(row.decisions ? ['', `Decisions needed from you:\n${row.decisions}`] : []),
+      '', `Full report: ${url}`, '', `${req.user.name}`, cfg.company_name || '', cfg.company_phone || ''].join('\n');
+    const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#16191f;max-width:620px">
+      <p>${htmlEsc(greet)}</p><p>${htmlEsc(msg).replace(/\n/g, '<br>')}</p>
+      <table style="border-collapse:collapse;margin:12px 0;font-size:14px">${facts.map(([k, v]) => `<tr><td style="padding:4px 16px 4px 0;color:#4b5563">${htmlEsc(k)}</td><td style="padding:4px 0"><b>${htmlEsc(v)}</b></td></tr>`).join('')}</table>
+      ${row.decisions ? `<p style="background:#fef3c7;padding:10px 12px;border-left:3px solid #b45309"><b>Decisions needed from you</b><br>${htmlEsc(row.decisions).replace(/\n/g, '<br>')}</p>` : ''}
+      <p style="margin:18px 0"><a href="${htmlEsc(url)}" style="background:#fa001c;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold">Open the full report</a></p>
+      <p style="color:#6b7280;font-size:12px">The report can be printed or saved as a PDF from that page.</p>
+      <p>${htmlEsc(req.user.name)}<br>${htmlEsc(cfg.company_name || '')}${cfg.company_phone ? `<br>${htmlEsc(cfg.company_phone)}` : ''}</p></div>`;
+    const r = await mailer.send(db, { to: to.join(', '), cc: cc.join(', ') || undefined, replyTo: req.user.email || undefined, subject, text, html, related: `report:${row.id}` });
+    if (r.status !== 'failed') update('project_reports', row.id, { sent_at: new Date().toISOString(), sent_to: [...to, ...cc].join(', ') });
+    res.json({ ...r, url });
+  }));
+  // what the GC sees at the link: the frozen report, GC copy, with the narrative
+  app.locals.publicReport = (tokenValue, { staff = false } = {}) => {
+    const row = tokenValue && get(db, "SELECT * FROM project_reports WHERE public_token = ? AND status = 'issued'", tokenValue);
+    if (!row || !row.snapshot) throw bad('This report link is no longer valid — ask for a new one', 404);
+    if (!row.viewed_at && !staff) run(db, "UPDATE project_reports SET viewed_at = datetime('now') WHERE id = ?", row.id);
+    const prep = row.prepared_by ? get(db, 'SELECT name FROM users WHERE id = ?', row.prepared_by) : null;
+    return { data: gcCopy(JSON.parse(row.snapshot)), report: { status: 'issued', issued_at: row.issued_at, prepared_by_name: prep && prep.name, ...Object.fromEntries(NARRATIVE.map(k => [k, row[k]])) } };
+  };
   app.post('/api/project-reports/:id/reopen', wrap((req, res) => {
     const row = mustGet('project_reports', req.params.id); project(req, row.job_id, { write: true });
     if (req.user.role !== 'admin') throw bad('Only an admin can reopen an issued report', 403);
-    update('project_reports', row.id, { status: 'draft', issued_at: null, issued_by: null, snapshot: null }); res.json({ ok: true });
+    // the link a GC may already have stops working: the numbers behind it are about to change
+    update('project_reports', row.id, { status: 'draft', issued_at: null, issued_by: null, snapshot: null, public_token: null }); res.json({ ok: true });
   }));
 
   // ================================================================ Estimate Import → Import Quote → budget

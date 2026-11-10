@@ -825,6 +825,11 @@ const MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_quote_job ON project_quote_lines(job_id);`);
   },
+  // 22: emailing an issued bi-weekly report — a public link (GC copy only) and who it was last sent to
+  db => {
+    for (const [c, d] of [['public_token', 'TEXT'], ['sent_at', 'TEXT'], ['sent_to', 'TEXT'], ['viewed_at', 'TEXT']]) addColumn(db, 'project_reports', c, d);
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_report_token ON project_reports(public_token)');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
