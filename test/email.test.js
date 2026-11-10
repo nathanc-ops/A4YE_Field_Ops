@@ -190,10 +190,13 @@ test('Twilio Email API: SK key signs in, message/attachment/CC go as JSON, error
   process.env.TWILIO_EMAIL_API_BASE = `http://127.0.0.1:${api.address().port}/v1`; process.env.TWILIO_EMAIL_POLL_MS = '5';
   try {
     const form = { host: 'comms.twilio.com', port: 443, security: 'ssl', user: SID, from_email: 'noreply@a4ye.example', from_name: 'All 4 You Electrical' };
+    const mailer0 = require('../server/mailer');
     const t = o => call('admin', 'POST', '/settings/email-test', { to: 'owner@a4ye.example', ...form, ...o }).then(r => r.data);
     assert.match((await t({ pass: 'wrong' })).error, /secret doesn't match that SID/);
     assert.match((await t({ pass: SID })).error, /password is the key SID again/);
     assert.match((await t({ user: 'apikey', pass: SECRET })).error, /must be the API key's SID/);
+    assert.match(mailer0.explain(Object.assign(new Error('required permission twilio/comms/emails/create is missing (HTTP 401)'), { code: 'ETWILIO', status: 401 }), { host: 'comms.twilio.com', user: SID, pass: SECRET }),
+      /signed in, but it isn't allowed to send email \(missing permission twilio\/comms\/emails\/create\)/);
     assert.match((await t({ pass: SECRET, from_email: 'bad@a4ye.example' })).error, /refused the From address bad@a4ye\.example.*Email → Domains/);
     assert.match((await t({ pass: SECRET, from_email: 'x@unverified.example' })).error, /accepted the message but it failed/);
     const ok = await t({ pass: SECRET });

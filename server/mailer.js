@@ -146,12 +146,14 @@ function explain(e, c) {
   if (isTwilioApi(c)) {
     const s = e && e.status, user = String(c.user || '');
     if (code === 'ECONNECTION') return `${msg}. Check the server's internet connection (this uses normal HTTPS, port 443).`;
+    // Twilio answers 401 both for a wrong secret and for a right key that lacks a permission — the text tells them apart
+    const perm = (msg.match(/permission\s+([\w\/.:-]+)\s+is\s+missing/i) || [])[1];
+    if (perm || s === 403) return `The API key signed in, but it isn't allowed to send email${perm ? ` (missing permission ${perm})` : ''}. In the Twilio Console → API keys, edit this key and tick Emails → Create${perm ? ` (${perm})` : ''}, or create a Standard key. Then enter the new key's SID and secret here. (${msg})`;
     if (s === 401) {
       if (!isTwilioKeySid(user)) return `Twilio rejected the sign-in. The username must be the API key's SID — it starts with SK and is 34 characters (it is "${user.slice(0, 6)}${user.length > 6 ? '…' : ''}"). (${msg})`;
       if (isTwilioKeySid(c.pass)) return `The password is the key SID again. It must be the key's secret — shown once, next to the SID, when the key was created. If you didn't copy it, create a new key. (${msg})`;
       return `Twilio rejected the API key: the secret doesn't match that SID, or the key was deleted. The secret is shown only once when the key is made — if you don't have it, create a new key. (Not the account Auth Token.) (${msg})`;
     }
-    if (s === 403) return `That API key isn't allowed to send email. In the Twilio Console → API keys, create a Standard key, or give the restricted key permission to send Email. (${msg})`;
     if (s === 400 && /from|sender|domain|identity|verif/i.test(msg))
       return `Twilio refused the From address ${c.fromEmail || ''}. Authenticate ${String(c.fromEmail || '').split('@')[1] || 'your domain'} in the Twilio Console → Email → Domains (it gives DNS records to add), then try again. (${msg})`;
     if (s === 429 || s >= 500) return `Twilio Email is busy or having trouble. Wait a minute and try again. (${msg})`;
