@@ -1524,7 +1524,7 @@ async function jobNumberSetup(el) {
 // and never sent back to the browser. A server with SMTP_* environment variables uses those instead (shown, not editable).
 const MAIL_PRESETS = [
   ['postmark', 'Postmark (recommended)', 'smtp.postmarkapp.com', 2525, 'starttls', 'Username and password are both your Postmark Server API Token. Verify your domain (or the From address) in Postmark first.'],
-  ['sendgrid', 'Twilio SendGrid', 'smtp.sendgrid.net', 2525, 'starttls', 'Username is the word apikey (literally). Password is a SendGrid API key with Mail Send access (SendGrid → Settings → API Keys). Authenticate your domain first (SendGrid → Settings → Sender Authentication) or mail will be refused or land in spam.'],
+  ['sendgrid', 'Twilio Email (formerly SendGrid)', 'smtp.sendgrid.net', 2525, 'starttls', 'Managed in the Twilio console now (sendgrid.com moved into twilio.com in 2026). Username is the word apikey (literally); password is an email API key with Mail Send access. Authenticate your domain first (Sender Authentication) or mail will be refused or land in spam. If Twilio shows a different SMTP server in your account, use that one.'],
   ['brevo', 'Brevo', 'smtp-relay.brevo.com', 2525, 'starttls', 'Username and SMTP key are under Brevo → SMTP & API. Verify your domain or sender in Brevo.'],
   ['ses', 'Amazon SES', 'email-smtp.us-west-2.amazonaws.com', 2587, 'starttls', 'Use SES SMTP credentials (not your AWS login) and the server for your SES region. Verify your domain in SES.'],
   ['google', 'Google Workspace / Gmail', 'smtp.gmail.com', 587, 'starttls', 'Username is the full Google address; password is an App Password (Google Account → Security → 2-Step Verification → App passwords). Note: some hosts, DigitalOcean included, block port 587.'],
