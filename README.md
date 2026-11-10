@@ -257,6 +257,16 @@ Any visit (job or estimate walkthrough) can email the customer a confirmation wi
 - **Deleting a confirmed visit** offers to send a cancellation notice.
 - Without email set up on the server, the send is recorded and the text is copied so you can paste it into a text message.
 
+## Multi-day visits (commercial crews)
+
+A visit can span several days, e.g. a crew 7:00–3:30 from the 16th to the 20th. It is one crew window repeated each day.
+
+- **Shown every day it covers:** on the week view, day board and dispatch, at that day's hours, tagged *Day 3/5*. The week view also has a **Commercial projects this week** strip. It shows who is on each project each day, highlights weekdays with no crew, and has **+ Crew** to book one.
+- **Change one day:** open a day of the visit and choose *Only Wednesday* to change that day's crew or hours. On the week view you can also drag the day's chip onto another tech; on the day board, drag or resize it. That day becomes its own visit, and the days before and after keep their crew and hours. Time already clocked stays with the day it was clocked on.
+- **Take a day off** (a weekend, a day the site is shut) from the same form. It's refused if someone already clocked time that day.
+- Choose *Every day of the visit* to change the whole visit as before.
+- A customer who was emailed a confirmation is only flagged when a day's **hours** change, not its crew.
+
 ## Schedule blocks
 
 The tech board, week view and dispatch list group people by the **Title** on their Team profile:

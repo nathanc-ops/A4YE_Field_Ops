@@ -119,6 +119,56 @@ module.exports = function routesExt(app, db, X) {
     syncJobSchedule(a.job_id);
     res.json({ ok: true, conflicts: conflicts(a.id) });
   }));
+  // One day of a multi-day visit (a crew window repeated each day) gets its own crew or hours: that day is split out as
+  // its own visit, and the days before and after stay as they were. The browser sends the day's bounds and windows in
+  // local time (it knows the time zone the board is drawn in): day_from/day_to = that day's midnights, start/end = the
+  // day's new window, before_end = the previous day's window end, after_start = the next day's window start.
+  app.post('/api/appointments/:id/day', office, wrap((req, res) => {
+    const a = mustGet('appointments', req.params.id), b = req.body || {};
+    const iso = (v, name) => { const t = Date.parse(v); if (!v || Number.isNaN(t)) throw bad(`${name} is missing`); return new Date(t).toISOString(); };
+    const dayFrom = iso(b.day_from, 'day_from'), dayTo = iso(b.day_to, 'day_to'), start = iso(b.start, 'start'), end = iso(b.end, 'end');
+    if (!(a.start < dayTo && a.end > dayFrom)) throw bad('That visit is not on that day');
+    checkTimes(start, end);
+    if (['done', 'cancelled'].includes(a.status)) throw bad(`That visit is ${a.status}`);
+    const crew = Array.isArray(b.tech_ids) ? b.tech_ids.map(Number) : all(db, 'SELECT user_id FROM appointment_techs WHERE appointment_id = ?', a.id).map(r => r.user_id);
+    for (const uid of crew) mustGet('users', uid);
+    const hasBefore = a.start < dayFrom, hasAfter = a.end > dayTo;
+    if (b.remove) {  // take this day off the visit (a weekend, a day the site is shut)
+      if (!hasBefore && !hasAfter) throw bad('That is the only day of the visit — delete the visit instead');
+      if (get(db, 'SELECT 1 x FROM time_entries WHERE appointment_id = ? AND clock_in >= ? AND clock_in < ?', a.id, dayFrom, dayTo)) throw bad('Someone already clocked time on that day');
+    }
+    if (!hasBefore && !hasAfter) {  // a single-day visit: just change it
+      update('appointments', a.id, { start, end }); setApptTechs(a.id, a.job_id, crew); syncJobSchedule(a.job_id);
+      return res.json({ id: a.id, ids: [a.id], conflicts: conflicts(a.id) });
+    }
+    const beforeEnd = hasBefore ? iso(b.before_end, 'before_end') : null, afterStart = hasAfter ? iso(b.after_start, 'after_start') : null;
+    if (hasBefore && !(beforeEnd > a.start && beforeEnd <= dayFrom)) throw bad('The day before doesn\'t line up with the visit');
+    if (hasAfter && !(afterStart >= dayTo && afterStart < a.end)) throw bad('The day after doesn\'t line up with the visit');
+    const oldCrew = all(db, 'SELECT user_id FROM appointment_techs WHERE appointment_id = ?', a.id).map(r => r.user_id);
+    const base = { job_id: a.job_id, estimate_id: a.estimate_id, status: a.status, notes: a.notes };
+    // the customer was told the visit's times; splitting it out doesn't change them unless this day's hours changed
+    const told = seg => a.confirmed_at ? { confirmed_at: a.confirmed_at, confirmed_to: a.confirmed_to, confirm_count: a.confirm_count,
+      confirmed_start: seg.keep ? seg.start : a.confirmed_start, confirmed_end: seg.keep ? seg.end : a.confirmed_end } : {};
+    const segs = [];
+    if (hasBefore) segs.push({ start: a.start, end: beforeEnd, crew: oldCrew, keep: true });
+    if (!b.remove) segs.push({ start, end, crew, keep: !b.times_changed, day: true });
+    if (hasAfter) segs.push({ start: afterStart, end: a.end, crew: oldCrew, keep: true });
+    // the original row becomes the first piece (time entries and history already point at it); the rest are new rows
+    const ids = segs.map((seg, i) => {
+      if (i === 0) { update('appointments', a.id, { start: seg.start, end: seg.end, ...told(seg) }); setApptTechs(a.id, a.job_id, seg.crew); return a.id; }
+      const id = insert('appointments', { ...base, start: seg.start, end: seg.end, ...told(seg) });
+      setApptTechs(id, a.job_id, seg.crew); return id;
+    });
+    // clocked time follows the piece of the visit it happened in
+    for (const t of all(db, 'SELECT id, clock_in FROM time_entries WHERE appointment_id = ?', a.id)) {
+      let k = 0; segs.forEach((seg, i) => { if (Date.parse(seg.start) <= Date.parse(t.clock_in)) k = i; });
+      if (ids[k] !== a.id) run(db, 'UPDATE time_entries SET appointment_id = ? WHERE id = ?', ids[k], t.id);
+    }
+    syncJobSchedule(a.job_id);
+    if (b.remove) return res.json({ id: null, ids, removed: true });
+    const dayId = ids[segs.findIndex(s => s.day)];
+    res.json({ id: dayId, ids, conflicts: conflicts(dayId) });
+  }));
   app.delete('/api/appointments/:id', office, wrap((req, res) => {
     const a = mustGet('appointments', req.params.id);
     run(db, 'DELETE FROM appointments WHERE id = ?', a.id); syncJobSchedule(a.job_id); res.json({ ok: true });

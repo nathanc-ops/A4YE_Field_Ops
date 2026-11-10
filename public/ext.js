@@ -79,7 +79,7 @@ const confirmBadge = a => a.needs_reconfirm ? '<span class="cf-tag warn" title="
 
 // A visit is for a job, or for an estimate (a walkthrough to price the work). A new visit with nothing picked yet can be
 // either; "estimate walkthrough" books the visit and starts a draft estimate for the customer in one step.
-async function apptForm(a = {}, { onSaved, mode } = {}) {
+async function apptForm(a = {}, { onSaved, mode, day } = {}) {
   await loadUsers();
   const isNew = !a.id, fixedEst = !!a.estimate_id, fixedJob = !!a.job_id || (!isNew && !a.estimate_id);
   const choose = isNew && !fixedEst && !fixedJob;
@@ -88,7 +88,11 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
     `<label class="check"><input type="checkbox" name="tech" value="${u.id}" ${(a.tech_ids || []).includes(u.id) ? 'checked' : ''}> <span class="dot" style="background:${esc(u.color)}"></span>${esc(u.name)}</label>`).join('')}</div></div>
     ${a.id ? `<div class="cf-line ${a.needs_reconfirm ? 'warn' : ''}">${a.needs_reconfirm ? `⚠ Moved after the customer was emailed — they still have the old time.` : a.confirmed_at ? `✉ Confirmation emailed to ${esc(a.confirmed_to || 'the customer')} ${fmtDT(a.confirmed_at + 'Z')}` : 'The customer hasn\'t been emailed about this visit.'} <button type="button" class="btn sm" id="cfsend">${a.needs_reconfirm ? 'Email the new time' : a.confirmed_at ? 'Resend' : 'Email confirmation'}</button></div><div class="row" style="margin-top:12px">${link}<button type="button" class="btn danger" id="delappt">Delete visit</button></div>` : '<label class="check" style="margin-top:10px"><input type="checkbox" name="confirm_email" checked> Email the customer a confirmation (with a calendar invite)</label>'}`;
   const estLabel = a.estimate_id ? [a.estimate_number || a.job_number, a.customer_name, a.estimate_title].filter(Boolean).join(' · ') : '';
+  const oneDay = !!(a.id && day && isMultiDay(a) && visitDays(a).includes(day));
+  const dw = oneDay ? dayWindow(a, day) : null;
   const fields = [
+    ...(oneDay ? [{ name: 'scope', label: `This visit runs ${visitDays(a).length} days (${fmtDate(visitDays(a)[0])} – ${fmtDate(visitDays(a).slice(-1)[0])}). Change…`, type: 'select', blank: false, full: true,
+      options: [['day', `Only ${new Date(day + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })} (crew and hours for that day)`], ['all', 'Every day of the visit']] }] : []),
     ...(choose ? [{ name: 'visit_for', label: 'This visit is for', type: 'select', blank: false, full: true, options: [['job', 'A job'], ['estimate', 'An estimate walkthrough — starts a draft estimate']] }] : []),
     ...(fixedEst ? [{ name: 'estimate_label', label: 'Estimate', full: true, disabled: true }] : [{ name: 'job_id', label: 'Job', type: 'job', full: true, disabled: !isNew,
       text: a.job_id && a.job_number ? `${a.job_number} · ${a.customer_name || ''}${a.job_title ? ` · ${a.job_title}` : ''}` : '' }]),
@@ -101,12 +105,19 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
   const kindWord = fixedEst || mode === 'estimate' ? 'Estimate visit' : 'Visit';
   const m = formModal({
     title: a.id ? `${kindWord} · ${a.job_number}` : fixedEst ? 'Schedule an estimate visit' : mode === 'estimate' ? 'Book an estimate walkthrough' : 'Schedule a visit',
-    values: { ...a, status: a.status || 'scheduled', visit_for: mode === 'estimate' ? 'estimate' : 'job', estimate_label: estLabel }, wide: true, extra: techBoxes,
+    values: { ...a, ...(dw ? { start: dw.start, end: dw.end, scope: 'day' } : {}), status: a.status || 'scheduled', visit_for: mode === 'estimate' ? 'estimate' : 'job', estimate_label: estLabel }, wide: true,
+    extra: techBoxes + (oneDay ? '<div class="row" style="margin-top:8px"><button type="button" class="btn sm" id="dayoff">Take this day off the visit</button></div>' : ''),
     fields,
     submit: async (d, form) => {
       d.tech_ids = $$('input[name=tech]:checked', form).map(i => Number(i.value));
       const base = { start: d.start, end: d.end, status: d.status, notes: d.notes, tech_ids: d.tech_ids };
       let r;
+      if (oneDay && d.scope === 'day') {
+        r = await changeVisitDay(a, day, { start: d.start, end: d.end, tech_ids: d.tech_ids });
+        toast(`${a.job_number}: ${fmtDate(day)} changed — the other days are as they were`); warnConflicts(r);
+        return onSaved ? onSaved(r) : route();
+      }
+      if (oneDay && d.scope === 'all') { base.start = d.start === dw.start ? a.start : base.start; base.end = d.end === dw.end ? a.end : base.end; }
       const wantConfirm = !a.id && $('input[name=confirm_email]', form) && $('input[name=confirm_email]', form).checked;
       // a confirmed visit that moved: the customer has the old time
       const moved = a.id && a.confirmed_at && (new Date(d.start).toISOString() !== new Date(a.start).toISOString() || new Date(d.end).toISOString() !== new Date(a.end).toISOString());
@@ -151,6 +162,15 @@ async function apptForm(a = {}, { onSaved, mode } = {}) {
     if (tell) { try { await POST(`/appointments/${a.id}/confirm`, { cancelled: true }); toast('Cancellation sent'); } catch (e) { toast(e.message, true); } }
     await act(() => DEL('/appointments/' + a.id), 'Visit deleted'); m.close(); onSaved ? onSaved() : route();
   };
+  if (oneDay) {
+    // switching to "every day" shows the whole visit's start and end; back to "only" shows this day's window
+    const toLocal = iso => { const t = new Date(iso); t.setMinutes(t.getMinutes() - t.getTimezoneOffset()); return t.toISOString().slice(0, 16); };
+    form.scope.onchange = () => { const all = form.scope.value === 'all'; form.start.value = toLocal(all ? a.start : dw.start); form.end.value = toLocal(all ? a.end : dw.end); };
+    $('#dayoff', m.el).onclick = async () => {
+      if (!confirm(`Take ${fmtDate(day)} off ${a.job_number}? The days before and after stay booked.`)) return;
+      try { await changeVisitDay(a, day, { remove: true }); toast(`${fmtDate(day)} taken off ${a.job_number}`); m.close(); onSaved ? onSaved() : route(); } catch (err) { toast(err.message, true); }
+    };
+  }
   if ($('#cfsend', m.el)) $('#cfsend', m.el).onclick = () => { m.close(); confirmVisit(a.id, { after: onSaved }); };
   if (form.estimate_label) form.estimate_label.readOnly = true;
   // "Open job" / "Open estimate" navigate away: close the form with them
@@ -177,6 +197,29 @@ function dateNav(view, date, step) {
 }
 function bindDatePick(view) { const d = $('#dpick'); if (d) d.onchange = () => go('#/schedule' + qs({ view, date: d.value })); }
 const legend = () => `<div class="legend">${APPT_STATUSES.filter(s => s !== 'cancelled').map(s => `<span class="st-${s}"><i></i>${label(s)}</span>`).join('')}</div>`;
+
+// A multi-day visit (a commercial crew, say 7:00–3:30 from the 3rd to the 21st) is one crew window repeated each day.
+// These give one day's window, list its days, and change a single day (the server splits that day out as its own visit).
+const isMultiDay = a => localDate(new Date(a.start)) !== localDate(new Date(Date.parse(a.end) - 1));
+function visitDays(a) { const out = []; for (let d = localDate(new Date(a.start)), last = localDate(new Date(Date.parse(a.end) - 1)); d <= last && out.length < 400; d = addDaysStr(d, 1)) out.push(d); return out; }
+function dayWindow(a, day) {
+  if (!isMultiDay(a)) return { start: a.start, end: a.end };
+  const s = new Date(a.start), e = new Date(a.end);
+  let ws = new Date(day + 'T00:00:00'); ws.setHours(s.getHours(), s.getMinutes(), 0, 0);
+  let we = new Date(day + 'T00:00:00'); we.setHours(e.getHours(), e.getMinutes(), 0, 0);
+  if (we <= ws) { ws = new Date(day + 'T00:00:00'); we = new Date(addDaysStr(day, 1) + 'T00:00:00'); }   // round-the-clock: the whole day
+  if (ws < s) ws = s; if (we > e) we = e;
+  return { start: ws.toISOString(), end: we.toISOString() };
+}
+const dayTag = (a, day) => { if (!isMultiDay(a)) return ''; const d = visitDays(a); return `<span class="day-tag" title="One day of a ${d.length}-day visit">Day ${d.indexOf(day) + 1}/${d.length}</span> `; };
+async function changeVisitDay(a, day, { start, end, tech_ids, remove } = {}) {
+  const w = dayWindow(a, day), days = visitDays(a), i = days.indexOf(day);
+  const body = { day_from: dayISO(day), day_to: dayISO(addDaysStr(day, 1)), start: start || w.start, end: end || w.end, tech_ids, remove: !!remove,
+    times_changed: (!!start && new Date(start).toISOString() !== w.start) || (!!end && new Date(end).toISOString() !== w.end) };
+  if (i > 0) body.before_end = dayWindow(a, days[i - 1]).end;
+  if (i >= 0 && i < days.length - 1) body.after_start = dayWindow(a, days[i + 1]).start;
+  return POST(`/appointments/${a.id}/day`, body);
+}
 
 // Hours a visit takes up on one day (same rule as the server): a visit spanning several days is a daily crew window.
 function visitHoursOnDay(a, day) {
@@ -221,19 +264,20 @@ async function viewBoard(date, seg) {
 
   // greedy lane packing so overlapping visits for the same tech stack instead of covering each other
   const placed = new Map();
+  const wins = new Map(appts.map(a => [a.id, dayWindow(a, date)])), win = a => wins.get(a.id);
   for (const r of rows) {
-    const mine = appts.filter(a => r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length).sort((a, b) => a.start.localeCompare(b.start));
+    const mine = appts.filter(a => r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length).sort((a, b) => win(a).start.localeCompare(win(b).start));
     const lanes = [];
-    r.items = mine.map(a => { let l = lanes.findIndex(end => end <= a.start); if (l < 0) { l = lanes.length; lanes.push(''); } lanes[l] = a.end; return { a, lane: l }; });
+    r.items = mine.map(a => { const w = win(a); let l = lanes.findIndex(end => end <= w.start); if (l < 0) { l = lanes.length; lanes.push(''); } lanes[l] = w.end; return { a, lane: l }; });
     r.lanes = Math.max(1, lanes.length);
   }
   const x = iso => Math.max(0, Math.min(H1 - H0, hoursOf(iso, date) - H0)) * hw;
   const block = (r, { a, lane }) => {
-    const left = x(a.start), width = Math.max(28, x(a.end) - left);
+    const w = win(a), left = x(w.start), width = Math.max(28, x(w.end) - left);
     placed.set(`${r.id}:${a.id}`, a);
     return `<div class="hb-appt st-${a.status} ${a.priority === 'emergency' ? 'emergency' : ''} ${a.kind === 'estimate' ? 'est' : ''}" data-appt="${a.id}" data-row="${r.id}" style="left:${left}px;width:${width}px;top:${5 + lane * 58}px"
-      title="${esc(`${fmtTime(a.start)}–${fmtTime(a.end)} ${a.job_number} ${a.customer_name} — ${a.job_title}${a.tech_names ? ' · ' + a.tech_names : ''}`)}">
-      <div class="t">${fmtTime(a.start)}–${fmtTime(a.end)} · ${confirmBadge(a)}${a.kind === 'estimate' ? '<span class="est-tag">EST</span> ' : ''}${esc(a.job_number)}</div>
+      title="${esc(`${fmtTime(w.start)}–${fmtTime(w.end)} ${a.job_number} ${a.customer_name} — ${a.job_title}${a.tech_names ? ' · ' + a.tech_names : ''}${isMultiDay(a) ? ` · ${fmtDate(localDate(new Date(a.start)))} to ${fmtDate(localDate(new Date(Date.parse(a.end) - 1)))}` : ''}`)}">
+      <div class="t">${fmtTime(w.start)}–${fmtTime(w.end)} · ${dayTag(a, date)}${confirmBadge(a)}${a.kind === 'estimate' ? '<span class="est-tag">EST</span> ' : ''}${esc(a.job_number)}</div>
       <div class="d"><b>${esc(a.customer_name)}</b> · ${esc(a.job_title)}</div>
       <div class="d small">${esc([a.address, a.city].filter(Boolean).join(', '))}${a.tech_ids.length > 1 ? ` · 👥 ${a.tech_ids.length}` : ''}</div>
       ${isOffice() ? '<span class="rs"></span>' : ''}</div>`;
@@ -314,12 +358,14 @@ async function viewBoard(date, seg) {
       const onUp = async () => {
         el.removeEventListener('pointermove', onMove); el.removeEventListener('pointerup', onUp); el.removeEventListener('pointercancel', onUp);
         lanes.forEach(z => z.classList.remove('over'));
-        if (!moved) return apptForm(a);
-        const durH = (new Date(a.end) - new Date(a.start)) / 36e5;
+        if (!moved) return apptForm(a, { day: date });
+        const multi = isMultiDay(a), w = dayWindow(a, date);
+        const durH = (new Date(w.end) - new Date(w.start)) / 36e5;
         let body;
         if (mode === 'resize') {
-          const startH = hoursOf(a.start, date);
+          const startH = hoursOf(w.start, date);
           body = { end: dayISO(date, startH + snap(parseFloat(el.style.width) / hw)) };
+          if (multi) body.start = w.start;
         } else {
           const startH = H0 + snap(parseFloat(el.style.left) / hw);
           const toRow = Number(target.dataset.tech);
@@ -328,7 +374,9 @@ async function viewBoard(date, seg) {
           if (!toRow) techs = a.tech_ids.filter(id => id !== fromRow);
           body = { start: dayISO(date, startH), end: dayISO(date, startH + durH), tech_ids: techs };
         }
-        try { const r = await PUT('/appointments/' + a.id, body); toast(`${a.job_number} updated`); warnConflicts(r); } catch (err) { toast(err.message, true); }
+        // one day of a multi-day visit: only this day changes; the rest of the visit keeps its crew and hours
+        try { const r = multi ? await changeVisitDay(a, date, { start: body.start, end: body.end, tech_ids: body.tech_ids || a.tech_ids }) : await PUT('/appointments/' + a.id, body);
+          toast(multi ? `${a.job_number} changed for ${fmtDate(date)} only` : `${a.job_number} updated`); warnConflicts(r); } catch (err) { toast(err.message, true); }
         route();
       };
       el.addEventListener('pointermove', onMove); el.addEventListener('pointerup', onUp); el.addEventListener('pointercancel', onUp);
@@ -341,37 +389,64 @@ async function viewWeek(date, seg) {
   const start = new Date(date + 'T00:00:00'); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   const monday = localDate(start);
   const days = [...Array(7)].map((_, i) => addDaysStr(monday, i));
-  const appts = await GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) }));
+  const [appts, projAll] = await Promise.all([GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) })), isOffice() ? GET('/projects?lite=1') : []]);
+  // commercial projects running this week: who's on each one, day by day (and which have nobody booked)
+  const sunday = addDaysStr(monday, 6);
+  const projs = projAll.filter(pj => (!pj.start_date || pj.start_date <= sunday) && (!pj.end_date || pj.end_date >= monday)
+    && (pj.start_date || pj.end_date || appts.some(a => a.job_id === pj.id)));
   const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)))) : S.users.filter(u => u.id === S.user.id);
   const rows = [...techs.map(t => ({ id: t.id, name: t.name, color: t.color })), ...(isOffice() ? [{ id: 0, name: 'Unassigned', color: '#94a3b8' }] : [])];
-  const cellAppts = (r, d) => appts.filter(a => localDate(new Date(a.start)) === d && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length));
+  const onDay = (a, d) => Date.parse(a.start) < Date.parse(dayISO(addDaysStr(d, 1))) && Date.parse(a.end) > Date.parse(dayISO(d));
+  const cellAppts = (r, d) => appts.filter(a => onDay(a, d) && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length)).sort((x, y) => dayWindow(x, d).start.localeCompare(dayWindow(y, d).start));
   const cap = (list, d) => { const h = list.reduce((s, a) => s + visitHoursOnDay(a, d), 0); return { h, pct: Math.min(100, h / 8 * 100), cls: h > 10 ? 'over' : h >= 8 ? 'full' : '' }; };
   const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
+    ${projs.length ? `<div class="card wk-proj"><div class="row spread"><h2 style="margin:0">Commercial projects this week</h2><span class="small muted">Crew on site each day — click a day to change that day's crew</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Project</th>${days.map(d => `<th class="${d === todayStr() ? 'today' : ''}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</th>`).join('')}<th></th></tr></thead>
+      <tbody>${projs.map(pj => `<tr><td><a href="#/jobs/${pj.id}?tab=project"><b>${esc(pj.number)}</b></a> ${esc(pj.title)}<div class="small muted">${esc(pj.customer_company || pj.customer_name)}${pj.end_date ? ` · until ${fmtDate(pj.end_date)}` : ''}</div></td>
+        ${days.map(d => { const vs = appts.filter(a => a.job_id === pj.id && onDay(a, d)); const inRange = (!pj.start_date || d >= pj.start_date) && (!pj.end_date || d <= pj.end_date);
+          const weekday = ![0, 6].includes(new Date(d + 'T12:00:00').getDay());
+          return `<td class="${!vs.length && inRange && weekday ? 'nocrew' : ''}">${vs.map(a => `<a href="#" class="crewlink" data-pa="${a.id}" data-pd="${d}" title="${esc(`${fmtTime(dayWindow(a, d).start)}–${fmtTime(dayWindow(a, d).end)}`)}">${esc(a.tech_names ? a.tech_names.split(', ').map(n => n.split(' ')[0]).join(', ') : 'Unassigned')}</a>`).join('<br>') || (inRange && weekday ? '<span class="muted small">no crew</span>' : '')}</td>`; }).join('')}
+        <td><button class="btn sm" data-pcrew="${pj.id}">+ Crew</button></td></tr>`).join('')}</tbody></table></div></div>` : ''}
     <div class="wk"><div class="h">Tech</div>${days.map(d => `<div class="h ${d === todayStr() ? 'today' : ''}"><a href="#/schedule${qs({ view: 'board', date: d })}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</a></div>`).join('')}
     ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}" style="grid-column:1/-1"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? '' : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + totals.get(r), 0), 1)}h booked this week`}</span></div>` : ''}
     ${g.rows.map(r => `<div class="tech"><span class="dot" style="background:${esc(r.color)}"></span> ${esc(r.name)}<div class="small muted">${num(totals.get(r), 1)} h booked</div></div>
       ${days.map(d => { const list = cellAppts(r, d); const c = cap(list, d); return `<div class="cell" data-tech="${r.id}" data-day="${d}">
         ${r.id && list.length ? `<div class="cap ${c.cls}" title="${num(c.h, 1)} of 8 h"><i style="width:${c.pct}%"></i></div>` : ''}
-        ${list.map(a => `<a class="chip st-${a.status} ${a.kind === 'estimate' ? 'est' : ''}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" href="${a.href}"><b>${fmtTime(a.start)}–${fmtTime(a.end)}</b> ${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
+        ${list.map(a => { const w = dayWindow(a, d); return `<a class="chip st-${a.status} ${a.kind === 'estimate' ? 'est' : ''} ${isMultiDay(a) ? 'multi' : ''}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" data-day="${d}" href="${a.href}"><b>${fmtTime(w.start)}–${fmtTime(w.end)}</b> ${dayTag(a, d)}${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`; }).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
     <div style="margin-top:8px">${legend()}</div>`;
   bindDatePick('week');
   if (!isOffice()) return;
   $('#newjob').onclick = () => jobForm({});
   if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
+  $$('[data-pa]').forEach(l => l.onclick = e => { e.preventDefault(); apptForm(byId[l.dataset.pa], { day: l.dataset.pd }); });
+  $$('[data-pcrew]').forEach(bt => bt.onclick = () => {
+    const pj = projs.find(x => x.id === Number(bt.dataset.pcrew));
+    const from = [monday, pj.start_date].filter(Boolean).sort().pop(), fri = addDaysStr(monday, 4), to = [fri, pj.end_date].filter(Boolean).sort()[0] < from ? from : [fri, pj.end_date].filter(Boolean).sort()[0];
+    apptForm({ job_id: pj.id, job_number: pj.number, customer_name: pj.customer_company || pj.customer_name, job_title: pj.title, start: dayISO(from, 7), end: dayISO(to, 15.5), tech_ids: pj.foreman_id ? [pj.foreman_id] : [] });
+  });
   $$('.wk .chip').forEach(c => {
-    c.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', `${c.dataset.appt}:${c.dataset.row}`));
-    c.addEventListener('click', e => { if (e.metaKey || e.ctrlKey) return; e.preventDefault(); apptForm(byId[c.dataset.appt]); });
+    c.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', `${c.dataset.appt}:${c.dataset.row}:${c.dataset.day}`));
+    c.addEventListener('click', e => { if (e.metaKey || e.ctrlKey) return; e.preventDefault(); apptForm(byId[c.dataset.appt], { day: c.dataset.day }); });
   });
   $$('.wk .cell').forEach(cell => {
     cell.addEventListener('dragover', e => { e.preventDefault(); cell.classList.add('over'); });
     cell.addEventListener('dragleave', () => cell.classList.remove('over'));
     cell.addEventListener('drop', async e => {
       e.preventDefault(); cell.classList.remove('over');
-      const [aid, fromRow] = e.dataTransfer.getData('text/plain').split(':').map(Number);
+      const [aidS, fromRowS, fromDay] = e.dataTransfer.getData('text/plain').split(':');
+      const aid = Number(aidS), fromRow = Number(fromRowS);
       const a = byId[aid]; if (!a) return;
+      // one day of a multi-day visit dropped on another tech, same day: that day's crew changes, nothing else
+      if (isMultiDay(a) && fromDay === cell.dataset.day) {
+        const toRow = Number(cell.dataset.tech); if (toRow === fromRow) return;
+        let crew = a.tech_ids.filter(id => id !== fromRow); if (toRow && !crew.includes(toRow)) crew.push(toRow);
+        try { const r = await changeVisitDay(a, fromDay, { tech_ids: crew }); toast(`${a.job_number}: crew changed for ${fmtDate(fromDay)} only`); warnConflicts(r); } catch (err) { toast(err.message, true); }
+        return route();
+      }
+      if (isMultiDay(a) && !confirm(`${a.job_number} runs ${visitDays(a).length} days. Move the whole visit so it starts ${fmtDate(cell.dataset.day)}?`)) return;
       const s = new Date(a.start), dur = new Date(a.end) - s;
       const ns = new Date(cell.dataset.day + 'T00:00:00'); ns.setHours(s.getHours(), s.getMinutes());
       const toRow = Number(cell.dataset.tech);

@@ -468,3 +468,14 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 /* job search box inside line-item tables */
 table.items .lk-job { min-width: 200px; }
 table.items .lk-job .lk-q { width: 100%; }
+
+/* multi-day visits */
+.day-tag { display: inline-block; font-size: 10px; font-weight: 600; padding: 0 4px; border-radius: 3px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); vertical-align: 1px; }
+.chip.multi { border-left-width: 4px; }
+
+/* week view: commercial projects strip */
+.wk-proj { margin-bottom: 14px; }
+.wk-proj table { font-size: 13px; }
+.wk-proj th.today { color: var(--brand); }
+.wk-proj td.nocrew { background: var(--warn-soft); }
+.wk-proj .crewlink { text-decoration: none; }

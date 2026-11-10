@@ -183,6 +183,8 @@ module.exports = function projectRoutes(app, db, X) {
     const st = req.query.status === 'all' ? '' : req.query.status === 'closed' ? "AND j.status IN ('completed','invoiced','cancelled')" : "AND j.status NOT IN ('completed','invoiced','cancelled')";
     let rows = all(db, `${jobSelect} WHERE j.is_project = 1 ${st} ORDER BY COALESCE(j.end_date, '9999'), j.id DESC`).map(fixTechs);
     if (!isOffice(req.user)) rows = rows.filter(j => canSee(req, j));
+    if (req.query.lite) return res.json(rows.map(j => ({ id: j.id, number: j.number, title: j.title, status: j.status, customer_name: j.customer_name, customer_company: j.customer_company,
+      start_date: j.start_date, end_date: j.end_date, address: j.address, city: j.city, foreman_id: j.foreman_id })));
     res.json(rows.map(j => ({ ...j, pm_name: (get(db, 'SELECT name FROM users WHERE id = ?', j.project_manager_id) || {}).name || null,
       foreman_name: (get(db, 'SELECT name FROM users WHERE id = ?', j.foreman_id) || {}).name || null, summary: summary(j) })));
   }));
