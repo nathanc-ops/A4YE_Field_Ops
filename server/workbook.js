@@ -572,8 +572,7 @@ module.exports = function workbookRoutes(app, db, X) {
     });
     res.json({ rows, totals: { hours: r2(rows.reduce((x, r) => x + r.hours, 0)), labor_cost: r2(rows.reduce((x, r) => x + r.labor_cost, 0)) } });
   }));
-  app.get('/api/projects/:id/cost-log', wrap((req, res) => {
-    const job = project(req, req.params.id);
+  function costLog(job) {
     const typeOf = cat => /sub/i.test(cat || '') ? 'S' : /equip|rental/i.test(cat || '') ? 'E' : /material|supply/i.test(cat || '') ? 'M' : 'O';
     const rows = [];
     for (const l of all(db, `SELECT l.*, p.number po_number, p.status po_status, p.order_date, v.name vendor, cc.code cost_code FROM po_lines l JOIN purchase_orders p ON p.id = l.po_id
@@ -594,7 +593,82 @@ module.exports = function workbookRoutes(app, db, X) {
       rows.push({ date: b.bill_date, cost_code: b.cost_code, type: 'O', vendor: b.vendor, ref: b.vendor_invoice, description: b.description, status: 'Invoiced', committed_cost: null, invoiced_cost: r2(b.amount), total_cost: r2(b.amount), open_commit: 0 });
     rows.sort((x, y) => String(y.date || '').localeCompare(String(x.date || '')));
     const t = k => r2(rows.reduce((x, r) => x + (r[k] || 0), 0));
-    res.json({ rows, totals: { committed_cost: t('committed_cost'), invoiced_cost: t('invoiced_cost'), total_cost: t('total_cost'), open_commit: t('open_commit') } });
+    return { rows, totals: { committed_cost: t('committed_cost'), invoiced_cost: t('invoiced_cost'), total_cost: t('total_cost'), open_commit: t('open_commit') } };
+  }
+  app.get('/api/projects/:id/cost-log', wrap((req, res) => res.json(costLog(project(req, req.params.id)))));
+
+  // ================================================================ Weekly History & trends (earned value by week)
+  // Every row recalculates from the logs, so a back-dated entry still lands in the right week. % complete per week is
+  // what was recorded for that week (captured automatically each week, or typed over by the PM); weeks with nothing
+  // recorded fall back to hours burned ÷ budget hours, like the workbook. Money is cumulative through each week ending.
+  const weekEnd = d => addD(mondayOf(d), 6);
+  const currentPct = job => { const p = Bill.fixedSummary(db, job.id).percent_complete; return p == null ? null : Math.min(100, Math.max(0, p)); };
+  function snapshotProgress(job) {
+    const pct = currentPct(job); if (pct == null) return;
+    run(db, `INSERT INTO project_progress (job_id, week_ending, pct_complete, source) VALUES (?, ?, ?, 'auto')
+      ON CONFLICT(job_id, week_ending) DO UPDATE SET pct_complete = excluded.pct_complete, updated_at = datetime('now') WHERE project_progress.source = 'auto'`, job.id, weekEnd(today()), r2(pct));
+  }
+  app.locals.snapshotProgress = () => { for (const j of all(db, "SELECT * FROM jobs WHERE is_project = 1 AND status NOT IN ('completed', 'invoiced', 'cancelled')")) snapshotProgress(j); };
+  function weeklyHistory(job) {
+    snapshotProgress(job);
+    const cfg = schedCfg(), entries = laborEntries(job), tasks = taskRows(job, today(), entries), log = costLog(job).rows;
+    const bh = get(db, 'SELECT SUM(budget_hours) h FROM job_budgets WHERE job_id = ?', job.id).h ?? job.budget_hours ?? 0;
+    const baseBudget = Bill.budgetCost(db, job) || 0, contract = job.contract_amount || 0;
+    const cos = all(db, 'SELECT * FROM estimates WHERE job_id = ? AND change_order = 1', job.id).map(e => { const t = C.estimateWithTotals(db, e);
+      return { status: e.status, approved: ymd(e.approved_at), created: ymd(e.created_at), price: r2(t.subtotal - t.discount), cost: r2(t.cost) }; });
+    const invs = Bill.fixedSummary(db, job.id).invoices.filter(i => i.status !== 'void' && i.status !== 'draft');
+    const pays = all(db, `SELECT p.amount, p.paid_at FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.job_id = ? AND i.status != 'void'`, job.id);
+    const rfis = all(db, 'SELECT date_sent, date_returned, status FROM rfis WHERE job_id = ?', job.id);
+    const sq = all(db, 'SELECT date, closed_date FROM safety_items WHERE job_id = ?', job.id);
+    const stored = new Map(all(db, 'SELECT * FROM project_progress WHERE job_id = ?', job.id).map(r => [r.week_ending, r]));
+    const firsts = [job.schedule_start, ymd(job.start_date), ...tasks.map(t => ymd(t.start_date)), ...entries.map(e => e.date)].filter(Boolean).sort();
+    const end = weekEnd(today());
+    let we = weekEnd(firsts[0] || today());
+    if (days(we, end) / 7 > 103) we = addD(end, -7 * 103);
+    const plannedThrough = d => tasks.reduce((x, r) => { const a = ymd(r.start_date), b = ymd(r.finish_date);
+      if (!a || !b || !r.budget_hours || d < a) return x; return x + r.budget_hours * Math.min(1, (days(a, d) + 1) / Math.max(1, days(a, b) + 1)); }, 0);
+    const out = [];
+    for (let wk = 1; we <= end; wk++, we = addD(we, 7)) {
+      const ws = addD(we, -6), upto = e => e.date <= we;
+      const approved = cos.filter(c => c.status === 'approved' && c.approved && c.approved <= we);
+      const revContract = r2(contract + approved.reduce((x, c) => x + c.price, 0)), revBudget = r2(baseBudget + approved.reduce((x, c) => x + c.cost, 0));
+      const actualHrs = r1(entries.filter(upto).reduce((x, e) => x + e.hours, 0));
+      const rec = stored.get(we);
+      const rawPct = rec ? rec.pct_complete : bh ? Math.min(100, actualHrs / bh * 100) : null, pct = rawPct == null ? null : Math.round(rawPct * 10) / 10;
+      const plannedHrs = r1(plannedThrough(we));
+      const ac = r2(entries.filter(upto).reduce((x, e) => x + e.cost, 0) + log.filter(r => r.date && r.date <= we).reduce((x, r) => x + (r.total_cost || 0), 0));
+      const ev = pct == null ? null : Math.round(revBudget * pct / 100);
+      const earnedHrs = pct == null ? null : r1(bh * pct / 100);
+      const proj = pct == null ? null : pct > 2 ? Math.round(ac / (pct / 100)) : revBudget;
+      out.push({ wk, week_start: ws, week_ending: we, revised_contract: revContract, revised_budget: revBudget, pct_complete: pct,
+        pct_source: rec ? rec.source : 'hours', pct_note: rec ? rec.note : null,
+        pv: bh ? Math.round(revBudget * Math.min(plannedHrs, bh) / bh) : null, ev, ac, open_commit: r2(log.filter(r => r.date && r.date <= we).reduce((x, r) => x + (r.open_commit || 0), 0)),
+        cpi: ev != null && ac >= 0.05 * revBudget && ac > 0 ? Math.round(ev / ac * 100) / 100 : null,
+        planned_hours: plannedHrs, earned_hours: earnedHrs, actual_hours: actualHrs,
+        spi: earnedHrs != null && plannedHrs >= 0.05 * bh && plannedHrs > 0 ? Math.round(earnedHrs / plannedHrs * 100) / 100 : null,
+        projected_cost: proj, projected_margin_pct: proj != null && revContract ? Math.round((revContract - proj) / revContract * 1000) / 10 : null,
+        billed: r2(invs.filter(i => ymd(i.issue_date) <= we).reduce((x, i) => x + i.amount, 0)), cash: r2(pays.filter(p => ymd(p.paid_at) <= we).reduce((x, p) => x + p.amount, 0)),
+        pending_co: r2(cos.filter(c => c.created <= we && ['draft', 'sent', 'viewed'].includes(c.status)).reduce((x, c) => x + c.price, 0)),
+        open_rfis: rfis.filter(r => r.date_sent && r.date_sent <= we && (!r.date_returned || r.date_returned > we) && !['Closed', 'Void'].includes(r.status)).length,
+        open_safety: sq.filter(x => x.date <= we && (!x.closed_date || x.closed_date > we)).length,
+        crew: Math.round(entries.filter(e => e.date >= ws && e.date <= we).reduce((x, e) => x + e.hours, 0) / (cfg.hours_per_day * cfg.days_per_week) * 10) / 10 });
+    }
+    return { weeks: out, budget_hours: bh, current_week_ending: end };
+  }
+  app.get('/api/projects/:id/weekly-history', wrap((req, res) => res.json(weeklyHistory(project(req, req.params.id)))));
+  // the PM types over a week's % complete with what was actually reported (blank goes back to automatic)
+  app.put('/api/projects/:id/progress', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), b = req.body || {};
+    if (!isDate(b.week_ending || '')) throw bad('week_ending must be a date');
+    const we = weekEnd(b.week_ending);
+    if (we > weekEnd(today())) throw bad('That week has not happened yet');
+    if (b.pct_complete === null || b.pct_complete === '') { run(db, 'DELETE FROM project_progress WHERE job_id = ? AND week_ending = ?', job.id, we); return res.json({ ok: true }); }
+    const pct = Number(b.pct_complete);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw bad('% complete is 0 to 100');
+    run(db, `INSERT INTO project_progress (job_id, week_ending, pct_complete, source, note, updated_by) VALUES (?, ?, ?, 'manual', ?, ?)
+      ON CONFLICT(job_id, week_ending) DO UPDATE SET pct_complete = excluded.pct_complete, source = 'manual', note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`,
+      job.id, we, pct, b.note || null, req.user.id);
+    res.json({ ok: true });
   }));
 
   // counts for dashboards and flags

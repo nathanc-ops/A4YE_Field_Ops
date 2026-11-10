@@ -30,3 +30,7 @@ setTimeout(plySync, 40000).unref();
 setInterval(plySync, 60 * 60 * 1000).unref();
 // finish requests in flight and close the database cleanly on restart/shutdown
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { server.close(() => { try { db.close(); } catch { /* already closed */ } process.exit(0); }); server.closeIdleConnections(); setTimeout(() => process.exit(0), 5000).unref(); });
+// Weekly History: record each open project's current % complete for this week (hourly, so the week's last value sticks)
+const snap = () => { try { if (app.locals.snapshotProgress) app.locals.snapshotProgress(); } catch (e) { console.error('Progress snapshot failed:', e.message); } };
+setTimeout(snap, 30 * 1000).unref();
+setInterval(snap, 60 * 60 * 1000).unref();

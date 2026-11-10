@@ -777,6 +777,21 @@ const MIGRATIONS = [
     for (const [k, v] of [['sched_hours_per_day', '8'], ['sched_days_per_week', '5'], ['sched_crew_availability', '0.92'], ['sched_max_crew', '10']])
       db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
   },
+  // 19: weekly % complete history (the workbook's Weekly History) — captured automatically each week, the PM can type over it
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS project_progress (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      week_ending TEXT NOT NULL,              -- Sunday
+      pct_complete REAL NOT NULL,             -- 0-100
+      source TEXT NOT NULL DEFAULT 'auto' CHECK (source IN ('auto', 'manual')),
+      note TEXT,
+      updated_by INTEGER REFERENCES users(id),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (job_id, week_ending)
+    );`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

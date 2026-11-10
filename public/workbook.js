@@ -3,7 +3,7 @@
  * Sheets, in the workbook's order: Dashboard · Schedule & Gantt · Cost Codes · Labor Log · Cost Log · Change Orders · SOV · Billing Entry ·
  * Pay Apps · Pay App (G702/G703) · RFI-Submittal · Safety-Quality · Milestones · Daily Logs. */
 const WB_SHEETS = [
-  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
+  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['history', 'Weekly History'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
   ['sov', 'SOV', 'bill'], ['billing', 'Billing Entry', 'bill'], ['payapps', 'Pay Apps', 'bill'], ['g702', 'Pay App (G702/G703)', 'bill'],
   ['rfi', 'RFI-Submittal'], ['safety', 'Safety-Quality'], ['milestones', 'Milestones'], ['logs', 'Daily Logs'],
 ];
@@ -20,7 +20,7 @@ async function projectTab(j, T) {
   T.innerHTML = `<div class="wb-tabs no-print">${sheets.map(([k, l]) => `<a href="#/jobs/${j.id}?tab=project&sheet=${k}" class="${k === sheet ? 'on' : ''}">${l}</a>`).join('')}</div><div id="wbs"></div>`;
   const W = $('#wbs', T);
   if (['dashboard', 'codes', 'logs'].includes(sheet)) return projectCoreSheet(j, W, sheet);
-  return ({ schedule: wbSchedule, manpower: wbManpower, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
+  return ({ schedule: wbSchedule, manpower: wbManpower, history: wbHistory, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
 }
 
 // ------------------------------------------------------------ Schedule & Gantt
@@ -148,6 +148,70 @@ async function wbManpower(j, W) {
     ${d.weeks.some(w => w.planned_hours || w.actual_hours) ? crewChart(d.weeks, d.cfg, todayStr()) : '<div class="empty">No scheduled or actual hours yet — add tasks with dates and budget hours on the Schedule sheet.</div>'}
     <div style="margin-top:12px">${table(cols, d.weeks)}</div></div>`;
   $('#mcsv', W).onclick = () => toCSV(cols, d.weeks, `${j.number}_manpower.csv`);
+}
+
+// ------------------------------------------------------------ Weekly History & trends
+// Cumulative S-curve (planned / earned / actual) with a crosshair tooltip, and the workbook's weekly table.
+function sCurve(weeks, series, fmt) {
+  const pts = weeks.length; if (pts < 2) return '<div class="empty">Trends appear after the second week</div>';
+  const Wd = 760, Hd = 220, L = 56, R = 12, T = 10, B = 26, w = Wd - L - R, h = Hd - T - B;
+  const max = Math.max(1, ...series.flatMap(s => weeks.map(x => x[s.key] || 0))) * 1.08;
+  const X = i => L + (pts === 1 ? w / 2 : i / (pts - 1) * w), Y = v => T + h - v / max * h;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => max / 1.08 * f);
+  const every = Math.ceil(pts / 8);
+  const path = s => { let d = '', pen = false; weeks.forEach((x, i) => { const v = x[s.key]; if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; pen = true; }); return d; };
+  return `<svg class="scurve" viewBox="0 0 ${Wd} ${Hd}" role="img" aria-label="${esc(series.map(s => s.label).join(', '))} by week">
+    <g class="grid">${ticks.map(t => `<line x1="${L}" x2="${Wd - R}" y1="${Y(t)}" y2="${Y(t)}"/><text x="${L - 6}" y="${Y(t) + 4}" text-anchor="end">${fmt(t, true)}</text>`).join('')}</g>
+    ${weeks.map((x, i) => i % every === 0 || i === pts - 1 ? `<text x="${X(i)}" y="${Hd - 8}" text-anchor="middle">${Number(x.week_ending.slice(5, 7))}/${Number(x.week_ending.slice(8))}</text>` : '').join('')}
+    ${series.map(s => `<path class="ln" d="${path(s)}" stroke="var(${s.color})"/>`).join('')}
+    ${weeks.map((x, i) => `<g class="col" data-i="${i}"><rect class="hit" x="${X(i) - w / pts / 2}" y="${T}" width="${w / pts}" height="${h}"/><line class="xh" x1="${X(i)}" x2="${X(i)}" y1="${T}" y2="${T + h}"/>
+      ${series.map(s => x[s.key] == null ? '' : `<circle class="dot" cx="${X(i)}" cy="${Y(x[s.key])}" r="4" fill="var(${s.color})"/>`).join('')}</g>`).join('')}
+  </svg><div class="sc-legend">${series.map(s => `<span><i style="background:var(${s.color})"></i>${esc(s.label)}</span>`).join('')}</div>`;
+}
+function sCurveTips(el, weeks, series, fmt) {
+  let tip = $('.sc-tip'); if (!tip) { tip = document.createElement('div'); tip.className = 'sc-tip'; document.body.appendChild(tip); }
+  $$('.scurve g.col', el).forEach(g => {
+    const x = weeks[Number(g.dataset.i)];
+    g.onmousemove = e => { tip.style.display = 'block'; tip.style.left = Math.min(e.clientX + 14, innerWidth - 220) + 'px'; tip.style.top = (e.clientY + 12) + 'px';
+      tip.innerHTML = `<b>Week ending ${esc(wbDate(x.week_ending))}</b>${series.map(s => `<div><i style="background:var(${s.color})"></i>${esc(s.label)}: <b>${x[s.key] == null ? '—' : fmt(x[s.key])}</b></div>`).join('')}`; };
+    g.onmouseleave = () => { tip.style.display = 'none'; };
+  });
+}
+async function wbHistory(j, W) {
+  const d = await GET(`/projects/${j.id}/weekly-history`), seeCost = can('see_costs'), editPct = isOffice() && can('projects');
+  const weeks = d.weeks, last = weeks[weeks.length - 1] || {};
+  const n1 = v => v == null ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  const m0 = (v, short) => v == null ? '—' : short && Math.abs(v) >= 1000 ? '$' + (v / 1000).toLocaleString(undefined, { maximumFractionDigits: 0 }) + 'k' : money0(v);
+  const h0 = (v, short) => v == null ? '—' : Math.round(v).toLocaleString() + (short ? '' : ' hrs');
+  const series = seeCost ? [{ key: 'pv', label: 'Planned value (PV)', color: '--s1' }, { key: 'ev', label: 'Earned value (EV)', color: '--s2' }, { key: 'ac', label: 'Actual cost (AC)', color: '--s3' }]
+    : [{ key: 'planned_hours', label: 'Planned hours', color: '--s1' }, { key: 'earned_hours', label: 'Earned hours', color: '--s2' }, { key: 'actual_hours', label: 'Actual hours', color: '--s3' }];
+  const fmt = seeCost ? m0 : h0;
+  const idx = v => v == null ? '' : `<span style="${v < 0.9 ? 'color:var(--bad);font-weight:600' : ''}">${v.toFixed(2)}</span>`;
+  const cols = [{ label: 'Wk', key: 'wk' }, { label: 'Week ending', get: r => shortD(r.week_ending), csv: r => r.week_ending },
+    ...(seeCost ? [{ label: 'Revised contract', num: 1, get: r => money0(r.revised_contract), csv: r => r.revised_contract }, { label: 'Revised budget cost', num: 1, get: r => money0(r.revised_budget), csv: r => r.revised_budget }] : []),
+    { label: '% complete', num: 1, html: r => editPct ? `<input type="number" class="pct-in" min="0" max="100" step="0.5" data-wk="${r.week_ending}" value="${r.pct_complete ?? ''}" title="${r.pct_source === 'manual' ? 'Typed in' + (r.pct_note ? ': ' + esc(r.pct_note) : '') : r.pct_source === 'auto' ? 'Recorded automatically that week' : 'Hours burned ÷ budget hours (nothing recorded that week)'}"><span class="small muted"> ${r.pct_source === 'manual' ? '✎' : r.pct_source === 'auto' ? '●' : '≈'}</span>` : r.pct_complete == null ? '' : `${n1(r.pct_complete)}%`, csv: r => r.pct_complete },
+    ...(seeCost ? [{ label: 'PV', num: 1, get: r => r.pv == null ? '' : money0(r.pv), csv: r => r.pv }, { label: 'EV', num: 1, get: r => r.ev == null ? '' : money0(r.ev), csv: r => r.ev }, { label: 'AC', num: 1, get: r => money0(r.ac), csv: r => r.ac },
+      { label: 'Open commit', num: 1, get: r => r.open_commit ? money0(r.open_commit) : '', csv: r => r.open_commit }, { label: 'CPI', num: 1, html: r => idx(r.cpi), csv: r => r.cpi ?? '' }] : []),
+    { label: 'Planned hrs', num: 1, get: r => n1(r.planned_hours), csv: r => r.planned_hours }, { label: 'Earned hrs', num: 1, get: r => n1(r.earned_hours), csv: r => r.earned_hours },
+    { label: 'Actual hrs', num: 1, get: r => n1(r.actual_hours), csv: r => r.actual_hours }, { label: 'SPI', num: 1, html: r => idx(r.spi), csv: r => r.spi ?? '' },
+    ...(seeCost ? [{ label: 'Projected cost', num: 1, get: r => r.projected_cost == null ? '' : money0(r.projected_cost), csv: r => r.projected_cost }, { label: 'Proj. margin', num: 1, get: r => r.projected_margin_pct == null ? '' : r.projected_margin_pct + '%', csv: r => r.projected_margin_pct },
+      { label: 'Billed to date', num: 1, get: r => money0(r.billed), csv: r => r.billed }, { label: 'Cash received', num: 1, get: r => money0(r.cash), csv: r => r.cash }, { label: 'Pending CO', num: 1, get: r => r.pending_co ? money0(r.pending_co) : '', csv: r => r.pending_co }] : []),
+    { label: 'Open RFIs', num: 1, get: r => r.open_rfis || '', csv: r => r.open_rfis }, { label: 'Open safety', num: 1, get: r => r.open_safety || '', csv: r => r.open_safety }, { label: 'Crew', num: 1, get: r => n1(r.crew), csv: r => r.crew }];
+  W.innerHTML = `<div class="card"><div class="row spread"><h2>Weekly History &amp; Trends</h2><div class="row no-print"><button class="btn sm" id="hcsv">CSV</button><button class="btn sm" onclick="print()">Print</button></div></div>
+    <p class="small muted">Every week recalculates from the logs, cumulative through its week ending. % complete is what was recorded that week (● captured automatically each week, ✎ typed in); weeks with nothing recorded use hours burned ÷ budget hours (≈).${editPct ? ' Type over any week with the progress you actually reported to the GC — that makes CPI and the earned-value curve yours rather than a proxy. Clear it to go back to automatic.' : ''}</p>
+    <div class="grid g4" style="margin:12px 0">${seeCost ? kpi('CPI', last.cpi == null ? '—' : last.cpi.toFixed(2), 'earned ÷ actual cost') : kpi('% complete', last.pct_complete == null ? '—' : n1(last.pct_complete) + '%', '')}${kpi('SPI', last.spi == null ? '—' : last.spi.toFixed(2), 'earned ÷ planned hours')}
+      ${seeCost ? kpi('Projected margin', last.projected_margin_pct == null ? '—' : last.projected_margin_pct + '%', last.projected_cost == null ? '' : `projected cost ${money0(last.projected_cost)}`) : kpi('Actual hours', n1(last.actual_hours), `of ${n1(d.budget_hours)} budgeted`)}
+      ${kpi('Weeks tracked', weeks.length, `${weeks.filter(w => w.pct_source !== 'hours').length} with recorded progress`)}</div>
+    ${sCurve(weeks, series, fmt)}
+    <div style="margin-top:12px">${table(cols, weeks.slice().reverse())}</div></div>`;
+  sCurveTips(W, weeks, series, v => fmt(v));
+  $('#hcsv', W).onclick = () => toCSV(cols, weeks, `${j.number}_weekly_history.csv`);
+  $$('[data-wk]', W).forEach(inp => inp.onchange = async () => {
+    const v = inp.value;
+    if (v !== '' && (Number(v) < 0 || Number(v) > 100)) return toast('% complete is 0 to 100', true);
+    const note = v === '' ? null : prompt('Note for this week (optional, e.g. "per GC walk 11/6")', '') || null;
+    if (await act(() => PUT(`/projects/${j.id}/progress`, { week_ending: inp.dataset.wk, pct_complete: v, note }), v === '' ? 'Back to automatic' : 'Recorded').catch(() => null)) route();
+  });
 }
 
 // ------------------------------------------------------------ Labor Log / Cost Log

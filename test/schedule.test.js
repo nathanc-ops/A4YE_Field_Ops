@@ -144,3 +144,33 @@ test('manpower loading: class split from foreman/title, overtime past 40 h acros
   assert.ok(a.data.jobs.some(j => j.id === ids.job && j.planned_crew.some(Boolean)));
   assert.equal((await call('tech', 'GET', '/manpower')).status, 403);
 });
+
+test('weekly history: cumulative PV/EV/AC by week, recorded % beats the hours proxy, PM can type over a week', async () => {
+  const h = await call('admin', 'GET', `/projects/${ids.job}/weekly-history`);
+  assert.equal(h.status, 200, JSON.stringify(h.data));
+  const W = h.data.weeks, last = W[W.length - 1];
+  assert.equal(last.week_ending, h.data.current_week_ending);
+  assert.equal(new Date(last.week_ending + 'T00:00:00Z').getUTCDay(), 0, 'weeks end Sunday');
+  assert.ok(W.length >= 3);
+  for (let i = 1; i < W.length; i++) assert.ok(W[i].actual_hours >= W[i - 1].actual_hours && W[i].ac >= W[i - 1].ac, 'cumulative');
+  assert.equal(last.pct_source, 'auto', 'this week captured automatically');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM project_progress WHERE job_id = ?').get(ids.job).n, 1);
+  // an earlier week falls back to hours ÷ budget hours
+  const early = W.find(w => w.actual_hours > 0 && w.pct_source === 'hours');
+  assert.equal(early.pct_complete, Math.round(early.actual_hours / h.data.budget_hours * 1000) / 10);
+  assert.equal(early.ev, Math.round(early.revised_budget * early.pct_complete / 100));
+  // PM types over it
+  assert.equal((await call('admin', 'PUT', `/projects/${ids.job}/progress`, { week_ending: early.week_start, pct_complete: 30, note: 'per GC walk' })).status, 200);
+  let w2 = (await call('admin', 'GET', `/projects/${ids.job}/weekly-history`)).data.weeks.find(w => w.week_ending === early.week_ending);
+  assert.equal(w2.pct_complete, 30); assert.equal(w2.pct_source, 'manual'); assert.equal(w2.earned_hours, Math.round(h.data.budget_hours * 0.3 * 10) / 10);
+  // the automatic snapshot never overwrites a manual week
+  await call('admin', 'PUT', `/projects/${ids.job}/progress`, { week_ending: last.week_ending, pct_complete: 12 });
+  await call('admin', 'GET', `/projects/${ids.job}/weekly-history`);
+  assert.equal(db.prepare('SELECT pct_complete FROM project_progress WHERE job_id = ? AND week_ending = ?').get(ids.job, last.week_ending).pct_complete, 12);
+  // blank → back to automatic / hours
+  await call('admin', 'PUT', `/projects/${ids.job}/progress`, { week_ending: early.week_ending, pct_complete: '' });
+  w2 = (await call('admin', 'GET', `/projects/${ids.job}/weekly-history`)).data.weeks.find(w => w.week_ending === early.week_ending);
+  assert.equal(w2.pct_source, 'hours');
+  assert.equal((await call('admin', 'PUT', `/projects/${ids.job}/progress`, { week_ending: '2099-01-04', pct_complete: 5 })).status, 400, 'future week');
+  assert.equal((await call('tech', 'PUT', `/projects/${ids.job}/progress`, { week_ending: early.week_ending, pct_complete: 5 })).status, 403);
+});
