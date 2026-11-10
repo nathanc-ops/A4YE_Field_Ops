@@ -563,7 +563,7 @@ async function viewJob(id) {
   if ($('#renum')) $('#renum').onclick = () => formModal({
     title: `Change job number — ${j.number}`, okLabel: 'Change number', values: { number: j.number },
     fields: [{ name: 'number', label: 'New job number', required: true, full: true }],
-    extra: `<p class="small muted" style="margin-top:8px">Everything on the job stays attached (visits, time, invoices, estimates, costs); only the number shown changes, and a note records the old one. To match the A4Y Time Clock, set <b>Time clock job #</b> on the job instead (Edit). New jobs keep counting from the highest J- number, so renumbering to e.g. J-9000 makes the next new job J-9001.</p>`,
+    extra: `<p class="small muted" style="margin-top:8px">Everything on the job stays attached (visits, time, invoices, estimates, costs); only the number shown changes, and a note records the old one. To match the A4Y Time Clock, set <b>Time clock job #</b> on the job instead (Edit). New jobs count on from the highest number in the style set under Settings → Job numbers.</p>`,
     submit: async v => { const r = await PUT(`/jobs/${j.id}/number`, { number: v.number }); toast(`Job is now ${r.number}${r.next_new_job ? ` · next new job will be ${r.next_new_job}` : ''}`); route(); },
   });
   if ($('#reopenjob')) $('#reopenjob').onclick = async () => { await act(() => POST(`/jobs/${j.id}/reopen`), 'Job reopened. Schedule a new visit when ready.'); route(); };
@@ -1487,14 +1487,38 @@ async function viewSettings() {
       ${isAdmin() ? '<div class="row" style="margin-top:12px"><button class="btn primary">Save settings</button></div>' : '<p class="muted">Only admins can change settings.</p>'}</form></div>
     <div class="stack"><div class="card"><h2>Change my password</h2><form id="pw" class="stack">${fieldHtml({ name: 'current', label: 'Current password', type: 'password', required: true })}${fieldHtml({ name: 'next', label: 'New password (8+)', type: 'password', required: true })}<button class="btn">Change password</button></form></div>
     <div class="card"><h2>Email</h2><div id="emailsetup"><div class="muted small">Loading…</div></div></div>
+    ${isAdmin() ? '<div class="card"><h2>Job numbers</h2><div id="jobnums"><div class="muted small">Loading…</div></div></div>' : ''}
     <div class="card"><h2>Appearance</h2><p class="small muted">Applies to this device only.</p><div class="seg">${[['dark', 'Dark (default)'], ['light', 'Light'], ['system', 'Match device']].map(([k, l]) => `<button type="button" data-theme="${k}" class="${themePref() === k ? 'on' : ''}">${l}</button>`).join('')}</div></div></div></div>
     <div id="settings-ext" class="stack" style="margin-top:14px"></div>`;
   settingsExtras($('#settings-ext'));
   emailSetup($('#emailsetup'));
+  if ($('#jobnums')) jobNumberSetup($('#jobnums'));
   if (isAdmin()) $('#sf').onsubmit = async e => { e.preventDefault(); S.settings = await act(() => PUT('/settings', readForm(e.target, fields)), 'Settings saved'); renderShell(); route(); };
   else $$('#sf input, #sf textarea').forEach(i => i.disabled = true);
   $('#pw').onsubmit = async e => { e.preventDefault(); await act(() => POST('/me/password', { current: e.target.current.value, next: e.target.next.value }), 'Password changed'); e.target.reset(); };
   $$('[data-theme]').forEach(b => b.onclick = () => { try { localStorage.setItem('fo_theme', b.dataset.theme); } catch { /* private mode */ } applyTheme(); $$('[data-theme]').forEach(x => x.classList.toggle('on', x === b)); });
+}
+// Settings → Job numbers: prefix ("J-", or blank for plain numbers), where new numbers continue from, and taking the
+// old "J-" off existing jobs (skipping any that would collide with a job already using the plain number).
+async function jobNumberSetup(el) {
+  const d = await GET('/settings/job-numbers');
+  el.innerHTML = `<form id="jnf"><div class="form-grid">
+      ${fieldHtml({ name: 'job_number_prefix', label: 'Prefix (blank = plain numbers like 5816)', placeholder: 'none' }, d.prefix)}
+      ${fieldHtml({ name: 'job_number_next', label: 'Continue from (optional)', type: 'number', placeholder: 'e.g. 5816' }, d.next_floor)}
+    </div><p class="small" style="margin:8px 0">Next new job will be <b>${esc(d.next)}</b>. New numbers count on from the highest job already numbered this way (and never below "Continue from"). Admins can change any one job's number with the <b>Job #</b> button on the job.</p>
+    <div class="row"><button class="btn primary">Save</button>${d.with_j_prefix && d.prefix !== 'J-' ? `<button type="button" class="btn" id="stripj">Remove "J-" from ${d.with_j_prefix.toLocaleString()} existing job${d.with_j_prefix === 1 ? '' : 's'}…</button>` : ''}</div></form>`;
+  $('#jnf', el).onsubmit = async e => { e.preventDefault(); const f = e.target;
+    const prefix = f.job_number_prefix.value.trim();
+    if (prefix.length > 10 || /[^A-Za-z0-9 ._\/#-]/.test(prefix)) return toast('Prefixes use letters, numbers and - . _ / # (10 characters at most)', true);
+    await act(() => PUT('/settings', { job_number_prefix: prefix, job_number_next: f.job_number_next.value || '' }), 'Job numbering saved').catch(() => null); jobNumberSetup(el); };
+  if ($('#stripj', el)) $('#stripj', el).onclick = async () => {
+    const plan = await POST('/jobs/remove-prefix', { prefix: 'J-', dry_run: true });
+    const msg = `Change ${plan.would_change.toLocaleString()} job number(s) from "J-1234" to "1234"?` + (plan.clashes.length ? `\n\n${plan.clashes.length} will be skipped because a job already uses the plain number (e.g. ${plan.clashes.slice(0, 3).map(c => `${c.from} → ${c.to} is taken by ${c.taken_by}`).join('; ')}).` : '') + '\n\nEach job keeps a note of its old number.';
+    if (!confirm(msg)) return;
+    const r = await act(() => POST('/jobs/remove-prefix', { prefix: 'J-' }), null).catch(() => null);
+    if (r) toast(`${r.changed.toLocaleString()} job(s) renumbered${r.skipped.length ? ` · ${r.skipped.length} skipped (number taken)` : ''} · next new job ${r.next}`);
+    jobNumberSetup(el);
+  };
 }
 // Settings → Email: pick the provider, enter the account, send a test. The password is stored as a secret on the server
 // and never sent back to the browser. A server with SMTP_* environment variables uses those instead (shown, not editable).

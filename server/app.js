@@ -451,6 +451,35 @@ function createApp(db) {
     });
     res.json({ id });
   }));
+  // job numbering (Settings → Job numbers): what the next new job will be, and dropping an old prefix from existing jobs
+  const prefixPlan = prefix => {
+    const rows = all(db, 'SELECT id, number FROM jobs WHERE substr(number, 1, ?) = ? AND length(number) > ?', prefix.length, prefix, prefix.length);
+    const out = { change: [], clash: [] };
+    for (const r of rows) {
+      const plain = r.number.slice(prefix.length);
+      const other = get(db, 'SELECT number FROM jobs WHERE lower(number) = lower(?) AND id != ?', plain, r.id);
+      (other ? out.clash : out.change).push({ id: r.id, from: r.number, to: plain, ...(other ? { taken_by: other.number } : {}) });
+    }
+    return out;
+  };
+  app.get('/api/settings/job-numbers', wrap((req, res) => {
+    if (req.user.role !== 'admin') throw bad('Admins only', 403);
+    const s = D.settings(db), prefix = s.job_number_prefix == null ? 'J-' : s.job_number_prefix;
+    const plan = prefixPlan('J-');
+    res.json({ prefix, next: D.nextJobNumber(db), next_floor: s.job_number_next || '', with_j_prefix: plan.change.length + plan.clash.length, clashes: plan.clash.slice(0, 20), clash_count: plan.clash.length });
+  }));
+  app.post('/api/jobs/remove-prefix', wrap((req, res) => {
+    if (req.user.role !== 'admin') throw bad('Only an admin can renumber jobs', 403);
+    const prefix = String((req.body || {}).prefix ?? 'J-');
+    if (!prefix || prefix.length > 10) throw bad('Which prefix should come off?');
+    const plan = prefixPlan(prefix);
+    if (req.body.dry_run) return res.json({ would_change: plan.change.length, clashes: plan.clash });
+    for (const c of plan.change) {
+      update('jobs', c.id, { number: c.to });
+      insert('job_notes', { job_id: c.id, user_id: req.user.id, body: `Job number changed from ${c.from} to ${c.to} (prefix removed)` });
+    }
+    res.json({ changed: plan.change.length, skipped: plan.clash, next: D.nextJobNumber(db) });
+  }));
   // admins can renumber a job (e.g. to match the number used on paperwork or the time clock)
   app.put('/api/jobs/:id/number', wrap((req, res) => {
     if (req.user.role !== 'admin') throw bad('Only an admin can change a job number', 403);
@@ -463,8 +492,7 @@ function createApp(db) {
     if (clash) throw bad(`Job ${clash.number} already exists`);
     update('jobs', job.id, { number });
     insert('job_notes', { job_id: job.id, user_id: req.user.id, body: `Job number changed from ${job.number} to ${number}` });
-    const next = D.nextNumber(db, 'jobs', 'J');
-    res.json({ ok: true, number, next_new_job: next });
+    res.json({ ok: true, number, next_new_job: D.nextJobNumber(db) });
   }));
   app.put('/api/jobs/:id', wrap((req, res) => {
     const job = mustGet('jobs', req.params.id);

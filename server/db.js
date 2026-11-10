@@ -362,7 +362,21 @@ function tx(db, fn) {
 }
 
 // Next free number after the highest one in use (imported records can arrive out of order).
+// Job numbers follow Settings → Jobs: a prefix ("J-" by default; blank = plain numbers like 5816) and an optional
+// "next job number" to continue an existing sequence. Counts on from the highest number already in that style.
+function nextJobNumber(db) {
+  const s = settings(db);
+  const prefix = s.job_number_prefix == null ? 'J-' : String(s.job_number_prefix);
+  const esc = prefix.replace(/[[\]*?]/g, c => `[${c}]`);
+  // numbers in this style: the prefix, then digits only
+  const row = get(db, `SELECT MAX(CAST(substr(number, ?) AS INTEGER)) n FROM jobs WHERE number GLOB ? AND substr(number, ?) NOT GLOB '*[^0-9]*' AND length(number) > ?`,
+    prefix.length + 1, `${esc}[0-9]*`, prefix.length + 1, prefix.length);
+  let n = Math.max(row && row.n ? row.n + 1 : 1001, Number(s.job_number_next) > 0 ? Math.floor(Number(s.job_number_next)) : 0);
+  while (get(db, 'SELECT 1 x FROM jobs WHERE lower(number) = lower(?)', `${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
+}
 function nextNumber(db, table, prefix) {
+  if (table === 'jobs') return nextJobNumber(db);
   const row = get(db, `SELECT MAX(CAST(substr(number, ?) AS INTEGER)) n FROM ${table} WHERE number GLOB ?`, prefix.length + 2, `${prefix}-[0-9]*`);
   let n = row && row.n ? row.n + 1 : 1001;
   while (get(db, `SELECT 1 x FROM ${table} WHERE number = ?`, `${prefix}-${n}`)) n++;
@@ -376,4 +390,4 @@ function settings(db) {
 }
 
 module.exports = {
-  customerSortKey, open, all, get, run, tx, nextNumber, settings, hashPassword, verifyPassword, token };
+  customerSortKey, open, all, get, run, tx, nextNumber, nextJobNumber, settings, hashPassword, verifyPassword, token };

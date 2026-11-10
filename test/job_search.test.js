@@ -70,3 +70,38 @@ test('admins can renumber a job; everyone else cannot; numbers stay unique; hist
   const nj = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Next' })).data.id;
   assert.equal(db.prepare('SELECT number FROM jobs WHERE id = ?').get(nj).number, 'J-5500');
 });
+
+test('job numbers without the J- prefix: plain numbering, continue-from, removing J- from existing jobs', async () => {
+  let d = (await call('admin', 'GET', '/settings/job-numbers')).data;
+  assert.equal(d.prefix, 'J-', 'unchanged installs keep J-');
+  assert.equal((await call('office', 'GET', '/settings/job-numbers')).status, 403);
+  // plain numbers, continuing the company's own sequence
+  await call('admin', 'PUT', '/settings', { job_number_prefix: '', job_number_next: '5816' });
+  d = (await call('admin', 'GET', '/settings/job-numbers')).data;
+  assert.equal(d.prefix, ''); assert.equal(d.next, '5816');
+  const a = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Plain A' })).data.id;
+  const b = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Plain B' })).data.id;
+  assert.equal(db.prepare('SELECT number FROM jobs WHERE id = ?').get(a).number, '5816');
+  assert.equal(db.prepare('SELECT number FROM jobs WHERE id = ?').get(b).number, '5817');
+  // "5815-A" (renamed earlier) and the J- jobs don't confuse the plain sequence
+  assert.equal((await call('admin', 'GET', '/settings/job-numbers')).data.next, '5818');
+  // a job already renamed to a plain number collides with stripping J- from J-5816? set one up: J-5817 exists → clash
+  db.prepare("INSERT INTO jobs (number, customer_id, title, status, billing_type) VALUES ('J-5817', ?, 'old twin', 'invoiced', 'tm')").run(ids.other);
+  const dry = (await call('admin', 'POST', '/jobs/remove-prefix', { prefix: 'J-', dry_run: true })).data;
+  assert.equal(dry.clashes.length, 1); assert.equal(dry.clashes[0].from, 'J-5817'); assert.equal(dry.clashes[0].taken_by, '5817');
+  assert.equal(dry.would_change, 1501, 'the 1,500 history jobs + J-5500 from the earlier test');
+  assert.equal((await call('office', 'POST', '/jobs/remove-prefix', { prefix: 'J-' })).status, 403);
+  const r = (await call('admin', 'POST', '/jobs/remove-prefix', { prefix: 'J-' })).data;
+  assert.equal(r.changed, dry.would_change); assert.equal(r.skipped.length, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM jobs WHERE number = '4007'").get().n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM jobs WHERE number = 'J-5817'").get().n, 1, 'the clash is left alone');
+  const j4007 = db.prepare("SELECT id FROM jobs WHERE number = '4007'").get().id;
+  assert.ok(db.prepare('SELECT 1 x FROM job_notes WHERE job_id = ? AND body LIKE ?').get(j4007, 'Job number changed from J-4007 to 4007%'));
+  // search still finds it by the bare number; the next plain number skips everything taken
+  assert.equal((await call('admin', 'GET', '/jobs?picker=1&q=4007')).data[0].number, '4007');
+  assert.equal(r.next, '5818');
+  // back to a prefix
+  await call('admin', 'PUT', '/settings', { job_number_prefix: 'A4-', job_number_next: '' });
+  const c = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Prefixed' })).data.id;
+  assert.equal(db.prepare('SELECT number FROM jobs WHERE id = ?').get(c).number, 'A4-1001');
+});
