@@ -207,15 +207,15 @@ test('options: no invoices; post to Accounting', async () => {
 
 test('summary blocks under the logs are not entries; a suspicious job # is flagged and can be corrected', async () => {
   const file = workbook({ jobNo: '7824', contract: 7824 }).toString('base64');
-  const p = (await call('admin', 'POST', '/import/job-workbook/preview', { file, file_name: 'A4YE_Job_6424_Notus.xlsx' })).data;
+  const p = (await call('admin', 'POST', '/import/job-workbook/preview', { file, file_name: 'A4YE_Job_6424_Sample.xlsx' })).data;
   const S = Object.fromEntries(p.sections.map(x => [x.key, x]));
   assert.equal(S.cos.count, 2, 'rows 129+ are the status summary'); assert.equal(S.sov.count, 4, 'row 70 is the total');
   assert.equal(p.job_number_doubts.length, 2);
   assert.match(p.job_number_doubts.join(' '), /same as the contract amount/); assert.match(p.job_number_doubts.join(' '), /file name says job 6424/);
   // corrected in the preview: the project gets 6424 and the time clock rows for 6424 are its own
-  const fixed = (await call('admin', 'POST', '/import/job-workbook/preview', { file, file_name: 'A4YE_Job_6424_Notus.xlsx', job_number: '6424' })).data;
+  const fixed = (await call('admin', 'POST', '/import/job-workbook/preview', { file, file_name: 'A4YE_Job_6424_Sample.xlsx', job_number: '6424' })).data;
   assert.equal(fixed.job.number, '6424'); assert.equal(fixed.job.original_number, '7824'); assert.deepEqual(fixed.job_number_doubts, []);
-  const r = (await call('admin', 'POST', '/import/job-workbook', { file, file_name: 'A4YE_Job_6424_Notus.xlsx', job_number: '6424' })).data;
+  const r = (await call('admin', 'POST', '/import/job-workbook', { file, file_name: 'A4YE_Job_6424_Sample.xlsx', job_number: '6424' })).data;
   assert.equal(db.prepare('SELECT timeclock_job FROM jobs WHERE id = ?').get(r.job_id).timeclock_job, '6424');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM estimates WHERE job_id = ? AND change_order = 1').get(r.job_id).n, 2);
   assert.equal((await call('admin', 'POST', '/import/job-workbook/preview', { file, job_number: 'bad number!' })).status, 400);
