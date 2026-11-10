@@ -3,7 +3,7 @@
  * Sheets, in the workbook's order: Dashboard · Schedule & Gantt · Cost Codes · Labor Log · Cost Log · Change Orders · SOV · Billing Entry ·
  * Pay Apps · Pay App (G702/G703) · RFI-Submittal · Safety-Quality · Milestones · Daily Logs. */
 const WB_SHEETS = [
-  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['history', 'Weekly History'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
+  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['history', 'Weekly History'], ['report', 'Bi-Weekly Report', 'office'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
   ['sov', 'SOV', 'bill'], ['billing', 'Billing Entry', 'bill'], ['payapps', 'Pay Apps', 'bill'], ['g702', 'Pay App (G702/G703)', 'bill'],
   ['rfi', 'RFI-Submittal'], ['safety', 'Safety-Quality'], ['milestones', 'Milestones'], ['logs', 'Daily Logs'],
 ];
@@ -20,7 +20,7 @@ async function projectTab(j, T) {
   T.innerHTML = `<div class="wb-tabs no-print">${sheets.map(([k, l]) => `<a href="#/jobs/${j.id}?tab=project&sheet=${k}" class="${k === sheet ? 'on' : ''}">${l}</a>`).join('')}</div><div id="wbs"></div>`;
   const W = $('#wbs', T);
   if (['dashboard', 'codes', 'logs'].includes(sheet)) return projectCoreSheet(j, W, sheet);
-  return ({ schedule: wbSchedule, manpower: wbManpower, history: wbHistory, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
+  return ({ schedule: wbSchedule, manpower: wbManpower, history: wbHistory, report: wbReport, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
 }
 
 // ------------------------------------------------------------ Schedule & Gantt
@@ -212,6 +212,75 @@ async function wbHistory(j, W) {
     const note = v === '' ? null : prompt('Note for this week (optional, e.g. "per GC walk 11/6")', '') || null;
     if (await act(() => PUT(`/projects/${j.id}/progress`, { week_ending: inp.dataset.wk, pct_complete: v, note }), v === '' ? 'Back to automatic' : 'Recorded').catch(() => null)) route();
   });
+}
+
+// ------------------------------------------------------------ Bi-Weekly Report (printable)
+async function wbReport(j, W) {
+  const { params } = hashParams();
+  const pe = params.get('pe') || todayStr(), gc = params.get('gc') === '1';
+  const [r, list] = await Promise.all([GET(`/projects/${j.id}/biweekly${qs({ period_end: pe, gc: gc ? '1' : '' })}`), GET(`/projects/${j.id}/reports`)]);
+  const d = r.data, rep = r.report || {}, issued = rep.status === 'issued', F = d.financial, P = d.production, I = d.info, editable = !issued && can('projects');
+  const go = (k, v) => { const p = new URLSearchParams(params); if (v) p.set(k, v); else p.delete(k); location.hash = `#/jobs/${j.id}?${p}`; };
+  const m0 = v => v == null ? '—' : money0(v), n1 = v => v == null ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  const pc = v => v == null ? '—' : `${n1(v)}%`, ix = v => v == null ? '—' : Number(v).toFixed(2), dt = v => v ? wbDate(v) : '—';
+  const pair = (a, b) => `<tr>${a ? `<th>${a[0]}</th><td>${a[1]}</td>` : '<th></th><td></td>'}${b ? `<th>${b[0]}</th><td>${b[1]}</td>` : '<th></th><td></td>'}</tr>`;
+  const sect = (n, title, body) => `<section class="rp-sec"><h3>${n}.&nbsp; ${title}</h3>${body}</section>`;
+  const grid = (cols, rows, empty) => rows.length ? `<table class="rp-grid"><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${c.l}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((x, i) => `<tr>${cols.map(c => `<td class="${c.num ? 'num' : ''}">${c.v(x, i)}</td>`).join('')}</tr>`).join('')}</tbody></table>` : `<p class="muted small">${empty}</p>`;
+  const addr = [I.address, [I.city, I.state].filter(Boolean).join(', '), I.zip].filter(Boolean).join(' ');
+  const cmp = d.company || {};
+  const fin = gc ? [pair(['Original contract', m0(F.original_contract)], ['Billed to date', m0(F.billed)]), pair(['Approved change orders', m0(F.approved_co)], ['Retainage held', m0(F.retainage_held)]),
+      pair(['Revised contract', `<b>${m0(F.revised_contract)}</b>`], ['Payments received', m0(F.cash)]), pair(['Pending change orders', m0(F.pending_co)], ['% complete', pc(F.pct_complete)]), pair(['SPI', ix(F.spi)], ['Labor hours used', n1(F.hours_used)])]
+    : [pair(['Original contract', m0(F.original_contract)], ['Billed to date', m0(F.billed)]), pair(['Approved change orders', m0(F.approved_co)], ['Retainage held', m0(F.retainage_held)]),
+      pair(['Revised contract', `<b>${m0(F.revised_contract)}</b>`], ['Cash received', m0(F.cash)]), pair(['Budget cost', m0(F.budget_cost)], ['Over / (under) billed', F.over_under == null ? '—' : F.over_under < 0 ? `(${m0(-F.over_under)})` : m0(F.over_under)]),
+      pair(['Actual cost to date', m0(F.actual_cost)], ['Pending change orders', m0(F.pending_co)]), pair(['Open commitments', m0(F.open_commit)], ['% complete', pc(F.pct_complete)]),
+      pair(['Projected cost (EAC)', m0(F.projected_cost)], ['CPI', ix(F.cpi)]), pair(['Projected margin', m0(F.projected_margin)], ['SPI', ix(F.spi)]),
+      pair(['Projected margin %', pc(F.projected_margin_pct)], ['Labor hours used / budget', `${n1(F.hours_used)} / ${n1(F.budget_hours)}`])];
+  const phaseTot = !gc && d.phases ? d.phases.reduce((t, x) => { for (const k of ['budget', 'earned', 'actual', 'commit', 'variance', 'projected']) t[k] = (t[k] || 0) + x[k]; return t; }, {}) : null;
+  let sn = 0; const N = () => ++sn;
+  const narrative = [['progress', 'Progress this period'], ['plan_next', 'Plan for next period'], ['issues', 'Issues & risks'], ['decisions', 'Decisions needed from the GC / owner'], ['notes', 'Notes']];
+  W.innerHTML = `<div class="card no-print" style="margin-bottom:12px"><div class="row spread" style="flex-wrap:wrap;gap:10px">
+      <div class="row" style="flex-wrap:wrap;gap:10px"><label class="small muted">Period ending <input type="date" id="rpe" value="${esc(pe)}" max="${todayStr()}"></label>
+        ${list.length ? `<select id="rpast"><option value="">Saved reports…</option>${list.map(x => `<option value="${x.period_end}">${wbDate(x.period_end)} · ${x.status === 'issued' ? 'issued' : 'draft'}</option>`).join('')}</select>` : ''}
+        ${r.can_see_costs ? `<label class="small"><input type="checkbox" id="rgc" ${gc ? 'checked' : ''}> GC copy (hide our costs &amp; margin)</label>` : ''}</div>
+      <div class="row">${issued ? `<span class="pill good">Issued ${wbDate(rep.issued_at)}</span>${S.user.role === 'admin' ? '<button class="btn sm" id="rreopen">Reopen</button>' : ''}`
+        : `${editable ? '<button class="btn sm" id="rsave">Save narrative</button><button class="btn primary sm" id="rissue">Issue report</button>' : ''}`}<button class="btn sm" onclick="print()">Print / PDF</button></div></div>
+      <p class="small muted" style="margin:8px 0 0">${issued ? 'This report was issued: its numbers are frozen as they were that day, so it always matches what was sent.' : 'Live numbers. Type the narrative, save, then <b>Issue</b> to freeze the numbers before you send it.'}${r.can_see_costs ? ' Tick <b>GC copy</b> before printing for a GC or owner — it leaves out budget, cost, commitments, margin and cost by phase.' : ''}</p></div>
+    <div class="card report-doc">
+      <div class="rp-head"><div><h1>Bi-Weekly Project Report</h1><div class="small muted">${esc(cmp.company_name || '')}${cmp.company_address ? ` &nbsp;|&nbsp; ${esc(cmp.company_address)}` : ''}${cmp.company_phone ? ` &nbsp;|&nbsp; ${esc(cmp.company_phone)}` : ''}</div></div>
+        <div class="rp-per"><b>Job ${esc(I.number)} — ${esc(I.title)}</b><div>Period: ${wbDate(d.period_start)} to ${wbDate(d.period_end)}</div>${gc ? '<div class="small muted">GC / owner copy</div>' : ''}</div></div>
+      ${sect(N(), 'Project information', `<table class="rp-kv">${pair(['Client / GC', esc(I.company || I.customer_name)], ['Address', esc(addr || '—')])}${pair(['Project manager', esc(I.pm_name || '—')], ['Foreman', esc(I.foreman_name || '—')])}
+        ${pair(['Status', esc(String(I.status || '').replace(/_/g, ' ').replace(/^./, ch => ch.toUpperCase()))], ['Contract start', dt(I.start_date)])}${pair(['Contract finish', dt(I.end_date)], ['GC contact', esc([I.gc_contact, I.gc_phone].filter(Boolean).join(' · ') || '—')])}</table>`)}
+      ${sect(N(), 'Financial summary', `<table class="rp-kv">${fin.join('')}</table>`)}
+      ${!gc && d.phases ? sect(N(), 'Cost by phase', grid([{ l: 'Phase', v: x => x.total ? '<b>TOTAL</b>' : `${esc(x.phase)}&nbsp; ${esc(x.name)}` }, { l: 'Budget $', num: 1, v: x => m0(x.budget) }, { l: 'Earned $', num: 1, v: x => m0(x.earned) }, { l: 'Actual $', num: 1, v: x => m0(x.actual) },
+        { l: 'Commit $', num: 1, v: x => m0(x.commit) }, { l: 'Variance $', num: 1, v: x => x.variance < 0 ? `<span style="color:var(--bad)">(${m0(-x.variance)})</span>` : m0(x.variance) }, { l: 'CPI', num: 1, v: x => x.cpi == null ? '' : x.cpi.toFixed(2) },
+        { l: '% compl', num: 1, v: x => x.pct == null ? '' : x.pct + '%' }, { l: 'Projected $', num: 1, v: x => m0(x.projected) }], [...d.phases, { total: true, ...phaseTot, cpi: phaseTot.actual ? phaseTot.earned / phaseTot.actual : null, pct: phaseTot.budget ? Math.round(phaseTot.earned / phaseTot.budget * 1000) / 10 : null }], '')) : ''}
+      ${sect(N(), `Production this period <span class="muted small">(${wbDate(P.from)} – ${wbDate(P.to)})</span>`, `<table class="rp-kv">${pair(['Labor hours', n1(P.labor_hours)], gc ? ['People on site', P.people] : ['Material / sub cost', m0(P.material_cost)])}
+        ${pair(['Overtime hours', n1(P.ot_hours)], ['Average crew size', n1(P.avg_crew)])}${pair(gc ? null : ['Labor cost', m0(P.labor_cost)], ['Peak planned crew, rest of schedule', n1(P.peak_planned_crew)])}</table>`)}
+      ${sect(N(), 'Look-ahead — open tasks in the next two weeks', grid([{ l: '#', v: (x, i) => i + 1 }, { l: 'Task', v: x => `${esc(x.ref)} ${esc(x.name)}` }, { l: 'Cost code', v: x => esc(x.cost_code || '') }, { l: 'Start', v: x => dt(x.start_date) }, { l: 'Finish', v: x => dt(x.finish_date) },
+        { l: 'Budget hrs', num: 1, v: x => n1(x.budget_hours) }, { l: '% compl', num: 1, v: x => x.pct_complete == null ? '—' : x.pct_complete + '%' }, { l: 'Actual hrs', num: 1, v: x => n1(x.actual_hours) }, { l: 'SPI', num: 1, v: x => x.spi ?? '' }, { l: 'Status', v: x => statusPill(x.status) }], d.lookahead, 'Nothing scheduled in the look-ahead window.'))}
+      ${sect(N(), 'Milestones — open', grid([{ l: '#', v: (x, i) => i + 1 }, { l: 'Milestone', v: x => esc(x.name) }, { l: 'Owner', v: x => esc(x.owner || '') }, { l: 'Baseline', v: x => dt(x.baseline_date) }, { l: 'Forecast', v: x => dt(x.forecast_date) },
+        { l: 'Variance', num: 1, v: x => x.variance_days == null ? '' : x.variance_days > 0 ? `+${x.variance_days}` : x.variance_days }, { l: 'Days to go', num: 1, v: x => x.days_to_go ?? '' }, { l: 'Status', v: x => statusPill(x.status) }, { l: 'Critical', v: x => x.critical ? 'Yes' : '' }], d.milestones, 'No open milestones.'))}
+      ${sect(N(), 'Open RFIs &amp; submittals', grid([{ l: '#', v: x => esc(x.ref) }, { l: 'Subject', v: x => esc(x.subject) }, { l: 'Type', v: x => esc(x.type || '') }, { l: 'No.', v: x => esc(x.number || '') }, { l: 'Sent', v: x => dt(x.date_sent) }, { l: 'Needed', v: x => dt(x.date_needed) },
+        { l: 'Days open', num: 1, v: x => x.days_open ?? '' }, { l: 'Days late', num: 1, v: x => x.days_late ? `<b style="color:var(--bad)">${x.days_late}</b>` : '' }, { l: 'Ball in court', v: x => esc(x.ball_in_court || '') }, { l: 'Cost impact', num: 1, v: x => x.cost_impact ? m0(x.cost_impact) : '' }], d.rfis, 'No open RFIs or submittals.'))}
+      ${sect(N(), 'Change orders — not yet executed', grid([{ l: 'CO #', v: x => esc(x.number || x.co_no) }, { l: 'Description', v: x => esc(x.description || '') }, { l: 'Type', v: x => esc(x.type || '') }, { l: 'Status', v: x => statusPill(x.status) },
+        { l: 'Sell $', num: 1, v: x => m0(x.sell_price) }, ...(gc ? [] : [{ l: 'Cost $', num: 1, v: x => m0(x.total_cost) }, { l: 'Margin %', num: 1, v: x => x.margin_pct == null ? '' : x.margin_pct + '%' }]),
+        { l: 'Days added', num: 1, v: x => x.days_added ?? '' }, { l: 'Submitted', v: x => dt(x.submitted) }], d.change_orders, 'No change orders waiting.'))}
+      ${sect(N(), 'Open safety &amp; quality items', grid([{ l: '#', v: x => esc(x.ref_id) }, { l: 'Description', v: x => esc(x.description) }, { l: 'Type', v: x => esc(x.type) }, { l: 'Severity', v: x => esc(x.severity || '') }, { l: 'Date', v: x => dt(x.date) },
+        { l: 'Due', v: x => dt(x.due_date) }, { l: 'Days open', num: 1, v: x => x.days_open ?? '' }, { l: 'Owner', v: x => esc(x.owner || '') }, { l: 'Status', v: x => statusPill(x.status) }, { l: 'Corrective action', v: x => esc(x.corrective_action || '') }], d.safety, 'No open safety or quality items.'))}
+      ${sect(N(), 'Narrative', `<form id="rnf">${narrative.map(([k, l]) => `<div class="rp-narr"><h4>${l}</h4>${editable ? `<textarea name="${k}" rows="3" class="no-print-border">${esc(rep[k] || '')}</textarea><div class="print-only">${esc(rep[k] || '')}</div>` : `<div class="rp-text">${esc(rep[k] || '—')}</div>`}</div>`).join('')}</form>`)}
+      <table class="rp-kv" style="margin-top:14px">${pair(['Prepared by', esc(rep.prepared_by_name || I.pm_name || S.user.name)], ['Date', wbDate(issued ? rep.issued_at : d.period_end)])}</table>
+    </div>`;
+  $('#rpe', W).onchange = e => go('pe', e.target.value === todayStr() ? '' : e.target.value);
+  if ($('#rpast', W)) $('#rpast', W).onchange = e => e.target.value && go('pe', e.target.value);
+  if ($('#rgc', W)) $('#rgc', W).onchange = e => go('gc', e.target.checked ? '1' : '');
+  const narr = () => Object.fromEntries(narrative.map(([k]) => [k, $(`[name=${k}]`, W).value]));
+  if ($('#rsave', W)) $('#rsave', W).onclick = async () => { await act(() => PUT(`/projects/${j.id}/biweekly`, { period_end: pe, ...narr() }), 'Narrative saved').catch(() => null); };
+  if ($('#rissue', W)) $('#rissue', W).onclick = async () => {
+    if (!confirm(`Issue the report for the period ending ${wbDate(pe)}? Its numbers will be frozen as they are now.`)) return;
+    try { await PUT(`/projects/${j.id}/biweekly`, { period_end: pe, ...narr() }); await act(() => POST(`/projects/${j.id}/biweekly/issue`, { period_end: pe }), 'Report issued'); route(); } catch (e) { toast(e.message, true); }
+  };
+  if ($('#rreopen', W)) $('#rreopen', W).onclick = async () => { if (confirm('Reopen this report? The frozen numbers are discarded and it goes back to live numbers.')) { await act(() => POST(`/project-reports/${rep.id}/reopen`), 'Reopened').catch(() => null); route(); } };
 }
 
 // ------------------------------------------------------------ Labor Log / Cost Log

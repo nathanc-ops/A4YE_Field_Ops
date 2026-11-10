@@ -174,3 +174,40 @@ test('weekly history: cumulative PV/EV/AC by week, recorded % beats the hours pr
   assert.equal((await call('admin', 'PUT', `/projects/${ids.job}/progress`, { week_ending: '2099-01-04', pct_complete: 5 })).status, 400, 'future week');
   assert.equal((await call('tech', 'PUT', `/projects/${ids.job}/progress`, { week_ending: early.week_ending, pct_complete: 5 })).status, 403);
 });
+
+test('bi-weekly report: all sections, GC copy hides our costs, issuing freezes the numbers, narrative locks', async () => {
+  // an open RFI and a pending CO so those sections have rows
+  await call('admin', 'POST', `/projects/${ids.job}/rfis`, { subject: 'Panel L2 location', date_sent: day(-5), date_needed: day(-1) });
+  const r = await call('admin', 'GET', `/projects/${ids.job}/biweekly`);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const d = r.data.data;
+  assert.equal(d.period_start, day(-13)); assert.equal(d.period_end, day(0));
+  assert.equal(d.info.customer_name, 'Summit GC');
+  assert.equal(d.financial.revised_contract, 80000);
+  assert.ok(d.financial.budget_cost > 0 && d.financial.actual_cost > 0);
+  assert.equal(d.phases.length >= 10, true, 'P0–P9 always listed');
+  assert.ok(d.phases.some(p => p.budget > 0));
+  assert.ok(d.production.labor_hours > 0); assert.ok(d.production.labor_cost > 0);
+  assert.equal(d.rfis.length, 1); assert.equal(d.rfis[0].days_late >= 1, true);
+  assert.ok(Array.isArray(d.lookahead) && Array.isArray(d.milestones) && Array.isArray(d.safety) && Array.isArray(d.change_orders));
+  const gc = (await call('admin', 'GET', `/projects/${ids.job}/biweekly?gc=1`)).data.data;
+  assert.equal(gc.gc_copy, true);
+  assert.equal(gc.phases, undefined); assert.equal(gc.financial.budget_cost, undefined); assert.equal(gc.financial.projected_margin_pct, undefined); assert.equal(gc.production.labor_cost, undefined);
+  assert.equal(gc.financial.revised_contract, 80000, 'contract and billing stay');
+  // narrative, issue, frozen
+  assert.equal((await call('admin', 'PUT', `/projects/${ids.job}/biweekly`, { progress: 'Rough-in 80% in conference room', decisions: 'Need fixture approval' })).status, 200);
+  assert.equal((await call('admin', 'POST', `/projects/${ids.job}/biweekly/issue`, {})).status, 200);
+  const hoursBefore = (await call('admin', 'GET', `/projects/${ids.job}/biweekly`)).data.data.production.labor_hours;
+  db.prepare("INSERT INTO time_entries (user_id, job_id, kind, clock_in, clock_out, hourly_cost, hourly_wage) VALUES (?, ?, 'job', ?, ?, 50, 40)")
+    .run(ids.tech, ids.job, new Date(Date.now() - 2 * 864e5).toISOString(), new Date(Date.now() - 2 * 864e5 + 5 * 36e5).toISOString());
+  const after = (await call('admin', 'GET', `/projects/${ids.job}/biweekly`)).data;
+  assert.equal(after.data.production.labor_hours, hoursBefore, 'issued report does not move');
+  assert.equal(after.report.status, 'issued'); assert.equal(after.report.progress, 'Rough-in 80% in conference room');
+  assert.equal((await call('admin', 'PUT', `/projects/${ids.job}/biweekly`, { progress: 'x' })).status, 400);
+  const list = (await call('admin', 'GET', `/projects/${ids.job}/reports`)).data;
+  assert.equal(list.length, 1); assert.equal(list[0].status, 'issued');
+  assert.equal((await call('admin', 'POST', `/project-reports/${list[0].id}/reopen`)).status, 200);
+  assert.equal((await call('admin', 'GET', `/projects/${ids.job}/biweekly`)).data.data.production.labor_hours, Math.round((hoursBefore + 5) * 10) / 10, 'live again after reopening');
+  assert.equal((await call('admin', 'GET', `/projects/${ids.job}/biweekly?period_end=2099-01-01`)).status, 400);
+  assert.equal((await call('tech', 'GET', `/projects/${ids.job}/biweekly`)).status, 403);
+});

@@ -424,3 +424,33 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 .sc-legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; border-radius: 1px; }
 .sc-tip { position: fixed; pointer-events: none; z-index: 50; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: var(--shadow); display: none; }
 .sc-tip i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+
+/* bi-weekly report */
+.report-doc { max-width: 1100px; }
+.rp-head { display: flex; justify-content: space-between; gap: 16px; border-bottom: 2px solid var(--brand); padding-bottom: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.rp-head h1 { margin: 0 0 4px; font-size: 22px; }
+.rp-per { text-align: right; font-size: 13px; }
+.rp-sec { margin-top: 16px; break-inside: avoid; }
+.rp-sec h3 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; margin: 0 0 6px; padding: 4px 8px; background: var(--surface-2); border-left: 3px solid var(--brand); }
+.rp-kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rp-kv th { text-align: left; font-weight: 500; color: var(--text-2); width: 22%; padding: 4px 8px; }
+.rp-kv td { width: 28%; padding: 4px 8px; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--border); }
+.rp-grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+.rp-grid th { text-align: left; font-weight: 600; padding: 4px 6px; border-bottom: 1px solid var(--border); color: var(--text-2); }
+.rp-grid td { padding: 4px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.rp-grid .num { text-align: right; }
+.rp-narr h4 { margin: 10px 0 4px; font-size: 13px; }
+.rp-narr textarea { width: 100%; }
+.rp-text { white-space: pre-wrap; font-size: 13px; padding: 6px 8px; background: var(--surface-2); border-radius: 6px; min-height: 2em; }
+.print-only { display: none; }
+@media print { .report-doc { max-width: none; border: 0; box-shadow: none; padding: 0; } .rp-narr textarea { display: none; } .print-only { display: block; white-space: pre-wrap; font-size: 12px; min-height: 1.5em; }
+  .rp-sec h3 { background: #eee !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } .rp-grid, .rp-kv { font-size: 11px; } }
+/* print is always on paper: light tokens whatever the screen theme, and no app chrome */
+@media print {
+  :root { --bg: #fff !important; --surface: #fff !important; --surface-2: #f1f3f5 !important; --border: #d0d5dc !important; --text: #111 !important; --text-2: #374151 !important; --muted: #5b6472 !important;
+    --good: #047857 !important; --good-soft: #d1fae5 !important; --warn: #b45309 !important; --warn-soft: #fef3c7 !important; --bad: #b91c1c !important; --bad-soft: #fee2e2 !important;
+    --info: #0369a1 !important; --info-soft: #e0f2fe !important; color-scheme: light; }
+  .topbar, #toast { display: none !important; }
+  html, body, .app, .main { background: #fff !important; }
+  .app { display: block !important; } .main { padding: 0 !important; }
+}

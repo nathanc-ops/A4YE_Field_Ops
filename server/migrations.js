@@ -792,6 +792,22 @@ const MIGRATIONS = [
       UNIQUE (job_id, week_ending)
     );`);
   },
+  // 20: bi-weekly project reports — the narrative typed per period, and a frozen copy of the numbers once issued
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS project_reports (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      period_end TEXT NOT NULL,
+      progress TEXT, plan_next TEXT, issues TEXT, decisions TEXT, notes TEXT,
+      prepared_by INTEGER REFERENCES users(id),
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'issued')),
+      issued_at TEXT, issued_by INTEGER REFERENCES users(id),
+      snapshot TEXT,                          -- JSON of the report's numbers at issue
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (job_id, period_end)
+    );`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

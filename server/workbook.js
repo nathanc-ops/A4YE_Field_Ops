@@ -615,7 +615,7 @@ module.exports = function workbookRoutes(app, db, X) {
     const bh = get(db, 'SELECT SUM(budget_hours) h FROM job_budgets WHERE job_id = ?', job.id).h ?? job.budget_hours ?? 0;
     const baseBudget = Bill.budgetCost(db, job) || 0, contract = job.contract_amount || 0;
     const cos = all(db, 'SELECT * FROM estimates WHERE job_id = ? AND change_order = 1', job.id).map(e => { const t = C.estimateWithTotals(db, e);
-      return { status: e.status, approved: ymd(e.approved_at), created: ymd(e.created_at), price: r2(t.subtotal - t.discount), cost: r2(t.cost) }; });
+      return { status: e.status, approved: ymd(e.approved_at), created: ymd(e.created_at), price: r2(t.subtotal - t.discount), cost: r2(t.est_cost) }; });
     const invs = Bill.fixedSummary(db, job.id).invoices.filter(i => i.status !== 'void' && i.status !== 'draft');
     const pays = all(db, `SELECT p.amount, p.paid_at FROM payments p JOIN invoices i ON i.id = p.invoice_id WHERE i.job_id = ? AND i.status != 'void'`, job.id);
     const rfis = all(db, 'SELECT date_sent, date_returned, status FROM rfis WHERE job_id = ?', job.id);
@@ -669,6 +669,100 @@ module.exports = function workbookRoutes(app, db, X) {
       ON CONFLICT(job_id, week_ending) DO UPDATE SET pct_complete = excluded.pct_complete, source = 'manual', note = excluded.note, updated_by = excluded.updated_by, updated_at = datetime('now')`,
       job.id, we, pct, b.note || null, req.user.id);
     res.json({ ok: true });
+  }));
+
+  // ================================================================ Bi-Weekly Report
+  // The workbook's Bi-Weekly Project Report, built from the other sheets for a 14-day period. The narrative is typed per
+  // period; issuing it freezes a copy of the numbers so the report a GC received never changes. The GC copy leaves out
+  // budget cost, cost to date, commitments, projected cost/margin and CO cost — anything that shows our margin.
+  const PHASE_NAMES = { P0: 'Preconstruction', P1: 'Demolition', P2: 'Rough-In', P3: 'Gear & Feeders', P4: 'Trim, Fixtures & Devices', P5: 'Equipment Connections',
+    P6: 'Systems', P7: 'Closeout', P8: 'Warranty & Service', P9: 'General Conditions, Indirects & Overhead' };
+  const NARRATIVE = ['progress', 'plan_next', 'issues', 'decisions', 'notes'];
+  function biweekly(job, pe) {
+    const from = addD(pe, -13), cfg = schedCfg();
+    const info = get(db, `SELECT j.number, j.title, j.status, j.start_date, j.end_date, j.contract_amount, j.gc_contact, j.gc_phone, j.gc_email, c.name customer_name, c.company,
+        l.address, l.city, l.state, l.zip, pm.name pm_name, fm.name foreman_name FROM jobs j JOIN customers c ON c.id = j.customer_id LEFT JOIN locations l ON l.id = j.location_id
+        LEFT JOIN users pm ON pm.id = j.project_manager_id LEFT JOIN users fm ON fm.id = j.foreman_id WHERE j.id = ?`, job.id);
+    const hist = weeklyHistory(job), w = hist.weeks.find(x => x.week_ending >= pe) || hist.weeks[hist.weeks.length - 1] || {};
+    const b = Bill.fixedSummary(db, job.id);
+    const eac = w.projected_cost ?? null, revised = b.contract.total;
+    const financial = { original_contract: b.contract.base, approved_co: b.contract.change_orders, revised_contract: revised, budget_cost: w.revised_budget ?? null,
+      actual_cost: w.ac ?? null, open_commit: w.open_commit ?? null, projected_cost: eac, projected_margin: eac == null ? null : r2(revised - eac),
+      projected_margin_pct: eac == null || !revised ? null : Math.round((revised - eac) / revised * 1000) / 10, billed: b.billed_to_date, retainage_held: b.retainage_held,
+      cash: w.cash ?? null, over_under: b.over_under, pending_co: w.pending_co ?? 0, pct_complete: w.pct_complete ?? null, cpi: w.cpi ?? null, spi: w.spi ?? null,
+      hours_used: w.actual_hours ?? 0, budget_hours: hist.budget_hours };
+    // cost by phase from the cost codes (budget at the crew rate, earned from each code's % complete)
+    const rate = Bill.laborRate(db, job), log = costLog(job).rows;
+    const phaseOf = new Map(all(db, 'SELECT id, code, phase FROM cost_codes').map(c => [c.id, c.phase]));
+    const commitBy = {}; for (const r of log) if (r.cost_code && r.open_commit) commitBy[r.cost_code] = (commitBy[r.cost_code] || 0) + r.open_commit;
+    const ph = {};
+    for (const c of P.codeRows(job)) {
+      const key = PHASE_NAMES[phaseOf.get(c.cost_code_id)] ? phaseOf.get(c.cost_code_id) : 'other';
+      const budget = (c.budget_hours || 0) * rate + (c.budget_material || 0) + (c.budget_other || 0), actual = (c.labor_cost || 0) + (c.material_cost || 0) + (c.other_cost || 0);
+      const pct = c.percent_complete || 0, x = ph[key] = ph[key] || { budget: 0, earned: 0, actual: 0, commit: 0, projected: 0 };
+      x.budget += budget; x.earned += budget * pct / 100; x.actual += actual; x.commit += commitBy[c.code] || 0;
+      x.projected += pct > 2 ? actual / (pct / 100) : Math.max(budget, actual + (commitBy[c.code] || 0));
+    }
+    const phases = [...Object.keys(PHASE_NAMES), 'other'].filter(k => ph[k] || k !== 'other').map(k => { const x = ph[k] || { budget: 0, earned: 0, actual: 0, commit: 0, projected: 0 };
+      return { phase: k === 'other' ? '—' : k, name: k === 'other' ? 'Uncoded / no phase' : PHASE_NAMES[k], budget: r2(x.budget), earned: r2(x.earned), actual: r2(x.actual), commit: r2(x.commit),
+        variance: r2(x.budget - x.actual - x.commit), cpi: x.actual ? Math.round(x.earned / x.actual * 100) / 100 : null, pct: x.budget ? Math.round(x.earned / x.budget * 1000) / 10 : null, projected: r2(x.projected) }; });
+    // production this period
+    const entries = laborEntries(job).filter(e => e.date >= from && e.date <= pe), hrs = entries.reduce((x, e) => x + e.hours, 0);
+    const ms = schedCfg(), mw = scheduleWeeks(job, taskRows(job, pe), laborEntries(job), cfg).filter(x => x.week_ending >= pe);
+    const production = { from, to: pe, labor_hours: r1(hrs), ot_hours: r1(entries.reduce((x, e) => x + e.ot, 0)), labor_cost: r2(entries.reduce((x, e) => x + e.cost, 0)),
+      material_cost: r2(log.filter(r => r.date && r.date >= from && r.date <= pe).reduce((x, r) => x + (r.total_cost || 0), 0)),
+      avg_crew: Math.round(hrs / (Math.max(1, netDays(from, pe)) * ms.hours_per_day) * 10) / 10, peak_planned_crew: mw.length ? Math.max(...mw.map(x => x.planned_crew)) : 0,
+      people: new Set(entries.map(e => e.user_id)).size };
+    const pick = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k] ?? null]));
+    return { generated_at: new Date().toISOString(), period_end: pe, period_start: from, company: pick(s(), ['company_name', 'company_address', 'company_phone', 'company_email']),
+      info, financial, phases, production,
+      lookahead: taskRows(job, pe).filter(t => t.lookahead).map(t => pick(t, ['ref', 'name', 'cost_code', 'start_date', 'finish_date', 'budget_hours', 'pct_complete', 'actual_hours', 'spi', 'status'])),
+      milestones: msRows(job).filter(m => m.status !== 'Complete').map(m => pick(m, ['ref', 'name', 'owner', 'baseline_date', 'forecast_date', 'variance_days', 'days_to_go', 'status', 'critical'])),
+      rfis: rfiRows(job).filter(r => r.open).map(r => pick(r, ['ref', 'subject', 'type', 'number', 'date_sent', 'date_needed', 'days_open', 'days_late', 'ball_in_court', 'cost_impact'])),
+      change_orders: coRows(job).filter(c => !['Approved', 'Rejected', 'Void'].includes(c.status)).map(c => pick(c, ['co_no', 'number', 'description', 'type', 'status', 'sell_price', 'total_cost', 'margin_pct', 'days_added', 'submitted'])),
+      safety: sqRows(job).filter(x => x.status !== 'Closed').map(x => pick(x, ['ref_id', 'description', 'type', 'severity', 'date', 'due_date', 'days_open', 'owner', 'status', 'corrective_action'])) };
+  }
+  // what a GC must not see: our budget, costs, commitments and margins
+  function gcCopy(d) {
+    const x = JSON.parse(JSON.stringify(d));
+    for (const k of ['budget_cost', 'actual_cost', 'open_commit', 'projected_cost', 'projected_margin', 'projected_margin_pct', 'cpi']) delete x.financial[k];
+    delete x.phases; delete x.production.labor_cost; delete x.production.material_cost;
+    for (const c of x.change_orders) { delete c.total_cost; delete c.margin_pct; }
+    x.gc_copy = true; return x;
+  }
+  const reportRow = (job, pe) => get(db, 'SELECT * FROM project_reports WHERE job_id = ? AND period_end = ?', job.id, pe);
+  const periodEnd = q => { const pe = isDate(q || '') ? q : today(); if (pe > today()) throw bad('The period has not ended yet'); return pe; };
+  app.get('/api/projects/:id/reports', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true });
+    res.json(all(db, `SELECT r.id, r.period_end, r.status, r.issued_at, u.name prepared_by_name FROM project_reports r LEFT JOIN users u ON u.id = r.prepared_by
+      WHERE r.job_id = ? ORDER BY r.period_end DESC`, job.id));
+  }));
+  app.get('/api/projects/:id/biweekly', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), pe = periodEnd(req.query.period_end), row = reportRow(job, pe);
+    let data = row && row.status === 'issued' && row.snapshot ? JSON.parse(row.snapshot) : biweekly(job, pe);
+    if (req.query.gc === '1' || !req.can('see_costs')) data = gcCopy(data);
+    const prep = row && row.prepared_by ? get(db, 'SELECT name FROM users WHERE id = ?', row.prepared_by) : null;
+    res.json({ data, report: row ? { ...pick(row, ['id', 'status', 'issued_at', ...NARRATIVE]), prepared_by_name: prep && prep.name } : null, can_see_costs: req.can('see_costs') });
+  }));
+  app.put('/api/projects/:id/biweekly', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), pe = periodEnd(req.body && req.body.period_end), row = reportRow(job, pe);
+    if (row && row.status === 'issued') throw bad('This report was issued — reopen it to edit');
+    const d = clean(req.body, NARRATIVE);
+    if (row) update('project_reports', row.id, { ...d, prepared_by: req.user.id }); else insert('project_reports', { job_id: job.id, period_end: pe, ...d, prepared_by: req.user.id });
+    res.json({ ok: true });
+  }));
+  app.post('/api/projects/:id/biweekly/issue', wrap((req, res) => {
+    const job = project(req, req.params.id, { write: true }), pe = periodEnd(req.body && req.body.period_end);
+    let row = reportRow(job, pe);
+    if (row && row.status === 'issued') throw bad('Already issued');
+    if (!row) row = { id: insert('project_reports', { job_id: job.id, period_end: pe, prepared_by: req.user.id }) };
+    update('project_reports', row.id, { status: 'issued', issued_at: new Date().toISOString(), issued_by: req.user.id, snapshot: JSON.stringify(biweekly(job, pe)) });
+    res.json({ ok: true, id: row.id });
+  }));
+  app.post('/api/project-reports/:id/reopen', wrap((req, res) => {
+    const row = mustGet('project_reports', req.params.id); project(req, row.job_id, { write: true });
+    if (req.user.role !== 'admin') throw bad('Only an admin can reopen an issued report', 403);
+    update('project_reports', row.id, { status: 'draft', issued_at: null, issued_by: null, snapshot: null }); res.json({ ok: true });
   }));
 
   // counts for dashboards and flags
