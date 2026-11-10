@@ -14,6 +14,9 @@
 // Everything else (Dashboard, Manpower Loading, Billing Worksheet, Pay App Summary, Import Quote, Bi-Weekly Report
 // tabs, Rollup, Lists) is calculated — the app rebuilds it. The Employee List tab is never read.
 //
+// Each tab is read only over the rows the template's own formulas read (e.g. Change Orders 6–125, SOV 6–65), so the
+// summary and total blocks under the data are never mistaken for entries.
+//
 // Safe to re-run: a section the project already has data in is skipped, never overwritten. Invoices, payments and
 // costs come in as history (not posted to Accounting) unless the importer asks to post them.
 const X = require('./xlsx');
@@ -69,22 +72,22 @@ module.exports = function jobImportRoutes(app, db, H) {
     if (!job.number && !job.name) throw bad('The Job Register tab has no job in row 6');
 
     const sch = wb.sheet('Schedule');
-    const tasks = rowsOf(sch, col('E'), 400).map(r => ({ row: r, ref: str(sch.val(r, 1)), phase: str(sch.val(r, 3)), area: str(sch.val(r, 4)), name: str(sch.val(r, 5)), code: sch.val(r, 6),
+    const tasks = rowsOf(sch, col('E'), 155).map(r => ({ row: r, ref: str(sch.val(r, 1)), phase: str(sch.val(r, 3)), area: str(sch.val(r, 4)), name: str(sch.val(r, 5)), code: sch.val(r, 6),
       start: X.dateOf(sch.val(r, 7)), finish: X.dateOf(sch.val(r, 8)), pred: str(sch.val(r, 10)), responsible: str(sch.val(r, 11)), budget: num(sch.val(r, 12)),
       pct: sch.cell(r, 13).f ? null : pct100(sch.val(r, 13)), notes: str(sch.val(r, 22)) }));
 
     const ms = wb.sheet('Milestones');
-    const milestones = rowsOf(ms, col('C'), 200).map(r => ({ name: str(ms.val(r, 3)), phase: str(ms.val(r, 4)), baseline: X.dateOf(ms.val(r, 5)), forecast: X.dateOf(ms.val(r, 6)),
+    const milestones = rowsOf(ms, col('C'), 65).map(r => ({ name: str(ms.val(r, 3)), phase: str(ms.val(r, 4)), baseline: X.dateOf(ms.val(r, 5)), forecast: X.dateOf(ms.val(r, 6)),
       actual: X.dateOf(ms.val(r, 7)), owner: str(ms.val(r, 9)), critical: yes(ms.val(r, 11)), billing: yes(ms.val(r, 12)), notes: str(ms.val(r, 14)) }));
 
     const co = wb.sheet('Change Orders');
-    const cos = rowsOf(co, col('E'), 300).map(r => { const v = c => co.val(r, col(c));
+    const cos = rowsOf(co, col('E'), 125).map(r => { const v = c => co.val(r, col(c));
       return { no: str(v('A')), initiated: X.dateOf(v('D')), description: str(v('E')), type: str(v('F')), status: str(v('G')) || 'Draft', code: v('H'), labor_hrs: num(v('I')) || 0,
         labor: num(v('K')) || 0, material: num(v('L')) || 0, equipment: num(v('M')) || 0, sub: num(v('N')) || 0, other: num(v('O')) || 0, tax: num(v('P')) || 0,
         cost: num(v('Q')) || 0, sell: num(v('T')) || 0, days: num(v('W')), submitted: X.dateOf(v('X')), approved: X.dateOf(v('Y')), reference: str(v('AA')), notes: str(v('AB')) }; });
 
     const sv = wb.sheet('SOV');
-    const sov = rowsOf(sv, col('D'), 200).map(r => ({ line: num(sv.val(r, 1)) ?? r - 5, division: str(sv.val(r, 2)), co_no: str(sv.val(r, 3)), description: str(sv.val(r, 4)),
+    const sov = rowsOf(sv, col('D'), 65).map(r => ({ line: num(sv.val(r, 1)) ?? r - 5, division: str(sv.val(r, 2)), co_no: str(sv.val(r, 3)), description: str(sv.val(r, 4)),
       calc: num(sv.val(r, 5)), override: sv.cell(r, 6).f ? null : num(sv.val(r, 6)), notes: str(sv.val(r, 13)) })).filter(x => x.division);
 
     const pa = wb.sheet('Pay Apps'), be = wb.sheet('Billing Entry');
@@ -93,7 +96,7 @@ module.exports = function jobImportRoutes(app, db, H) {
       const period = X.dateOf(pa.val(r, 2)); if (!period) continue;
       const k = num(pa.val(r, 1)) || r - 5;
       const lines = [];
-      if (be) for (let br = 6; br <= Math.min(be.maxRow, 200); br++) {
+      if (be) for (let br = 6; br <= Math.min(be.maxRow, 65); br++) {
         const line = num(be.val(br, 1)); if (line == null) continue;
         const work = num(be.val(br, 8 + k - 1)) || 0, stored = num(be.val(br, 33 + k - 1)) || 0;
         if (work || stored) lines.push({ line, work, stored });
@@ -103,12 +106,12 @@ module.exports = function jobImportRoutes(app, db, H) {
     }
 
     const rf = wb.sheet('RFI-Submittal Log');
-    const rfis = rowsOf(rf, col('E'), 300).map(r => { const v = c => rf.val(r, col(c));
+    const rfis = rowsOf(rf, col('E'), 155).map(r => { const v = c => rf.val(r, col(c));
       return { type: str(v('B')) || 'RFI', number: str(v('D')), subject: str(v('E')), spec: str(v('F')), code: v('G'), sent: X.dateOf(v('H')), needed: X.dateOf(v('I')), returned: X.dateOf(v('J')),
         status: str(v('M')), ball: str(v('N')), cost: num(v('O')), days: num(v('P')), co_no: str(v('Q')), notes: str(v('R')) }; });
 
     const sq = wb.sheet('Safety-Quality Log');
-    const safety = rowsOf(sq, col('E'), 300).map(r => { const v = c => sq.val(r, col(c));
+    const safety = rowsOf(sq, col('E'), 155).map(r => { const v = c => sq.val(r, col(c));
       return { date: X.dateOf(v('B')), type: str(v('D')), description: str(v('E')), severity: str(v('F')), reported: str(v('G')), action: str(v('H')), owner: str(v('I')), due: X.dateOf(v('J')),
         closed: X.dateOf(v('K')), recordable: yes(v('M')), lost: num(v('N')), ref: str(v('P')) }; }).filter(x => x.date && x.type);
 
@@ -119,13 +122,13 @@ module.exports = function jobImportRoutes(app, db, H) {
         'Cost Code Description': str(v('M')), Note: str(v('N')), Source: str(v('O')), 'Labor $': v('S') ?? '' }; });
 
     const cl = wb.sheet('Cost Log');
-    const cost = rowsOf(cl, col('A'), 400).map(r => { const v = c => cl.val(r, col(c));
+    const cost = rowsOf(cl, col('A'), 405).map(r => { const v = c => cl.val(r, col(c));
       return { id: str(v('A')), date: X.dateOf(v('B')), code: v('E'), type: str(v('F')).toUpperCase(), vendor: str(v('J')), ref: str(v('K')), description: str(v('L')) || str(v('I')),
         status: str(v('M')), committed: num(v('N')) || 0, invoiced: num(v('O')) || 0, total: num(v('Q')) || 0, open: num(v('R')) || 0, billable: yes(v('T')) }; })
       .filter(x => x.total > 0.004 || x.open > 0.004);
 
     const wh = wb.sheet('Weekly History');
-    const history = rowsOf(wh, col('B'), 200).filter(r => !wh.cell(r, 5).f && num(wh.val(r, 5)) != null).map(r => ({ week_ending: X.dateOf(wh.val(r, 2)), pct: pct100(wh.val(r, 5)) })).filter(x => x.week_ending);
+    const history = rowsOf(wh, col('B'), 83).filter(r => !wh.cell(r, 5).f && num(wh.val(r, 5)) != null).map(r => ({ week_ending: X.dateOf(wh.val(r, 2)), pct: pct100(wh.val(r, 5)) })).filter(x => x.week_ending);
 
     // the quote rows, A–P as the Estimate Import sheet takes them; column S/T overrides carried along
     const ei = wb.sheet('Estimate Import');
@@ -157,6 +160,15 @@ module.exports = function jobImportRoutes(app, db, H) {
   }
   const findJob = number => number ? get(db, 'SELECT * FROM jobs WHERE timeclock_job = ? OR number = ? ORDER BY timeclock_job = ? DESC LIMIT 1', number, number, number) : null;
 
+  // the job # links the project to the A4Y Time Clock; flag one that looks mistyped instead of guessing
+  function jobNumberDoubts(P, fileName) {
+    const d = [], n = P.job.number;
+    if (!n) d.push('The Job Register has no job #');
+    if (n && P.job.contract != null && Number(n) === Number(P.job.contract)) d.push(`The job # (${n}) is the same as the contract amount — it may have been typed in the wrong cell`);
+    const fromName = (String(fileName || '').match(/(?:^|[^\d])(\d{4,7})(?=[^\d]|$)/) || [])[1];
+    if (n && fromName && fromName !== n) d.push(`The file name says job ${fromName}, the Job Register says ${n}`);
+    return d;
+  }
   function preview(P, target) {
     const ex = existing(target && target.id);
     const skip = (k, label) => ex[k] ? `the project already has ${ex[k]} ${label}` : null;
@@ -169,7 +181,7 @@ module.exports = function jobImportRoutes(app, db, H) {
     const mismatchedJob = P.labor.filter(e => e['Job #'] && e['Job #'] !== P.job.number).length;
     const sec = (key, label, count, skipReason, detail) => ({ key, label, count, skip: count ? skipReason : 'nothing on that tab', detail });
     return {
-      job: P.job, target: target ? { id: target.id, number: target.number, title: target.title, timeclock_job: target.timeclock_job } : null,
+      job_number_doubts: jobNumberDoubts(P, P.fileName), job: P.job, target: target ? { id: target.id, number: target.number, title: target.title, timeclock_job: target.timeclock_job } : null,
       pm: P.job.pm ? (userByName(P.job.pm) ? 'matched' : 'not on Team — left blank') : null, foreman: P.job.foreman ? (userByName(P.job.foreman) ? 'matched' : 'not on Team — left blank') : null,
       sections: [
         sec('budget', 'Estimate Import → budget by cost code', P.quote.lines, skip('budget', 'cost-code budget rows'), `${P.quote.lines} quote rows${P.codePct.length ? `, % complete on ${P.codePct.length} codes` : ''}`),
@@ -387,16 +399,20 @@ module.exports = function jobImportRoutes(app, db, H) {
     return out;
   }
 
+  // the PM can correct the job # in the preview; it decides which project and which time clock punches this is
+  const withNumber = (P, b) => { P.fileName = b.file_name || ''; const n = str(b.job_number);
+    if (n && n !== P.job.number) { if (!/^[\w-]{1,20}$/.test(n)) throw bad('Job # can only have letters, numbers and dashes'); P.job.original_number = P.job.number; P.job.number = n; }
+    return P; };
   const adminOnly = req => { if (req.user.role !== 'admin') throw bad('Only an admin can import a job workbook', 403); };
   app.post('/api/import/job-workbook/preview', wrap((req, res) => {
     adminOnly(req);
-    const P = parse(load(req.body));
+    const P = withNumber(parse(load(req.body)), req.body);
     const target = req.body.job_id ? get(db, 'SELECT * FROM jobs WHERE id = ?', Number(req.body.job_id)) : findJob(P.job.number);
     res.json(preview(P, target));
   }));
   app.post('/api/import/job-workbook', wrap((req, res) => {
     adminOnly(req);
-    const P = parse(load(req.body));
+    const P = withNumber(parse(load(req.body)), req.body);
     res.json(apply(P, req, { job_id: req.body.job_id || null, create_invoices: req.body.create_invoices !== false, post_to_ledger: !!req.body.post_to_ledger, file_name: req.body.file_name }));
   }));
 };

@@ -45,13 +45,13 @@ function xlsx(sheets) {
 const serial = iso => Date.parse(iso + 'T00:00:00Z') / 864e5 + 25569;
 const T = (...c) => c;
 
-function workbook({ jobNo = '2699001' } = {}) {
+function workbook({ jobNo = '2699001', contract = 100000 } = {}) {
   const row = (letters, r, vals) => Object.fromEntries(vals.map((v, i) => [`${letters[i]}${r}`, v]).filter(([, v]) => v !== undefined && v !== ''));
   const cols = n => Array.from({ length: n }, (_, i) => X.colName(i + 1));
   return xlsx({
     'Cover': { A25: 'Blended burdened field rate  ($/hr)', B25: 40, A29: 'Default retainage %', B29: 0.05, A37: 'Schedule start (Gantt week 1)', B37: serial('2026-09-21') },
     'Job Register': { A5: 'Job #', ...row(cols(39), 6, [jobNo, 'Test Lab TI', 'Acme Builders', '100 Main St, Boise ID', 'TI - Lab', 'Chris Manager', 'Pat Foreman', 'Active', serial('2026-09-01'),
-      serial('2026-10-05'), serial('2027-03-31'), 12000, 100000, { f: 'SUMIFS(...)', v: 5000 }, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', { f: 'x', v: 8 }, '', 0.1, 'Night work in lab', 0.04]) },
+      serial('2026-10-05'), serial('2027-03-31'), 12000, contract, { f: 'SUMIFS(...)', v: 5000 }, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', { f: 'x', v: 8 }, '', 0.1, 'Night work in lab', 0.04]) },
     'Estimate Import': { ...row(cols(16), 6, T('LAB-P2-0810-L', 'Rough-In', '', '3/4" EMT', 1000, 'ft', 1.2, 0.04, '', '', '', '', '', 1600, '', '')),
       ...row(cols(16), 7, T('1010-L', 'Trim', '', 'Receptacles', 40, 'ea', 3.5, '', '', 0.5, '', '', '', 800, '', '')),
       ...row(cols(16), 8, T('', '', '', 'Rough-in subtotal', 1, '', '', '', '', '', '', '', '', '', '', '')) },
@@ -61,9 +61,12 @@ function workbook({ jobNo = '2699001' } = {}) {
       ...row(cols(22), 8, T('T-003', jobNo, '', 'ALL', 'Owner move-in', '', serial('2027-03-30'), serial('2027-03-31'), '', 'HC 241', 'GC', '', '', '', '', '', '', '', '', '', '', '')) },
     'Milestones': row(cols(15), 6, T('M-001', jobNo, 'Rough-in inspection', 'P3', serial('2026-10-31'), serial('2026-11-03'), '', '', 'Owner', '', 'Yes', '', '', 'AHJ')),
     'Change Orders': { ...row(cols(29), 6, T('CO-01', jobNo, 'Test Lab TI', serial('2026-10-10'), 'Add lab receptacles', 'GC', 'Approved', '1010', 10, 1, 500, 300, 0, 0, 0, 18, 818, 0.18, 0.15, 5000, '', '', 2, serial('2026-10-11'), serial('2026-10-12'), '', 'RFI-001', 'priced per walk')),
-      ...row(cols(29), 7, T('CO-02', jobNo, 'Test Lab TI', serial('2026-10-20'), 'Extra data drops', 'Owner', 'Submitted', '', 0, 0, 0, 0, 0, 1200, 0, 0, 1200, 0.18, 0.15, 1600, '', '', 0, serial('2026-10-21'), '', '', '', '')) },
+      ...row(cols(29), 7, T('CO-02', jobNo, 'Test Lab TI', serial('2026-10-20'), 'Extra data drops', 'Owner', 'Submitted', '', 0, 0, 0, 0, 0, 1200, 0, 0, 1200, 0.18, 0.15, 1600, '', '', 0, serial('2026-10-21'), '', '', '', '')),
+      // the template's status summary under the log (rows 129+) — not change orders
+      A129: 'Status', E129: 'Days Added', A130: 'Draft', E130: { f: 'SUMIFS()', v: 0 }, A133: 'Approved', E133: { f: 'SUMIFS()', v: 2 }, G133: 'Approved' },
     'SOV': { ...row(cols(13), 6, T(1, 'MOB', '', 'Mobilization', 4000, 4000, '', '', '', '', '', '', '')), ...row(cols(13), 7, T(2, '08', '', 'Raceway', 60000, '', '', '', '', '', '', '', '')),
-      ...row(cols(13), 8, T(3, '10', '', 'Devices', 36000, '', '', '', '', '', '', '', '')), ...row(cols(13), 9, T(4, 'CO', 'CO-01', 'CO-01 Add lab receptacles', 5000, '', '', '', '', '', '', '', '')) },
+      ...row(cols(13), 8, T(3, '10', '', 'Devices', 36000, '', '', '', '', '', '', '', '')), ...row(cols(13), 9, T(4, 'CO', 'CO-01', 'CO-01 Add lab receptacles', 5000, '', '', '', '', '', '', '', '')),
+      B70: 'TOTAL', D70: 'Contract total', G70: { f: 'SUM()', v: 105000 } },
     'Billing Entry': { A6: 1, B6: 'MOB', H6: 4000, A7: 2, B7: '08', H7: 10000, AG7: 2000, I7: 15000, A8: 3, B8: '10', A9: 4, B9: 'CO' },
     'Pay Apps': { ...row(cols(20), 6, T(1, serial('2026-10-31'), '', 0.1, '', '', '', '', { f: 'x', v: 16000 }, '', '', 14400, serial('2026-11-01'), serial('2026-11-20'), 14400, '', '', 'Paid', 'CHK 1234', '')),
       ...row(cols(20), 7, T(2, serial('2026-11-30'), '', 0.1, '', '', '', '', { f: 'x', v: 13000 }, '', '', '', '', '', '', '', '', '', '', '')), A8: 3 },
@@ -200,4 +203,20 @@ test('options: no invoices; post to Accounting', async () => {
   assert.equal(db.prepare('SELECT COUNT(*) n FROM journal_entries WHERE source_type = ? AND source_id = ?').get('invoice', inv.id).n, 1);
   const e = db.prepare('SELECT * FROM expenses WHERE job_id = ? ORDER BY id').get(b.job_id);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM journal_entries WHERE source_type = ? AND source_id = ?').get('expense', e.id).n, 1);
+});
+
+test('summary blocks under the logs are not entries; a suspicious job # is flagged and can be corrected', async () => {
+  const file = workbook({ jobNo: '7824', contract: 7824 }).toString('base64');
+  const p = (await call('admin', 'POST', '/import/job-workbook/preview', { file, file_name: 'A4YE_Job_6424_Notus.xlsx' })).data;
+  const S = Object.fromEntries(p.sections.map(x => [x.key, x]));
+  assert.equal(S.cos.count, 2, 'rows 129+ are the status summary'); assert.equal(S.sov.count, 4, 'row 70 is the total');
+  assert.equal(p.job_number_doubts.length, 2);
+  assert.match(p.job_number_doubts.join(' '), /same as the contract amount/); assert.match(p.job_number_doubts.join(' '), /file name says job 6424/);
+  // corrected in the preview: the project gets 6424 and the time clock rows for 6424 are its own
+  const fixed = (await call('admin', 'POST', '/import/job-workbook/preview', { file, file_name: 'A4YE_Job_6424_Notus.xlsx', job_number: '6424' })).data;
+  assert.equal(fixed.job.number, '6424'); assert.equal(fixed.job.original_number, '7824'); assert.deepEqual(fixed.job_number_doubts, []);
+  const r = (await call('admin', 'POST', '/import/job-workbook', { file, file_name: 'A4YE_Job_6424_Notus.xlsx', job_number: '6424' })).data;
+  assert.equal(db.prepare('SELECT timeclock_job FROM jobs WHERE id = ?').get(r.job_id).timeclock_job, '6424');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM estimates WHERE job_id = ? AND change_order = 1').get(r.job_id).n, 2);
+  assert.equal((await call('admin', 'POST', '/import/job-workbook/preview', { file, job_number: 'bad number!' })).status, 400);
 });

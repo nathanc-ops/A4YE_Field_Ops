@@ -222,9 +222,11 @@ Every tab of the job template now has a sheet here. Two shortcuts to know about:
 
 Dashboard, Manpower Loading, Billing Worksheet, Pay App Summary, Import Quote, the Bi-Weekly Report copies and Rollup are calculated, so the app rebuilds them. **The Employee List tab is never read.**
 
+- **Each tab is read only over the rows the template's own formulas read** (Change Orders 6–125, SOV 6–65, Schedule 6–155…), so the status summaries and totals under the logs are never taken for entries.
+- **The job # is checked.** It links the project to the A4Y Time Clock, so the preview flags a job # that equals the contract amount or differs from the number in the file name, and lets you correct it before importing.
 - **Re-running is safe.** If a project with that time clock job # exists, the import goes into it, fills only blank job fields, and skips any section the project already has.
 - **Accounting.** Imported invoices, payments and costs count on the project (billed to date, cash, cost to date) but are **not posted to Accounting** unless you tick that box, since they're normally already in your books.
-- **Checked on a real job file** (239 quote lines, 98 tasks, 10 COs, 24 RFIs, 46 labor punches, a pay app): revised contract, budget cost, labor hours and the pay app's gross / retainage / net due all matched the workbook.
+- **Checked on three real job files** (up to 239 quote lines, 98 tasks, 24 RFIs, 46 labor punches, pay apps): revised contract, budget cost, labor hours and the pay app's gross / retainage / net due all matched the workbook.
 - The .xlsx reader is built in (no add-on library); it reads the values Excel last calculated and knows which cells were formulas.
 
 ## A4Y Time Clock and cost codes

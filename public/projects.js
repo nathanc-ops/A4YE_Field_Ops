@@ -31,7 +31,7 @@ function importJobWorkbook() {
     <div id="jwpv" style="margin-top:12px"></div>
     <div class="actions"><button type="button" class="btn" data-x>Close</button><button class="btn primary" id="jwgo" disabled>Import</button></div>`, { wide: true });
   $('[data-x]', m.el).onclick = m.close;
-  const body = () => ({ file, file_name: name, job_id: $('#jwtarget', m.el) && $('#jwtarget', m.el).value || null,
+  const body = () => ({ file, file_name: name, job_number: $('#jwnum', m.el) ? $('#jwnum', m.el).value : undefined, job_id: $('#jwtarget', m.el) && $('#jwtarget', m.el).value || null,
     create_invoices: $('#jwinv', m.el) ? $('#jwinv', m.el).checked : true, post_to_ledger: $('#jwpost', m.el) ? $('#jwpost', m.el).checked : false });
   $('#jwfile', m.el).onchange = e => {
     const f = e.target.files[0]; if (!f) return;
@@ -40,11 +40,14 @@ function importJobWorkbook() {
     const rd = new FileReader();
     rd.onload = async () => {
       file = String(rd.result).replace(/^data:[^,]*,/, '');
-      let p; try { p = await POST('/import/job-workbook/preview', { file }); } catch (err) { $('#jwpv', m.el).innerHTML = `<div class="alert">${esc(err.message)}</div>`; return; }
+      let p; try { p = await POST('/import/job-workbook/preview', { file, file_name: name, job_number: $('#jwnum', m.el) ? $('#jwnum', m.el).value : undefined }); } catch (err) { $('#jwpv', m.el).innerHTML = `<div class="alert">${esc(err.message)}</div>`; return; }
       const J = p.job;
       $('#jwpv', m.el).innerHTML = `<div class="card" style="padding:12px"><b>${esc(J.number)} · ${esc(J.name)}</b> <span class="muted">— ${esc(J.client)}</span>
           <div class="small muted">${esc(J.address || '')}</div>
           <div class="small" style="margin-top:4px">Contract ${money0(J.contract || 0)}${J.approved_co ? ` + ${money0(J.approved_co)} approved COs` : ''} · ${esc(J.start || '?')} to ${esc(J.finish || '?')} · PM ${esc(J.pm || '—')}${p.pm ? ` <span class="muted">(${esc(p.pm)})</span>` : ''} · Foreman ${esc(J.foreman || '—')}${p.foreman ? ` <span class="muted">(${esc(p.foreman)})</span>` : ''}</div>
+          <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap;align-items:center"><label class="small">Time clock job # <input id="jwnum" value="${esc(J.number)}" style="width:110px"></label>
+            <span class="small muted">links this project to the A4Y Time Clock punches${J.original_number ? ` — changed from the workbook's ${esc(J.original_number)}` : ''}</span><button type="button" class="btn sm" id="jwrecheck">Re-check</button></div>
+          ${p.job_number_doubts.length ? `<div class="alert" style="margin-top:8px"><b>Check the job #:</b> ${p.job_number_doubts.map(esc).join('; ')}. Fix it above and press Re-check before importing.</div>` : ''}
           <div style="margin-top:8px">${p.target ? `<b>Goes into the existing project ${esc(p.target.number)} · ${esc(p.target.title)}</b> (time clock job # ${esc(p.target.timeclock_job || '—')}). Sections it already has are skipped, never overwritten.<input type="hidden" id="jwtarget" value="${p.target.id}">`
             : '<b>Creates a new commercial project</b>, with the customer and address added if they are not already in the app.'}</div></div>
         ${table([{ label: 'Tab', key: 'label' }, { label: 'Rows', num: 1, key: 'count' }, { label: 'Will do', html: s => s.skip ? `<span class="muted">Skip — ${esc(s.skip)}</span>` : '<span class="pill good">Import</span>' }, { label: '', html: s => `<span class="small muted">${esc(s.detail || '')}</span>` }], p.sections)}
@@ -54,6 +57,7 @@ function importJobWorkbook() {
         <label class="check full"><input type="checkbox" id="jwpost"> Post imported invoices, payments and costs to Accounting <span class="muted small">(leave off if they are already in your books — they still count on the project)</span></label>
         <p class="small muted">Not imported (the app calculates these): ${esc(p.not_imported)}.</p>`;
       $('#jwgo', m.el).disabled = false;
+      $('#jwrecheck', m.el).onclick = () => rd.onload();
     };
     rd.readAsDataURL(f);
   };
