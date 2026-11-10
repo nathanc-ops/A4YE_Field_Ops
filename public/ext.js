@@ -264,7 +264,7 @@ async function viewBoard(date, seg) {
   $('#zout').ondblclick = $('#zin').ondblclick = () => { localStorage.removeItem('fo_hw'); route(); };
   if (!isOffice()) { $$('.hb-appt').forEach(el => el.onclick = () => { const a = appts.find(x => x.id === Number(el.dataset.appt)); go(a.href); }); return; }
   $('#newjob').onclick = () => jobForm({});
-  $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
+  if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   if (date === todayStr()) S.timer = setInterval(() => { if (!document.querySelector('.hb-appt.dragging') && !document.querySelector('.modal-bg')) route(); }, 120000);
 
   const lanes = $$('.hb-lane');
@@ -359,7 +359,7 @@ async function viewWeek(date, seg) {
   bindDatePick('week');
   if (!isOffice()) return;
   $('#newjob').onclick = () => jobForm({});
-  $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
+  if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
   $$('.wk .chip').forEach(c => {
     c.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', `${c.dataset.appt}:${c.dataset.row}`));
@@ -388,7 +388,7 @@ async function viewDispatch(date, seg) {
   const order = { en_route: 0, on_site: 1, dispatched: 2, scheduled: 3, done: 4 };
   const appts = [...d.appointments].sort((a, b) => (!a.tech_ids.length ? -1 : 0) - (!b.tech_ids.length ? -1 : 0) || order[a.status] - order[b.status] || a.start.localeCompare(b.start));
   const next = { scheduled: ['dispatched', 'Dispatch'], dispatched: ['en_route', 'En route'], en_route: ['on_site', 'On site'], on_site: ['done', 'Done'] };
-  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('dispatch', date, 1)}<button class="btn primary" id="newjob">+ Book job</button>`,
+  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('dispatch', date, 1)}<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>`,
     `Dispatch console · refreshes every minute · ${d.unassigned.length ? `<span class="pill bad">${d.unassigned.length} visit(s) with no tech</span>` : 'every visit has a tech'}`) + `
     <div class="dc">
       <div class="card"><h2>Needs scheduling (${d.unscheduled.length})</h2>
@@ -409,7 +409,7 @@ async function viewDispatch(date, seg) {
     </div>`;
   bindDatePick('dispatch');
   $('#newjob').onclick = () => jobForm({});
-  $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
+  if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
   $$('[data-sched]').forEach(b => b.onclick = () => apptForm({ job_id: Number(b.dataset.sched), start: dayISO(date, 8), end: dayISO(date, 10) }));
   $$('[data-edit]').forEach(b => b.onclick = () => apptForm(byId[b.dataset.edit]));
