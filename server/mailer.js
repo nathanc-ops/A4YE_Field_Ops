@@ -75,7 +75,7 @@ function explain(e, c) {
     if (host.includes('sendgrid')) {
       const key = String(c.pass || ''), user = String(c.user || '');
       if (user !== 'apikey') return `The username must be exactly apikey (lowercase, no spaces) — it is "${user}". (${msg})`;
-      if (/^SK[0-9a-f]{32}$/i.test(key)) return `That is a Twilio account API key (starts with SK). Email needs an email API key, which starts with "SG." — create one in the Twilio console's Email section → API Keys, with Mail Send access. (${msg})`;
+      if (/^SK[0-9a-f]{32}$/i.test(key)) return `That is a Twilio account API key (starts with SK). Email needs an email API key, which starts with "SG.". The API Keys page in the main Twilio console only makes SK keys — create it in the email app instead: app.sendgrid.com → Settings → API Keys → Create API Key → Restricted Access → Mail Send: Full Access. (${msg})`;
       if (!key.startsWith('SG.')) return `That doesn't look like an email API key — those start with "SG." and are about 69 characters. The key's secret is shown only once when it's created; if you didn't copy it then, create a new key. (${msg})`;
       if (key.length < 60) return `The key looks cut off (${key.length} characters; email API keys are about 69). Copy the whole key, or create a new one. (${msg})`;
       return `Twilio Email rejected that API key: it was mistyped, deleted, or doesn't have Mail Send access. Create a new email API key with Mail Send access and paste it again. (${msg})`;

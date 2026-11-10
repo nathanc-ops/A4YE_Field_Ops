@@ -80,7 +80,7 @@ Read this first, because two common choices don't work from a DigitalOcean serve
 | Service | Server | Port | Username / password |
 |---|---|---|---|
 | Postmark (recommended) | `smtp.postmarkapp.com` | 2525 | Server API Token for both |
-| Twilio Email (formerly SendGrid, now in the Twilio console) | `smtp.sendgrid.net` | 2525 | `apikey` / an email API key with Mail Send access |
+| Twilio Email (formerly SendGrid, now in the Twilio console) | `smtp.sendgrid.net` | 2525 | `apikey` / an `SG.` key made at app.sendgrid.com → Settings → API Keys with Mail Send (not the SK keys from the main Twilio console) |
 | Brevo | `smtp-relay.brevo.com` | 2525 | From Brevo → SMTP & API |
 | Amazon SES | `email-smtp.<region>.amazonaws.com` | 2587 | SES SMTP credentials (not your AWS login) |
 
