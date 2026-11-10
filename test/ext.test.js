@@ -188,35 +188,3 @@ test('ledger stays balanced; invoice/payment/expense post; closed period blocks 
   assert.equal((await call('tech', 'GET', '/accounting/trial-balance')).status, 403);
 });
 
-test('Ply: push PO to API, pull items, and accept signed webhooks', async () => {
-  await call('admin', 'PUT', '/settings', { ply_enabled: '1', ply_api_base: plyBase, ply_api_key: 'sk_test', ply_webhook_secret: 'whsec' });
-  const me = (await call('admin', 'GET', '/me')).data.settings;
-  assert.equal(me.ply_api_key, ''); // never sent back
-  assert.equal(me.ply_api_key_set, '1');
-  const po = (await call('admin', 'POST', '/purchase-orders', { vendor_id: ids.vendor, job_id: ids.job, lines: [{ pricebook_id: ids.gfci, description: 'GFCI', qty: 5, unit_cost: 20, cost_code_id: ids.trim }] })).data.id;
-  const r = await call('admin', 'POST', `/purchase-orders/${po}/submit`, { send_to_ply: true });
-  assert.equal(r.status, 200);
-  const sent = plyCalls.find(c => c.url === '/v1/purchase-orders');
-  assert.equal(sent.auth, 'Bearer sk_test');
-  assert.equal(sent.body.lines[0].cost_code, '1010-M'); // A4YE Full Code for material
-  assert.equal(sent.body.job.external_id, (await call('admin', 'GET', `/jobs/${ids.job}`)).data.number);
-  const P = (await call('admin', 'GET', `/purchase-orders/${po}`)).data;
-  assert.ok(P.ply_id);
-
-  const pulled = (await call('admin', 'POST', '/integrations/ply/pull-items', {})).data;
-  assert.deepEqual(pulled, { updated: 1, created: 1 });
-
-  // unsigned webhook rejected
-  assert.equal((await call(null, 'POST', '/hooks/ply', { type: 'purchase_order.received' })).status, 401);
-  const evt = { type: 'purchase_order.received', data: { external_id: P.number, lines: [{ external_line_id: String(P.lines[0].id), quantity_received: 5 }] } };
-  const sig = crypto.createHmac('sha256', 'whsec').update(JSON.stringify(evt)).digest('hex');
-  const w = await call(null, 'POST', '/hooks/ply', evt, { 'X-Ply-Signature': sig });
-  assert.equal(w.status, 200);
-  assert.equal((await call('admin', 'GET', `/purchase-orders/${po}`)).data.status, 'received');
-  const bevt = { type: 'bill.created', data: { id: 'inv_1', purchase_order_external_id: P.number, invoice_number: 'CE-77', total: 100, date: today() } };
-  const w2 = await call(null, 'POST', '/hooks/ply', bevt, { 'X-Ply-Signature': crypto.createHmac('sha256', 'whsec').update(JSON.stringify(bevt)).digest('hex') });
-  assert.equal(w2.status, 200);
-  const bills = (await call('admin', 'GET', '/bills')).data.filter(b => b.vendor_invoice === 'CE-77');
-  assert.equal(bills.length, 1);
-  assert.equal(bills[0].total, 100);
-});

@@ -670,6 +670,15 @@ const MIGRATIONS = [
     addColumn(db, 'pick_list_lines', 'note', 'TEXT');
     addColumn(db, 'pick_list_lines', 'added_by', 'INTEGER REFERENCES users(id)');
   },
+  // 16: Ply Public API — which Ply line each of our pick list / PO lines became; connection settings
+  db => {
+    addColumn(db, 'pick_list_lines', 'ply_line_id', 'TEXT');
+    addColumn(db, 'po_lines', 'ply_line_id', 'TEXT');
+    for (const t of ['pick_lists', 'purchase_orders']) { addColumn(db, t, 'ply_id', 'TEXT'); addColumn(db, t, 'ply_synced_at', 'TEXT'); }
+    addColumn(db, 'purchase_orders', 'ply_status', 'TEXT');
+    for (const [k, v] of [['ply_env', 'production'], ['ply_from_location_id', ''], ['ply_po_location_id', ''], ['ply_auto_sync', '1'], ['ply_last_sync', ''], ['ply_locations', '[]']])
+      db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(k, v);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

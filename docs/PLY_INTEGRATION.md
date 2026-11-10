@@ -1,84 +1,46 @@
 # Ply integration
 
-[Ply](https://getply.com) handles purchasing and inventory for trades contractors. A4YE Field Ops can:
+Field Ops connects to Ply through the **Ply Public API** (https://docs.getply.com). Requests go to `https://api.getply.com/api/v1`, or the demo server, with your key in the `API_KEY` header.
 
-| Direction | What | When |
-|---|---|---|
-| Out → Ply | **Purchase orders** (lines, quantities, unit cost, cost code, job) | "Send to Ply" on a PO, or a PO re-sent after edits |
-| Out → Ply | **Pick lists** for a job | "Send to Ply" on a pick list |
-| Out → Ply | **Jobs** with their cost codes and material budgets | "Send job to Ply" on a job's Purchasing tab (also sent automatically before that job's first PO) |
-| In ← Ply | **Item catalog and stock levels** | Settings → Integrations → "Pull items & stock from Ply" |
-| In ← Ply | **Webhooks**: PO status, receipts, vendor invoices, inventory changes, pick progress | Real time, at `https://<your-server>/hooks/ply` |
+## Set up (about 5 minutes)
 
-## ⚠ Read this first
+1. **In Ply:** go to **Settings → Workspace → API Keys → Create API Key**. The Public API is a Ply add-on; if you don't see API Keys, ask your Ply account manager. Name the key something like `Field Ops` and tick these scopes:
+   - `jobs:write`
+   - `pick_lists:write`
+   - `purchase_orders:write`
+   - `materials:write`
+   - `materials_availability:read`
+   - `locations:read`
+   - `suppliers:read`
 
-Ply does not publish a public API reference. Its site only says you can build against the API with an API key. This connector uses a **configurable REST shape**: base URL, bearer API key, and the four endpoint paths are all set in **Settings → Integrations**. The payloads below are what this app sends and expects.
+   Copy the key. Ply shows it only once.
+2. **In Field Ops:** go to **Settings → Integrations – Ply**:
+   - tick **Enabled**;
+   - paste the key and press **Save**;
+   - press **Test connection**, which loads your Ply warehouses and trucks;
+   - choose **Pick lists come from** (and optionally **Shop POs deliver to**), then **Save** again.
+3. Press **Pull materials & stock** once. This links your price book to Ply's catalog: matched by Ply ID, then SKU = Ply item number, then exact name. Ply items you don't have yet are added to the price book.
 
-**Before going live**, ask your Ply rep for:
+Keep the key out of email, chat and source code. It lives only in the server's settings and is never sent back to a browser. If a key is ever exposed, delete it in Ply and create a new one.
 
-1. The API base URL and an API key.
-2. The endpoint paths for purchase orders, pick lists, jobs/projects and items/inventory.
-3. Their field names. If Ply's differ from the payloads below, change the mapping in `server/ply.js` (`toPlyPO`, `toPlyPickList`, `toPlyJob`, `pullItems`, `handleEvent`). Each mapping is a single function.
-4. Webhook setup: point Ply at `/hooks/ply` and agree on a shared secret.
+## What syncs
 
-Every request and webhook is logged under **Settings → Integrations → Recent activity** (click a row to see the full payload). Use it to debug field mismatches.
+| Action in Field Ops | In Ply |
+|---|---|
+| **Send job to Ply** (job → Purchasing tab), or automatically on the first pick list or PO for a job | A Ply **job** (name, number, client, address). An existing Ply job with the same number is linked instead of duplicated. |
+| **Send to Ply** on a pick list | A Ply **pick list** from your chosen warehouse or truck **to the job**, with each line as a catalog material. A line's cost code is noted as the material code, e.g. `0810-M`. Re-sending adds only new lines. |
+| **Send to Ply** on a PO | A Ply **purchase order**, left as **Draft** so you send it to the supplier from Ply. The supplier is matched by name; the PO is delivered to the job (or your shop location) with your prices. |
+| **Pull materials & stock** | Price book cost, client price, unit, and stock on hand. Stock counts warehouses and trucks, not material already at jobs. |
+| **Sync now**, and hourly | PO status; receipts entered in Ply receive the matching PO lines here (stock or job materials, as usual); a pick list Ply marks **Completed** completes here and charges the job. |
 
-## Outbound payloads
+## Items Ply doesn't have
 
-All requests send `Authorization: Bearer <API key>` and `Content-Type: application/json`. When Ply's response includes an `id`, it's stored as the record's Ply ID, and later sends become `PUT <path>/<id>`.
+Every Ply line must be a Ply catalog material. When a pick list or PO has lines Ply's catalog doesn't have, such as an item typed in by hand, Field Ops lists them and asks before adding them to Ply's catalog. Say no, and nothing is sent. You can add or link them in Ply, then send again.
 
-### Purchase order — `POST {ply_path_po}`
-```json
-{
-  "external_id": "PO-1001",
-  "vendor": { "ply_id": "v_123", "name": "City Electric Supply", "email": "orders@example.com" },
-  "job": { "external_id": "J-1005", "ply_id": "j_77", "name": "J-1005 Add 3 dedicated circuits", "customer": "Bluebird Cafe", "address": "9 Market Sq, Springfield, IL, 62701" },
-  "deliver_to": "job",
-  "order_date": "2026-11-06",
-  "needed_by": "2026-11-08",
-  "notes": "",
-  "lines": [
-    { "external_line_id": "12", "sku": "MAT-122", "ply_item_id": "itm_9", "description": "12/2 NM-B wire (250 ft)", "quantity": 2, "unit_cost": 118, "cost_code": "400" }
-  ]
-}
-```
+## Limits and errors
 
-### Pick list — `POST {ply_path_pick_list}`
-```json
-{ "external_id": "PL-1001", "job": { "...": "same as above" }, "needed_by": "2026-11-09", "notes": "",
-  "lines": [{ "external_line_id": "3", "sku": "MAT-GFCI", "description": "20A GFCI receptacle", "quantity": 3, "cost_code": "600" }] }
-```
-
-### Job — `POST {ply_path_job}`
-```json
-{ "external_id": "J-1005", "name": "J-1005 Add 3 dedicated circuits", "customer": "Bluebird Cafe", "address": "…",
-  "cost_codes": [{ "code": "400", "name": "Rough-in", "budget_material": 300 }] }
-```
-
-### Items — `GET {ply_path_items}`
-Expects an array, or `{ "items": [...] }` / `{ "data": [...] }`. Each item: `id`, `sku`, `name`, `unit`, `unit_cost` (or `cost`), `quantity_on_hand`. Items are matched by Ply ID first, then by SKU against the price book code. Unmatched items are added to the price book under the category "Ply import".
-
-## Inbound webhooks — `POST /hooks/ply`
-
-**Authentication** (one of these is required):
-- `X-Ply-Signature: sha256=<hex>`: an HMAC-SHA256 of the raw request body, keyed with the webhook secret. **Recommended.**
-- `X-Ply-Token: <webhook secret>`: a plain shared token.
-
-Body: `{ "type": "<event>", "data": { ... } }`. The webhook returns `200 {ok:true}` when the event is applied and `422 {error}` when it can't be matched. Both outcomes are logged.
-
-| `type` | `data` | Effect |
-|---|---|---|
-| `purchase_order.updated` | `external_id` or `id`, `status` | Stores Ply's status. `submitted`/`ordered`/`approved` marks a draft PO as ordered; `cancelled` cancels a draft. |
-| `purchase_order.received` | `external_id` or `id`, `lines: [{ external_line_id or sku, quantity_received }]` | Receives the goods. A job PO adds job materials at PO cost; a shop PO increases stock at weighted-average cost. |
-| `bill.created` / `invoice.created` | `id`, `purchase_order_external_id` or `purchase_order_id`, `invoice_number`, `date`, `total` | Creates a vendor bill in A/P from the PO. A difference between the vendor's total and the PO total is booked as a price-variance line. The same Ply invoice ID is never imported twice. |
-| `inventory.updated` | `id` or `sku`, `quantity_on_hand`, `unit_cost` | Sets stock. The change posts an inventory adjustment to the ledger. |
-| `pick_list.updated` | `external_id` or `id`, `status`, `lines: [{ external_line_id, quantity_picked }]` | Updates picked quantities. `picked`/`completed`/`delivered` completes the pick, which charges the materials to the job from stock. |
-
-## How it affects job costing and the books
-
-- **Job POs** (delivered to the job): received lines become job materials under the line's cost code. The vendor bill posts debit 5100 Job Materials / credit 2000 A/P. Job costing counts the materials once, from the receipt, not again from the bill.
-- **Shop POs**: receipts add stock. The bill posts debit 1300 Inventory / credit A/P. When a pick list or a tech uses stock, it posts debit 5100 / credit 1300 at cost under the job's cost code.
-
-## Testing without Ply
-
-`test/ext.test.js` runs a fake Ply server. It covers sending a PO, pulling items, and signed `purchase_order.received` and `bill.created` webhooks. Copy its approach to try a real payload locally before connecting production.
+- Ply allows 60 requests a minute and 10,000 a day per business. Field Ops waits and retries when Ply says to slow down.
+- **"Rejected the API key":** create a new key in Ply.
+- **"Missing a permission (scope)":** edit the key in Ply and add the scope named in the message.
+- Every call is logged under Settings → Integrations – Ply → Recent activity. Click a row to see what was sent and returned.
+- Ply has no webhooks, so Field Ops pulls changes. The old `/hooks/ply` address is no longer used.

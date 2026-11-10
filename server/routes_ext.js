@@ -235,7 +235,7 @@ module.exports = function routesExt(app, db, X) {
     if (!get(db, 'SELECT COUNT(*) n FROM po_lines WHERE po_id = ?', po.id).n) throw bad('PO has no lines');
     if (po.status === 'draft') run(db, "UPDATE purchase_orders SET status = 'submitted', order_date = ? WHERE id = ?", today(), po.id);
     let ply = null;
-    if (req.body.send_to_ply) ply = await Ply.pushPO(db, po.id);
+    if (req.body.send_to_ply) ply = await Ply.pushPO(db, po.id, { createMissing: !!req.body.create_missing });
     res.json({ ok: true, ply });
   }));
 
@@ -428,7 +428,7 @@ module.exports = function routesExt(app, db, X) {
     savePOLines(id, lines.map(l => ({ pricebook_id: l.pricebook_id, description: l.description, qty: l.short, unit_cost: l.line_cost ?? l.unit_cost ?? 0, cost_code_id: l.cost_code_id })));
     res.json({ id });
   }));
-  app.post('/api/pick-lists/:id/send-to-ply', office, wrap(async (req, res) => res.json(await Ply.pushPickList(db, Number(req.params.id)))));
+  app.post('/api/pick-lists/:id/send-to-ply', office, wrap(async (req, res) => { mustGet('pick_lists', req.params.id); res.json(await Ply.pushPickList(db, Number(req.params.id), { createMissing: !!req.body.create_missing })); }));
 
   H.setStock = (pricebookId, qty, memo) => {
     const pb = mustGet('pricebook', pricebookId);
@@ -576,10 +576,12 @@ module.exports = function routesExt(app, db, X) {
   // ================================================================ Ply
   app.get('/api/integrations/ply/log', admin, wrap((req, res) => res.json(all(db, "SELECT * FROM integration_log WHERE provider = 'ply' ORDER BY id DESC LIMIT 100"))));
   app.post('/api/integrations/ply/test', admin, wrap(async (req, res) => {
-    const c = Ply.config(db);
-    const r = await Ply.request(db, 'GET', c.paths.items + '?limit=1');
-    res.json({ ok: true, sample: r });
+    const r = await Ply.test(db);
+    run(db, "INSERT INTO settings (key, value) VALUES ('ply_locations', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(r.locations));
+    res.json(r);
   }));
+  app.post('/api/integrations/ply/sync', admin, wrap(async (req, res) => res.json(await Ply.syncStatus(db, H))));
+  app.post('/api/purchase-orders/:id/send-to-ply', office, wrap(async (req, res) => { mustGet('purchase_orders', req.params.id); res.json(await Ply.pushPO(db, Number(req.params.id), { createMissing: !!req.body.create_missing })); }));
   app.post('/api/integrations/ply/pull-items', admin, wrap(async (req, res) => res.json(await Ply.pullItems(db))));
   app.post('/api/integrations/ply/push-job/:id', office, wrap(async (req, res) => res.json(await Ply.pushJob(db, Number(req.params.id)))));
   app.get('/api/integrations/ply/preview/:kind/:id', admin, wrap((req, res) => {
@@ -588,18 +590,7 @@ module.exports = function routesExt(app, db, X) {
   }));
 };
 
-// Webhook endpoint lives outside /api auth (Ply calls it with a shared secret).
-module.exports.webhook = function plyWebhook(app, db, X) {
-  app.post('/hooks/ply', (req, res) => {
-    if (!Ply.verify(db, req)) { Ply.log(db, 'in', 'webhook', 'rejected', 'bad or missing signature'); return res.status(401).json({ error: 'Invalid signature' }); }
-    const evt = req.body || {};
-    try {
-      const result = tx(db, () => Ply.handleEvent(db, X.H, evt));
-      Ply.log(db, 'in', evt.type || evt.event || 'unknown', 'ok', { event: evt, result });
-      res.json({ ok: true, result });
-    } catch (e) {
-      Ply.log(db, 'in', evt.type || evt.event || 'unknown', 'error', { event: evt, error: e.message });
-      res.status(422).json({ error: e.message });
-    }
-  });
+// Ply's public API has no webhooks: changes are pulled (Settings → Ply → Sync now, and hourly).
+module.exports.webhook = function plyWebhook(app) {
+  app.post('/hooks/ply', (req, res) => res.status(410).json({ error: 'Not used: Field Ops pulls updates from the Ply API instead of receiving webhooks.' }));
 };

@@ -548,7 +548,7 @@ async function viewPO(id) {
   if (id === 'new') return;
   const on = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
   on('#submit', async () => { await act(() => POST(`/purchase-orders/${id}/submit`, {}), 'Marked as ordered'); route(); });
-  on('#ply', async () => { await act(() => POST(`/purchase-orders/${id}/submit`, { send_to_ply: true }), 'Sent to Ply'); route(); });
+  on('#ply', () => sendToPly(`/purchase-orders/${id}/send-to-ply`));
   on('#del', async () => { if (confirm('Delete this draft PO?')) { await act(() => DEL('/purchase-orders/' + id), 'Deleted'); go('#/purchasing'); } });
   on('#cancel', async () => { if (confirm('Cancel this PO?')) { await act(() => PUT('/purchase-orders/' + id, { status: 'cancelled' }), 'Cancelled'); route(); } });
   on('#bill', () => formModal({
@@ -635,7 +635,7 @@ async function viewPickList(id) {
     await act(() => PUT('/pick-lists/' + id, { lines: l })); await act(() => POST(`/pick-lists/${id}/complete`), 'Pick complete'); route();
   });
   on('#deliver', async () => { await act(() => POST(`/pick-lists/${id}/delivered`), 'Delivered'); route(); });
-  on('#ply', async () => { await act(() => POST(`/pick-lists/${id}/send-to-ply`), 'Sent to Ply'); route(); });
+  on('#ply', () => sendToPly(`/pick-lists/${id}/send-to-ply`));
   on('#short', async () => {
     const vendors = await loadVendors();
     formModal({ title: 'PO for shortages', okLabel: 'Create PO', fields: [{ name: 'vendor_id', label: 'Vendor (blank = item preferred vendor)', type: 'select', options: vendors.map(v => [v.id, v.name]) }],
@@ -905,18 +905,23 @@ async function settingsExtras(el) {
         <li>Paste it here. The key stays on your server and is never sent to browsers.</li></ol></details>
       <div class="row"><button class="btn primary">Save</button>${s.google_maps_api_key_set ? '<button type="button" class="btn danger" id="geoclear">Remove key</button>' : ''}</div></form></div>`);
     const log = await GET('/integrations/ply/log');
+    let locs = []; try { locs = JSON.parse(s.ply_locations || '[]'); } catch { locs = []; }
+    let last = null; try { last = JSON.parse(s.ply_last_sync || 'null'); } catch { last = null; }
+    const locOpts = locs.filter(l => l.type !== 'JOB').map(l => [l.id, `${l.name}${l.type ? ` (${label(String(l.type).toLowerCase())})` : ''}`]);
     cards.push(`<div class="card"><h2>Integrations — Ply</h2>
-      <div class="alert info" style="margin-bottom:12px">Ply doesn't publish its API reference. Get your API key, base URL and endpoint paths from your Ply rep, enter them here, then use <b>Test connection</b>. The payloads this app sends and the webhooks it accepts are documented in <code>docs/PLY_INTEGRATION.md</code>.</div>
+      <p class="small muted">Uses the Ply Public API. In Ply: <b>Settings → Workspace → API Keys → Create API Key</b>. Give it these scopes: <code>jobs:write</code>, <code>pick_lists:write</code>, <code>purchase_orders:write</code>, <code>materials:write</code>, <code>materials_availability:read</code>, <code>locations:read</code>, <code>suppliers:read</code>. The key is stored on this server only.</p>
+      <p class="small">${s.ply_enabled === '1' && s.ply_api_key_set ? `<span class="pill good">Enabled</span> Use Test connection to confirm the key works.${s.ply_auto_sync !== '0' ? ' Pulls PO receipts and finished picks every hour.' : ''}` : '<span class="pill">Not connected</span>'}${last && last.at ? ` Last sync ${fmtDT(last.at)}: ${last.received_lines} PO line(s) received, ${last.picks_completed} pick(s) completed${last.errors && last.errors.length ? `, <span style="color:var(--bad)">${last.errors.length} problem(s)</span>` : ''}.` : ''}</p>
       <form id="plyf"><div class="form-grid">
         ${fieldHtml({ name: 'ply_enabled', label: 'Enabled', type: 'checkbox', full: true }, s.ply_enabled === '1')}
-        ${fieldHtml({ name: 'ply_api_base', label: 'API base URL', placeholder: 'https://api.getply.com/v1', full: true }, s.ply_api_base)}
-        ${fieldHtml({ name: 'ply_api_key', label: s.ply_api_key_set ? 'API key (saved — leave blank to keep)' : 'API key', type: 'password' })}
-        ${fieldHtml({ name: 'ply_webhook_secret', label: s.ply_webhook_secret_set ? 'Webhook secret (saved — blank keeps)' : 'Webhook secret', type: 'password' })}
-        ${fieldHtml({ name: 'ply_path_po', label: 'PO endpoint path' }, s.ply_path_po)}${fieldHtml({ name: 'ply_path_pick_list', label: 'Pick list endpoint path' }, s.ply_path_pick_list)}
-        ${fieldHtml({ name: 'ply_path_job', label: 'Job endpoint path' }, s.ply_path_job)}${fieldHtml({ name: 'ply_path_items', label: 'Items / inventory endpoint path' }, s.ply_path_items)}
-      </div><p class="small">Webhook URL to give Ply: <code>${esc(location.origin)}/hooks/ply</code></p>
-      <div class="row"><button class="btn primary">Save Ply settings</button><button type="button" class="btn" id="plytest">Test connection</button><button type="button" class="btn" id="plypull">Pull items & stock from Ply</button></div></form>
-      <h3 style="margin-top:14px">Recent activity</h3>${table([{ label: 'When', get: l => fmtDT(l.created_at) }, { label: 'Dir', get: l => l.direction === 'in' ? '⬇ in' : '⬆ out' }, { label: 'Event', key: 'event' }, { label: 'Status', html: l => `<span class="pill ${l.status === 'ok' ? 'good' : 'bad'}">${esc(l.status)}</span>` }],
+        ${fieldHtml({ name: 'ply_api_key', label: s.ply_api_key_set ? 'API key (saved — leave blank to keep)' : 'API key', type: 'password', full: true })}
+        ${fieldHtml({ name: 'ply_env', label: 'Ply account', type: 'select', options: [['production', 'Live (api.getply.com)'], ['demo', 'Demo / testing (demo-api.getply.com)']], blank: false }, s.ply_env || 'production')}
+        ${fieldHtml({ name: 'ply_auto_sync', label: 'Sync every hour', type: 'checkbox' }, s.ply_auto_sync !== '0')}
+        ${fieldHtml({ name: 'ply_from_location_id', label: 'Pick lists come from (warehouse or truck)', type: 'select', options: locOpts, blank: locOpts.length ? '— choose —' : 'Test connection to load your locations' }, s.ply_from_location_id)}
+        ${fieldHtml({ name: 'ply_po_location_id', label: 'Shop POs deliver to', type: 'select', options: locOpts, blank: '— none —' }, s.ply_po_location_id)}
+      </div>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px"><button class="btn primary">Save</button><button type="button" class="btn" id="plytest">Test connection</button>
+        <button type="button" class="btn" id="plypull">Pull materials &amp; stock</button><button type="button" class="btn" id="plysync">Sync now</button></div></form>
+      <h3 style="margin-top:14px">Recent activity</h3>${table([{ label: 'When', get: l => fmtDT(l.created_at) }, { label: 'Call', key: 'event' }, { label: 'Status', html: l => `<span class="pill ${l.status === 'ok' ? 'good' : l.status === 'rate_limited' ? 'warn' : 'bad'}">${esc(l.status)}</span>` }],
         log.slice(0, 15), { empty: 'No Ply activity yet', onClick: l => modal(`<h2>${esc(l.event)}</h2><pre style="white-space:pre-wrap;font-size:12px">${esc(l.detail)}</pre>`) })}</div>`);
   }
   el.innerHTML = `<div class="grid g2">${cards.join('')}</div>`;
@@ -941,10 +946,16 @@ async function settingsExtras(el) {
   $('#geof').onsubmit = e => { e.preventDefault(); const v = e.target.google_maps_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ google_maps_api_key: v }, 'Google Maps key saved'); };
   if ($('#geoclear')) $('#geoclear').onclick = () => { if (confirm('Remove the Google Maps key? Address lookup falls back to the free US Census check.')) saveSettings({ google_maps_api_key_clear: '1' }, 'Key removed'); };
   const pf = $('#plyf');
-  pf.onsubmit = e => { e.preventDefault(); saveSettings({ ply_enabled: pf.ply_enabled.checked ? '1' : '0', ply_api_base: pf.ply_api_base.value, ply_api_key: pf.ply_api_key.value, ply_webhook_secret: pf.ply_webhook_secret.value,
-    ply_path_po: pf.ply_path_po.value, ply_path_pick_list: pf.ply_path_pick_list.value, ply_path_job: pf.ply_path_job.value, ply_path_items: pf.ply_path_items.value }, 'Ply settings saved'); };
-  $('#plytest').onclick = async () => { await act(() => POST('/integrations/ply/test'), 'Connected to Ply ✓'); route(); };
-  $('#plypull').onclick = async () => { const r = await act(() => POST('/integrations/ply/pull-items')); toast(`Updated ${r.updated}, added ${r.created} item(s)`); route(); };
+  pf.onsubmit = e => { e.preventDefault(); saveSettings({ ply_enabled: pf.ply_enabled.checked ? '1' : '0', ply_api_key: pf.ply_api_key.value.trim(), ply_env: pf.ply_env.value,
+    ply_auto_sync: pf.ply_auto_sync.checked ? '1' : '0', ply_from_location_id: pf.ply_from_location_id.value, ply_po_location_id: pf.ply_po_location_id.value }, 'Ply settings saved'); };
+  $('#plytest').onclick = async () => {
+    const r = await act(() => POST('/integrations/ply/test'));
+    toast(`Connected to Ply ✓ ${r.materials} materials, ${r.locations.length} locations${r.suppliers != null ? `, ${r.suppliers} suppliers` : ''}`);
+    if (r.suppliers_error) toast(r.suppliers_error, true);
+    S.settings = await GET('/me').then(m => m.settings); route();
+  };
+  $('#plysync').onclick = async () => { const r = await act(() => POST('/integrations/ply/sync')); toast(`Ply: ${r.pos} PO(s) checked, ${r.received_lines} line(s) received, ${r.picks_completed} pick(s) completed`); if (r.errors.length) toast(r.errors.join('; '), true); route(); };
+  $('#plypull').onclick = async () => { const r = await act(() => POST('/integrations/ply/pull-items')); toast(`Ply catalog: ${r.updated} updated (${r.linked} newly linked), ${r.created} added to the price book`); route(); };
 }
 function ccForm(c) {
   formModal({
@@ -1099,3 +1110,15 @@ async function viewReconcile(id) {
   draw();
 }
 // boot() runs from field.js (last script)
+
+// Send a pick list or PO to Ply. Items Ply's catalog doesn't have are listed first; adding them is the user's call.
+async function sendToPly(path, extra = {}) {
+  let r = await act(() => POST(path, extra));
+  if (r.needs_confirmation) {
+    if (!confirm(`These aren't in Ply's material catalog yet:\n\n• ${r.missing.join('\n• ')}\n\nAdd them to Ply's catalog and send? (Cancel to send nothing. Then link them under Price Book or add them in Ply.)`)) return;
+    r = await act(() => POST(path, { ...extra, create_missing: true }));
+  }
+  toast(`Sent ${r.sent} line(s) to Ply${r.supplier_linked === false ? ' (no matching supplier in Ply; pick it there)' : ''}`);
+  route();
+  return r;
+}

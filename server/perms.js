@@ -70,6 +70,7 @@ const RULES = [
   R('*', /^\/api\/(purchase-orders|pick-lists)(\/|$)/, 'purchasing'),
   R('POST,PUT,DELETE', /^\/api\/vendors(\/|$)/, 'purchasing'),
   R('POST', /^\/api\/integrations\/ply\/push-job\//, 'purchasing'),
+  R('POST', /^\/api\/integrations\/ply\/sync$/, 'purchasing'),
   R('POST,PUT,DELETE', /^\/api\/pricebook(\/|$)/, 'pricebook'),
   R('*', /^\/api\/expenses(\/|$)/, 'expenses'),
   R('POST', /^\/api\/time$/, 'timesheets'),

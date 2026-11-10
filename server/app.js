@@ -1067,6 +1067,7 @@ function createApp(db) {
     if (status >= 500) console.error(err);
     res.status(status).json({ error: msg });
   });
+  app.locals.H = H; // purchasing helpers for background jobs (Ply sync)
   return app;
 }
 
