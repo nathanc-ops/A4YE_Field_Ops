@@ -36,19 +36,33 @@ function contractValue(db, job) {
 // Estimated total cost from the budget (hours × average loaded rate of the job's techs + material + other).
 // Loaded labor cost per hour used to price a labor budget: what the crew has actually cost on this job
 // (time entries carry the rate, including ones synced from the A4Y Time Clock), else the assigned crew's
-// wages, else all active techs, else the company's last 90 days of time.
+// wages, else all active techs, else the company's last 90 days of time, else the blended rate set in Settings.
 function laborRate(db, job) {
   const hoursWeighted = where => get(db, `SELECT SUM(hourly_cost * h) / NULLIF(SUM(h), 0) r FROM (SELECT hourly_cost, (julianday(clock_out) - julianday(clock_in)) * 24 h
     FROM time_entries WHERE clock_out IS NOT NULL AND hourly_cost > 0 AND ${where})`).r;
   return hoursWeighted(`job_id = ${Number(job.id)}`)
     || get(db, `SELECT AVG(u.hourly_wage * (1 + u.burden_pct / 100.0)) r FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = ? AND u.hourly_wage > 0`, job.id).r
     || get(db, "SELECT AVG(hourly_wage * (1 + burden_pct / 100.0)) r FROM users WHERE role = 'tech' AND active = 1 AND hourly_wage > 0").r
-    || hoursWeighted("kind = 'job' AND clock_in > datetime('now', '-90 days')") || 0;
+    || hoursWeighted("kind = 'job' AND clock_in > datetime('now', '-90 days')")
+    || Number((get(db, "SELECT value FROM settings WHERE key = 'blended_labor_rate'") || {}).value) || 0;   // the job template's Cover rate
+}
+// Labor dollars for a cost code's budget hours. A code that came from an imported quote is priced at the quote's own
+// labor $/hour (Ext. Labor ÷ hours, the estimate's burdened rate), scaled if the hours were edited since; a code entered by
+// hand is priced at the crew rate. This is what makes the budget match the quote, as in the job template.
+function laborPricer(db, job) {
+  const crew = laborRate(db, job);
+  const q = new Map(all(db, 'SELECT cost_code_id, SUM(ext_labor) l, SUM(ext_hours) h FROM project_quote_lines WHERE job_id = ? GROUP BY cost_code_id', job.id).map(r => [r.cost_code_id, r]));
+  const cost = (ccId, hours) => { const x = q.get(ccId); if (!x) return (hours || 0) * crew; return x.h > 0 ? (hours || 0) * x.l / x.h : x.l; };
+  return { cost, crew, rate: ccId => { const x = q.get(ccId); return x && x.h > 0 ? x.l / x.h : crew; } };
 }
 function budgetCost(db, job) {
-  const b = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m, SUM(budget_other) o FROM job_budgets WHERE job_id = ?', job.id);
-  const hours = b.h ?? job.budget_hours ?? 0, mat = b.m ?? job.budget_materials ?? 0, other = b.o ?? 0;
-  const total = hours * laborRate(db, job) + mat + other;
+  const rows = all(db, 'SELECT * FROM job_budgets WHERE job_id = ?', job.id);
+  if (!rows.length) {
+    const total = (job.budget_hours || 0) * laborRate(db, job) + (job.budget_materials || 0);
+    return total > 0 ? r2(total) : null;
+  }
+  const L = laborPricer(db, job);
+  const total = rows.reduce((t, b) => t + L.cost(b.cost_code_id, b.budget_hours) + (b.budget_material || 0) + (b.budget_other || 0), 0);
   return total > 0 ? r2(total) : null;
 }
 // % complete rolled up from the per-cost-code % complete the PM/foreman enters, weighted by each code's budget
@@ -56,10 +70,10 @@ function budgetCost(db, job) {
 function codesPercent(db, job) {
   const rows = all(db, 'SELECT * FROM job_budgets WHERE job_id = ?', job.id);
   if (!rows.some(r => r.percent_complete != null)) return null;
-  const rate = laborRate(db, job);
+  const L = laborPricer(db, job);
   let w = 0, done = 0;
   for (const r of rows) {
-    const weight = (r.budget_hours || 0) * (rate || 1) + (r.budget_material || 0) + (r.budget_other || 0);
+    const weight = (L.crew || L.rate(r.cost_code_id) ? L.cost(r.cost_code_id, r.budget_hours) : (r.budget_hours || 0)) + (r.budget_material || 0) + (r.budget_other || 0);
     w += weight; done += weight * Math.min(100, Math.max(0, r.percent_complete || 0)) / 100;
   }
   return w > 0 ? r2(done / w * 100) : null;
@@ -304,4 +318,4 @@ function wipReport(db) {
 }
 function money(n) { return (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' }); }
 
-module.exports = { newInvoice, laborRate, codesPercent, budgetCost, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };
+module.exports = { newInvoice, laborRate, laborPricer, codesPercent, budgetCost, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };

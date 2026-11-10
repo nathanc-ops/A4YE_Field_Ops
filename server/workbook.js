@@ -69,9 +69,12 @@ module.exports = function workbookRoutes(app, db, X) {
   // Suggested values: mobilization % of the base contract, the rest spread over divisions by budgeted cost; one line per approved CO.
   function buildSov(job, mobPct) {
     const cv = Bill.contractValue(db, job);
-    const rate = Bill.laborRate(db, job) || 1;
-    const budgets = all(db, `SELECT cc.division, cc.division_name, SUM(jb.budget_hours) h, SUM(jb.budget_material) m, SUM(jb.budget_other) o FROM job_budgets jb JOIN cost_codes cc ON cc.id = jb.cost_code_id
-      WHERE jb.job_id = ? AND cc.division IS NOT NULL GROUP BY cc.division ORDER BY cc.division`, job.id).map(b => ({ ...b, w: (b.h || 0) * rate + (b.m || 0) + (b.o || 0) })).filter(b => b.w > 0);
+    const L = Bill.laborPricer(db, job), byDiv = new Map();
+    for (const b of all(db, `SELECT jb.*, cc.division, cc.division_name FROM job_budgets jb JOIN cost_codes cc ON cc.id = jb.cost_code_id WHERE jb.job_id = ? AND cc.division IS NOT NULL`, job.id)) {
+      const x = byDiv.get(b.division) || { division: b.division, division_name: b.division_name, w: 0 };
+      x.w += (L.crew || L.rate(b.cost_code_id) ? L.cost(b.cost_code_id, b.budget_hours) : (b.budget_hours || 0)) + (b.budget_material || 0) + (b.budget_other || 0); byDiv.set(b.division, x);
+    }
+    const budgets = [...byDiv.values()].filter(b => b.w > 0).sort((a, b) => String(a.division).localeCompare(String(b.division)));
     const mob = r2(cv.base * mobPct / 100), rest = r2(cv.base - mob), W = budgets.reduce((t, b) => t + b.w, 0);
     const want = [{ division: 'MOB', description: 'Mobilization', calc: mob }];
     if (W > 0) {
@@ -693,13 +696,13 @@ module.exports = function workbookRoutes(app, db, X) {
       cash: w.cash ?? null, over_under: b.over_under, pending_co: w.pending_co ?? 0, pct_complete: w.pct_complete ?? null, cpi: w.cpi ?? null, spi: w.spi ?? null,
       hours_used: w.actual_hours ?? 0, budget_hours: hist.budget_hours };
     // cost by phase from the cost codes (budget at the crew rate, earned from each code's % complete)
-    const rate = Bill.laborRate(db, job), log = costLog(job).rows;
+    const L = Bill.laborPricer(db, job), log = costLog(job).rows;
     const phaseOf = new Map(all(db, 'SELECT id, code, phase FROM cost_codes').map(c => [c.id, c.phase]));
     const commitBy = {}; for (const r of log) if (r.cost_code && r.open_commit) commitBy[r.cost_code] = (commitBy[r.cost_code] || 0) + r.open_commit;
     const ph = {};
     for (const c of P.codeRows(job)) {
       const key = PHASE_NAMES[phaseOf.get(c.cost_code_id)] ? phaseOf.get(c.cost_code_id) : 'other';
-      const budget = (c.budget_hours || 0) * rate + (c.budget_material || 0) + (c.budget_other || 0), actual = (c.labor_cost || 0) + (c.material_cost || 0) + (c.other_cost || 0);
+      const budget = L.cost(c.cost_code_id, c.budget_hours) + (c.budget_material || 0) + (c.budget_other || 0), actual = (c.labor_cost || 0) + (c.material_cost || 0) + (c.other_cost || 0);
       const pct = c.percent_complete || 0, x = ph[key] = ph[key] || { budget: 0, earned: 0, actual: 0, commit: 0, projected: 0 };
       x.budget += budget; x.earned += budget * pct / 100; x.actual += actual; x.commit += commitBy[c.code] || 0;
       x.projected += pct > 2 ? actual / (pct / 100) : Math.max(budget, actual + (commitBy[c.code] || 0));

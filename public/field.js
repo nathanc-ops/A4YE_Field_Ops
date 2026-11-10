@@ -254,6 +254,7 @@ settingsExtras = async function (el) { // eslint-disable-line no-func-assign
         ${fieldHtml({ name: 'project_require_cost_code', label: 'Require a cost code when clocking in on a project', type: 'checkbox', full: true }, s.project_require_cost_code !== '0')}
         ${fieldHtml({ name: 'project_clock_any', label: 'Techs can clock in on any open project (not only ones they are assigned to)', type: 'checkbox', full: true }, s.project_clock_any !== '0')}
         ${fieldHtml({ name: 'project_target_margin', label: 'Target margin % (dashboard flags projects below it)', type: 'number' }, s.project_target_margin ?? 18)}
+        ${fieldHtml({ name: 'blended_labor_rate', label: 'Blended burdened field rate $/h (prices labor when a job has no time or crew wages yet)', type: 'number' }, s.blended_labor_rate ?? '')}
         ${fieldHtml({ name: 'sched_hours_per_day', label: 'Schedule: hours per day', type: 'number' }, s.sched_hours_per_day ?? 8)}
         ${fieldHtml({ name: 'sched_days_per_week', label: 'Schedule: days per week', type: 'number' }, s.sched_days_per_week ?? 5)}
         ${fieldHtml({ name: 'sched_crew_availability', label: 'Schedule: crew availability factor (0–1)', type: 'number' }, s.sched_crew_availability ?? 0.92)}
@@ -262,7 +263,7 @@ settingsExtras = async function (el) { // eslint-disable-line no-func-assign
       <button class="btn primary" style="margin-top:6px">Save</button></form></div>`);
     $('#pjf').onsubmit = async e => { e.preventDefault(); const f = e.target;
       S.settings = await act(() => PUT('/settings', { project_require_cost_code: f.project_require_cost_code.checked ? '1' : '0', project_clock_any: f.project_clock_any.checked ? '1' : '0', project_target_margin: f.project_target_margin.value || '18',
-        sched_hours_per_day: f.sched_hours_per_day.value || '8', sched_days_per_week: f.sched_days_per_week.value || '5', sched_crew_availability: f.sched_crew_availability.value || '0.92', sched_max_crew: f.sched_max_crew.value || '10' }), 'Project settings saved'); };
+        blended_labor_rate: f.blended_labor_rate.value || '', sched_hours_per_day: f.sched_hours_per_day.value || '8', sched_days_per_week: f.sched_days_per_week.value || '5', sched_crew_availability: f.sched_crew_availability.value || '0.92', sched_max_crew: f.sched_max_crew.value || '10' }), 'Project settings saved'); };
     await timeclockCard(el, s);
   }
   const ts = await GET('/form-templates?all=1');

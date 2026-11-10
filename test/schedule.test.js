@@ -306,3 +306,21 @@ test('emailing the bi-weekly report: issued only, GC copy behind a link, outbox 
   assert.equal((await fetch(`${base}/api/public/report/${token}`)).status, 404);
   assert.equal((await call('tech', 'POST', `/projects/${ids.job}/biweekly/email`, { to: 'ray@summitgc.com' })).status, 403);
 });
+
+test('imported quote prices the budget: budget cost = quote total (quote labor $/h, not the crew rate); blended rate is the last fallback', async () => {
+  const Bill = require('../server/billing');
+  const job = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Pump station', is_project: 1, billing_type: 'fixed', contract_amount: 90000 })).data.id;
+  const T = (...c) => c.join('\t');
+  const text = [T('0810-L', '', '', 'EMT', '100', 'ft', '2', '', '', '0.5', '', '', '', '3500', '', ''), T('1010-L', '', '', 'Devices', '10', 'ea', '5', '', '', '1', '', '', '', '700', '', '')].join('\n');
+  const r = await call('admin', 'POST', `/projects/${job}/quote-import`, { text });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.totals.total, 200 + 3500 + 50 + 700);
+  const j = db.prepare('SELECT * FROM jobs WHERE id = ?').get(job);
+  assert.equal(Bill.budgetCost(db, j), 4450, 'quote labor $, whatever the crew earns');
+  db.prepare("UPDATE job_budgets SET budget_hours = 100 WHERE job_id = ? AND cost_code_id = (SELECT id FROM cost_codes WHERE code = '0810')").run(job);
+  assert.equal(Bill.budgetCost(db, j), 4450 + 3500, 'edited hours keep the quote rate ($70/h)');
+  // a job with no time, no crew and no wages anywhere falls back to the blended rate setting
+  const D2 = require('../server/db').open(':memory:');
+  D2.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('blended_labor_rate', '39.34')").run();
+  assert.equal(Bill.laborRate(D2, { id: 999 }), 39.34);
+});
