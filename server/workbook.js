@@ -775,7 +775,7 @@ module.exports = function workbookRoutes(app, db, X) {
   app.get('/api/projects/:id/biweekly/recipients', wrap((req, res) => {
     const job = project(req, req.params.id, { write: true });
     const c = get(db, 'SELECT email, name FROM customers WHERE id = ?', job.customer_id) || {};
-    res.json({ to: job.gc_email || c.email || '', gc_contact: job.gc_contact || c.name || '', cc: req.user.email || '', smtp: !!process.env.SMTP_HOST });
+    res.json({ to: job.gc_email || c.email || '', gc_contact: job.gc_contact || c.name || '', cc: req.user.email || '', smtp: mailer.configured(db) });
   }));
   app.post('/api/projects/:id/biweekly/email', wrap(async (req, res) => {
     const job = project(req, req.params.id, { write: true }), b = req.body || {}, pe = periodEnd(b.period_end);

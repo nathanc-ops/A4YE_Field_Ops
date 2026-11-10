@@ -71,24 +71,24 @@ Don't run `npm run seed` on the server. It loads demo data.
 
 ## 5. Email (so Send actually emails)
 
-On the server, open the settings file:
+Email is set up **in the app**, not on the server: sign in as an admin, open **Settings → Email**, pick the provider, enter the sign-in, and press **Send test email**. No restart is needed.
 
-```
-nano /etc/fieldops/fieldops.env
-```
+Read this first, because two common choices don't work from a DigitalOcean server:
 
-Fill in the `SMTP_` lines and remove the `#` in front of them.
+- **DigitalOcean blocks outgoing mail ports 25, 465 and 587** on many accounts. A test that says "Couldn't connect … on port 587" means exactly that. Use a sending service on **port 2525**:
 
-| Email provider | SMTP_HOST | SMTP_PORT | SMTP_USER / SMTP_PASS |
+| Service | Server | Port | Username / password |
 |---|---|---|---|
-| Microsoft 365 | `smtp.office365.com` | 587 | Mailbox address and password. SMTP AUTH must be enabled for that mailbox in the M365 admin center. |
-| Google Workspace | `smtp.gmail.com` | 587 | Address and an **App Password** (requires 2-step verification). |
+| Postmark (recommended) | `smtp.postmarkapp.com` | 2525 | Server API Token for both |
+| SendGrid | `smtp.sendgrid.net` | 2525 | `apikey` / an API key with Mail Send access |
+| Brevo | `smtp-relay.brevo.com` | 2525 | From Brevo → SMTP & API |
+| Amazon SES | `email-smtp.<region>.amazonaws.com` | 2587 | SES SMTP credentials (not your AWS login) |
 
-Save with Ctrl+O, Enter, then Ctrl+X. Apply it with:
+  Each service has you verify your domain by adding a few DNS records (SPF and DKIM). It shows you exactly which. Without them, mail tends to land in spam.
+- **Microsoft 365 mailbox passwords no longer work for SMTP.** Microsoft has been turning off password sign-in for SMTP. If your business email is on Microsoft 365, send through one of the services above using your domain. Replies still come back to your Microsoft 365 inbox, because the app sets Reply-To to the company email in Settings.
+- **Google Workspace** works with an App Password (Google Account → Security → 2-Step Verification → App passwords), but only if the server can reach port 587.
 
-```
-systemctl restart fieldops
-```
+The old way still works: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM` in `/etc/fieldops/fieldops.env`, then `systemctl restart fieldops`. When set, they take priority over Settings → Email.
 
 ## 6. Off-site backups (do not skip)
 

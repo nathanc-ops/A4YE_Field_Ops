@@ -185,7 +185,7 @@ function createApp(db) {
     next();
   });
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
@@ -216,6 +216,25 @@ function createApp(db) {
       up.run(k, String(v ?? ''));
     }
     res.json(publicSettings(req.user));
+  }));
+
+  // ------------------------------------------------------------ email (Settings → Email)
+  app.get('/api/settings/email', admin, (req, res) => {
+    const s = D.settings(db), c = mailer.config(db);
+    let last = null; try { last = s.smtp_last_test ? JSON.parse(s.smtp_last_test) : null; } catch { /* ignore */ }
+    res.json({ configured: !!c, source: c ? c.source : null, server_env: !!process.env.SMTP_HOST, from: c ? c.from : null,
+      host: s.smtp_host || '', port: s.smtp_port || '', security: s.smtp_security || '', user: s.smtp_user || '', pass_set: !!s.smtp_pass,
+      from_name: s.smtp_from_name || '', from_email: s.smtp_from_email || '', last_test: last,
+      ...(process.env.SMTP_HOST ? { env: { host: process.env.SMTP_HOST, port: process.env.SMTP_PORT || '587', user: process.env.SMTP_USER || '' } } : {}) });
+  });
+  app.post('/api/settings/email-test', admin, wrap(async (req, res) => {
+    const b = req.body || {}, to = String(b.to || '').trim();
+    if (!/^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/.test(to)) throw bad('Enter the address to send the test to');
+    const o = Object.fromEntries(['host', 'port', 'security', 'user', 'pass', 'from_name', 'from_email'].map(k => [k, b[k]]));
+    const r = await mailer.test(db, to, o);
+    db.prepare("INSERT INTO settings (key, value) VALUES ('smtp_last_test', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(JSON.stringify({ at: new Date().toISOString(), ok: r.ok, to, error: r.error || null, by: req.user.name }));
+    res.json(r);
   }));
 
   // ------------------------------------------------------------ users / employees

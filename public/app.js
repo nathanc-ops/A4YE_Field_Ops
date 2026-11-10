@@ -1476,19 +1476,77 @@ async function viewSettings() {
     { name: 'estimate_valid_days', label: 'Estimates valid for (days)', type: 'number' }, { name: 'target_gross_margin', label: 'Target gross margin %', type: 'number' },
     { name: 'overtime_weekly_hours', label: 'Overtime after (hrs/week)', type: 'number' }, { name: 'overtime_multiplier', label: 'Overtime multiplier', type: 'number' },
     { name: 'estimate_terms', label: 'Default estimate terms', type: 'textarea', full: true }, { name: 'invoice_terms', label: 'Default invoice terms', type: 'textarea', full: true }];
-  const outbox = await GET('/outbox');
   $('#view').innerHTML = setTop('Settings') + `<div class="grid g2"><div class="card"><h2>Company</h2><form id="sf"><div class="form-grid">${fields.map(f => fieldHtml(f, s[f.name])).join('')}</div>
       ${isAdmin() ? '<div class="row" style="margin-top:12px"><button class="btn primary">Save settings</button></div>' : '<p class="muted">Only admins can change settings.</p>'}</form></div>
     <div class="stack"><div class="card"><h2>Change my password</h2><form id="pw" class="stack">${fieldHtml({ name: 'current', label: 'Current password', type: 'password', required: true })}${fieldHtml({ name: 'next', label: 'New password (8+)', type: 'password', required: true })}<button class="btn">Change password</button></form></div>
-    <div class="card"><h2>Email delivery</h2>${outbox.some(o => o.status === 'not_configured') || !outbox.length ? `<div class="alert info">To email estimates and invoices directly, set <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> and <code>SMTP_FROM</code> on the server (see README). Until then, "Send" marks the document as sent and copies the customer link for you to text or email.</div>` : ''}
-      <h3 style="margin-top:12px">Recent messages</h3>${table([{ label: 'When', get: o => fmtDT(o.created_at) }, { label: 'To', key: 'to_email' }, { label: 'Subject', key: 'subject' }, { label: 'Status', html: o => pill(o.status) }], outbox.slice(0, 15), { empty: 'Nothing sent yet' })}</div>
+    <div class="card"><h2>Email</h2><div id="emailsetup"><div class="muted small">Loading…</div></div></div>
     <div class="card"><h2>Appearance</h2><p class="small muted">Applies to this device only.</p><div class="seg">${[['dark', 'Dark (default)'], ['light', 'Light'], ['system', 'Match device']].map(([k, l]) => `<button type="button" data-theme="${k}" class="${themePref() === k ? 'on' : ''}">${l}</button>`).join('')}</div></div></div></div>
     <div id="settings-ext" class="stack" style="margin-top:14px"></div>`;
   settingsExtras($('#settings-ext'));
+  emailSetup($('#emailsetup'));
   if (isAdmin()) $('#sf').onsubmit = async e => { e.preventDefault(); S.settings = await act(() => PUT('/settings', readForm(e.target, fields)), 'Settings saved'); renderShell(); route(); };
   else $$('#sf input, #sf textarea').forEach(i => i.disabled = true);
   $('#pw').onsubmit = async e => { e.preventDefault(); await act(() => POST('/me/password', { current: e.target.current.value, next: e.target.next.value }), 'Password changed'); e.target.reset(); };
   $$('[data-theme]').forEach(b => b.onclick = () => { try { localStorage.setItem('fo_theme', b.dataset.theme); } catch { /* private mode */ } applyTheme(); $$('[data-theme]').forEach(x => x.classList.toggle('on', x === b)); });
+}
+// Settings → Email: pick the provider, enter the account, send a test. The password is stored as a secret on the server
+// and never sent back to the browser. A server with SMTP_* environment variables uses those instead (shown, not editable).
+const MAIL_PRESETS = [
+  ['postmark', 'Postmark (recommended)', 'smtp.postmarkapp.com', 2525, 'starttls', 'Username and password are both your Postmark Server API Token. Verify your domain (or the From address) in Postmark first.'],
+  ['sendgrid', 'SendGrid', 'smtp.sendgrid.net', 2525, 'starttls', 'Username is the word apikey; password is a SendGrid API key with Mail Send access. Verify your domain or sender in SendGrid.'],
+  ['brevo', 'Brevo', 'smtp-relay.brevo.com', 2525, 'starttls', 'Username and SMTP key are under Brevo → SMTP & API. Verify your domain or sender in Brevo.'],
+  ['ses', 'Amazon SES', 'email-smtp.us-west-2.amazonaws.com', 2587, 'starttls', 'Use SES SMTP credentials (not your AWS login) and the server for your SES region. Verify your domain in SES.'],
+  ['google', 'Google Workspace / Gmail', 'smtp.gmail.com', 587, 'starttls', 'Username is the full Google address; password is an App Password (Google Account → Security → 2-Step Verification → App passwords). Note: some hosts, DigitalOcean included, block port 587.'],
+  ['m365', 'Microsoft 365', 'smtp.office365.com', 587, 'starttls', 'Microsoft has been turning off password sign-in for SMTP, so a mailbox password usually no longer works. If your business email is Microsoft 365, use Postmark/SendGrid/Brevo with your domain instead.'],
+  ['other', 'Other SMTP server', '', 587, 'starttls', 'Use the server, port and sign-in your email provider gives for "SMTP".'],
+];
+async function emailSetup(el) {
+  const outbox = await GET('/outbox');
+  const recent = `<h3 style="margin-top:14px">Recent messages</h3>${table([{ label: 'When', get: o => fmtDT(o.created_at) }, { label: 'To', key: 'to_email' }, { label: 'Subject', key: 'subject' },
+    { label: 'Status', html: o => `${pill(o.status)}${o.error ? `<div class="small" style="color:var(--bad);max-width:320px">${esc(o.error)}</div>` : ''}` }], outbox.slice(0, 15), { empty: 'Nothing sent yet' })}`;
+  if (!isAdmin()) { el.innerHTML = `<p class="small muted">An admin sets up email sending here.</p>${recent}`; return; }
+  const e = await GET('/settings/email');
+  const status = e.configured ? `<div class="alert ${e.last_test && !e.last_test.ok ? '' : 'info'}"><b>Email is set up</b>${e.source === 'server' ? ' on the server (environment variables)' : ''} — sending from ${esc(e.from || '')}.
+      ${e.last_test ? `<br><span class="small">Last test ${fmtDT(e.last_test.at)} to ${esc(e.last_test.to)}: ${e.last_test.ok ? '<b style="color:var(--good)">worked</b>' : `<b style="color:var(--bad)">failed</b> — ${esc(e.last_test.error || '')}`}</span>` : '<br><span class="small">Not tested yet — send a test below.</span>'}</div>`
+    : '<div class="alert">Email isn\'t set up yet. Until it is, "Send" on estimates, invoices, reports and appointment confirmations records the message and copies the link or text for you to send yourself.</div>';
+  const guess = MAIL_PRESETS.find(p => p[2] && p[2] === e.host) ? MAIL_PRESETS.find(p => p[2] === e.host)[0] : e.host ? 'other' : 'postmark';
+  el.innerHTML = `${status}
+    ${e.server_env ? `<p class="small">This server sets <code>SMTP_HOST</code> (${esc(e.env.host)}:${esc(e.env.port)}), which takes priority over the form below. Remove the <code>SMTP_</code> lines from <code>/etc/fieldops/fieldops.env</code> to manage email here instead.</p>` : ''}
+    <form id="mailf"><div class="form-grid">
+      ${fieldHtml({ name: 'preset', label: 'Email provider', type: 'select', options: MAIL_PRESETS.map(p => [p[0], p[1]]), blank: false, full: true }, guess)}
+      <p class="small muted full" id="mailhint" style="margin:0"></p>
+      ${fieldHtml({ name: 'host', label: 'SMTP server' }, e.host)}${fieldHtml({ name: 'port', label: 'Port', type: 'number' }, e.port || '')}
+      ${fieldHtml({ name: 'security', label: 'Secure connection', type: 'select', options: [['starttls', 'STARTTLS (ports 587, 2525, 2587)'], ['ssl', 'SSL/TLS (port 465)'], ['none', 'None (not recommended)']], blank: false }, e.security || 'starttls')}
+      ${fieldHtml({ name: 'user', label: 'Username' }, e.user)}
+      ${fieldHtml({ name: 'pass', label: e.pass_set ? 'Password / API key (saved — leave blank to keep)' : 'Password / API key', type: 'password' }, '')}
+      ${fieldHtml({ name: 'from_email', label: 'Send from address', type: 'email', placeholder: 'e.g. office@yourcompany.com' }, e.from_email)}
+      ${fieldHtml({ name: 'from_name', label: 'Send from name', placeholder: S.settings.company_name || '' }, e.from_name)}
+    </div>
+    <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px"><button class="btn primary">Save</button>
+      <input name="test_to" type="email" placeholder="Send a test to…" value="${esc(S.user.email || '')}" style="width:auto;min-width:220px"><button type="button" class="btn" id="mailtest">Send test email</button>
+      ${e.configured && e.source === 'settings' ? '<button type="button" class="btn danger sm" id="mailoff">Turn off</button>' : ''}</div>
+    <p class="small muted" style="margin-top:8px">The test uses what's in the form, saved or not. Replies to customer emails go to the company email above. For mail to land in inboxes rather than spam, the provider will ask you to add a few DNS records (SPF/DKIM) for your domain — they show you exactly which.</p></form>
+    ${recent}`;
+  const f = $('#mailf', el);
+  const hint = () => { const p = MAIL_PRESETS.find(x => x[0] === f.preset.value); $('#mailhint', el).textContent = p[5]; };
+  f.preset.onchange = () => { const p = MAIL_PRESETS.find(x => x[0] === f.preset.value); if (p[2]) f.host.value = p[2]; f.port.value = p[3]; f.security.value = p[4];
+    if (p[0] === 'sendgrid' && !f.user.value) f.user.value = 'apikey'; hint(); };
+  hint();
+  if (!e.host) f.preset.onchange();
+  const vals = () => ({ host: f.host.value.trim(), port: f.port.value, security: f.security.value, user: f.user.value.trim(), pass: f.pass.value, from_email: f.from_email.value.trim(), from_name: f.from_name.value.trim() });
+  f.onsubmit = async ev => { ev.preventDefault(); const v = vals();
+    if (!v.host) return toast('Enter the SMTP server', true);
+    await act(() => PUT('/settings', { smtp_host: v.host, smtp_port: v.port, smtp_security: v.security, smtp_user: v.user, smtp_pass: v.pass, smtp_from_email: v.from_email, smtp_from_name: v.from_name }), 'Email settings saved').catch(() => null);
+    emailSetup(el); };
+  $('#mailtest', el).onclick = async () => {
+    const to = f.test_to.value.trim(); if (!to) return toast('Enter an address for the test', true);
+    const b = $('#mailtest', el); b.disabled = true; b.textContent = 'Sending…';
+    try { const r = await POST('/settings/email-test', { to, ...vals() });
+      if (r.ok) toast(`Test sent to ${to} from ${r.from} — check the inbox (and spam)`); else toast(r.error, true);
+    } catch (err) { toast(err.message, true); }
+    emailSetup(el); };
+  if ($('#mailoff', el)) $('#mailoff', el).onclick = async () => { if (!confirm('Turn off email sending? Sends will be recorded and copied for you instead.')) return;
+    await act(() => PUT('/settings', { smtp_host: '', smtp_pass_clear: '1' }), 'Email turned off').catch(() => null); emailSetup(el); };
 }
 // Dark is the company default (matches the black brand). Each person can pick Light or Match device.
 const themePref = () => { try { return localStorage.getItem('fo_theme') || 'dark'; } catch { return 'dark'; } };

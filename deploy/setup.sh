@@ -100,12 +100,14 @@ PUBLIC_URL=https://$DOMAIN
 # Off-site backup folder (an rclone remote named "offsite", see docs/DEPLOY.md), e.g. offsite:a4ye-backups
 OFFSITE=
 
-# Email (optional). Without these, Send copies the customer link instead of emailing.
-#SMTP_HOST=smtp.office365.com
-#SMTP_PORT=587
-#SMTP_USER=office@all4youelectrical.com
+# Email: set it up in the app (Settings -> Email) and press "Send test email".
+# These lines are only needed to manage it here instead; when set they take priority over Settings.
+# DigitalOcean often blocks ports 25/465/587, so use a sending service on port 2525 (see docs/DEPLOY.md).
+#SMTP_HOST=smtp.postmarkapp.com
+#SMTP_PORT=2525
+#SMTP_USER=
 #SMTP_PASS=
-#SMTP_FROM=All 4 You Electrical <office@all4youelectrical.com>
+#SMTP_FROM=All 4 You Electrical <office@yourdomain.com>
 EOF
 fi
 chown root:fieldops "$ENVF" && chmod 640 "$ENVF"

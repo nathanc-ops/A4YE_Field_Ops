@@ -80,7 +80,7 @@ module.exports = function apptConfirm(app, db, X) {
   app.get('/api/appointments/:id/confirmation', wrap((req, res) => {
     if (req.user.role === 'tech') throw bad('Office only', 403);
     const a = visit(req.params.id), c = compose(a);
-    res.json({ to: c.to, customer: c.name, subject: c.subject, text: c.text, changed: c.changed, confirmed_at: a.confirmed_at, confirmed_to: a.confirmed_to, smtp: !!process.env.SMTP_HOST });
+    res.json({ to: c.to, customer: c.name, subject: c.subject, text: c.text, changed: c.changed, confirmed_at: a.confirmed_at, confirmed_to: a.confirmed_to, smtp: mailer.configured(db) });
   }));
   app.post('/api/appointments/:id/confirm', wrap(async (req, res) => {
     if (req.user.role === 'tech') throw bad('Office only', 403);

@@ -112,12 +112,14 @@ Import in this order, because later files find their customer and job by the IDs
 
 ## Email
 
-Without SMTP settings, **Send** marks the document as sent and copies the customer link so you can text or email it yourself. To send directly:
+Set it up in the app: **Settings → Email** (admins). Pick the provider, enter the sign-in and the address to send from, and press **Send test email**; a failed test says why in plain words (wrong key, blocked port, unverified sender). The password or API key is stored as a secret and never shown again. Until email is set up, **Send** marks the document as sent and copies the link or text so you can send it yourself, and every message is listed under Settings → Email → Recent messages.
 
-```bash
-SMTP_HOST=smtp.yourprovider.com SMTP_PORT=587 SMTP_USER=... SMTP_PASS=... SMTP_FROM="All 4 You Electrical <office@yourdomain.com>" \
-PUBLIC_URL=https://ops.yourdomain.com npm start
-```
+- **Use a sending service on a DigitalOcean server.** DigitalOcean blocks outgoing mail ports 25, 465 and 587 on many accounts, so connect on port **2525**. Postmark (recommended), SendGrid and Brevo all accept it, as does Amazon SES on 2587. Each will have you verify your domain with a few DNS records (SPF/DKIM) so mail lands in inboxes instead of spam.
+- **Microsoft 365:** Microsoft has been turning off password sign-in for SMTP, so a mailbox password usually no longer works. Send through one of the services above using your domain.
+- **Google Workspace:** works with an App Password, if the server can reach port 587.
+- Replies to customer emails go to the **company email** in Settings.
+
+`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM` on the server still work, and take priority over Settings when set.
 
 `PUBLIC_URL` controls the links in emails, so set it to the address customers can actually reach.
 
