@@ -3,7 +3,7 @@
  * Sheets, in the workbook's order: Dashboard · Schedule & Gantt · Cost Codes · Labor Log · Cost Log · Change Orders · SOV · Billing Entry ·
  * Pay Apps · Pay App (G702/G703) · RFI-Submittal · Safety-Quality · Milestones · Daily Logs. */
 const WB_SHEETS = [
-  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
+  ['dashboard', 'Dashboard'], ['schedule', 'Schedule'], ['codes', 'Cost Codes'], ['manpower', 'Manpower Loading'], ['labor', 'Labor Log'], ['cost', 'Cost Log', 'cost'], ['co', 'Change Orders', 'office'],
   ['sov', 'SOV', 'bill'], ['billing', 'Billing Entry', 'bill'], ['payapps', 'Pay Apps', 'bill'], ['g702', 'Pay App (G702/G703)', 'bill'],
   ['rfi', 'RFI-Submittal'], ['safety', 'Safety-Quality'], ['milestones', 'Milestones'], ['logs', 'Daily Logs'],
 ];
@@ -20,7 +20,7 @@ async function projectTab(j, T) {
   T.innerHTML = `<div class="wb-tabs no-print">${sheets.map(([k, l]) => `<a href="#/jobs/${j.id}?tab=project&sheet=${k}" class="${k === sheet ? 'on' : ''}">${l}</a>`).join('')}</div><div id="wbs"></div>`;
   const W = $('#wbs', T);
   if (['dashboard', 'codes', 'logs'].includes(sheet)) return projectCoreSheet(j, W, sheet);
-  return ({ schedule: wbSchedule, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
+  return ({ schedule: wbSchedule, manpower: wbManpower, labor: wbLabor, cost: wbCost, co: wbChangeOrders, sov: wbSov, billing: wbBilling, payapps: wbPayApps, g702: wbG702, rfi: wbRfi, safety: wbSafety, milestones: wbMilestones })[sheet](j, W);
 }
 
 // ------------------------------------------------------------ Schedule & Gantt
@@ -110,6 +110,44 @@ async function wbSchedule(j, W) {
   if ($('#sstart', W)) $('#sstart', W).onclick = e => { e.preventDefault();
     formModal({ title: 'Gantt start (week 1)', values: { schedule_start: d.schedule_start || '' }, fields: [{ name: 'schedule_start', label: 'Week of (snaps to Monday; blank = first task start)', type: 'date' }],
       submit: async v => { await PUT(`/projects/${j.id}/schedule-start`, v); route(); } }); };
+}
+
+// ------------------------------------------------------------ Manpower Loading
+// Planned crew = planned hrs ÷ (hrs/day × days/wk × availability); actual crew = actual hrs ÷ (hrs/day × days/wk).
+// Weeks needing more than the max crew are flagged. Shared by the project sheet and the all-projects view.
+function crewChart(weeks, cfg, today) {
+  const top = Math.max(cfg.max_crew, ...weeks.map(w => Math.max(w.planned_crew, w.actual_crew))) * 1.1 || 1, H = 110;
+  const y = v => Math.round(v / top * H);
+  return `<div class="crew-chart" role="img" aria-label="Planned and actual crew by week">
+    <div class="cc-max" style="bottom:${y(cfg.max_crew) + 18}px"><span>max crew ${cfg.max_crew}</span></div>
+    ${weeks.map(w => `<div class="cc-wk${w.week_start <= today && w.week_ending >= today ? ' now' : ''}" title="${esc(`Week ${w.wk} (${wbDate(w.week_start)} – ${wbDate(w.week_ending)})\nPlanned crew ${w.planned_crew} · ${w.planned_hours} hrs\nActual crew ${w.actual_crew} · ${w.actual_hours} hrs`)}">
+      <div class="cc-bars" style="height:${H}px"><i class="p${w.over_max ? ' over' : ''}" style="height:${y(w.planned_crew)}px"></i><i class="a" style="height:${y(w.actual_crew)}px"></i></div>
+      <div class="cc-lab">${Number(w.week_start.slice(5, 7))}/${Number(w.week_start.slice(8))}</div></div>`).join('')}
+  </div><div class="cc-legend small"><span><i class="p"></i>Planned crew (from the schedule)</span><span><i class="a"></i>Actual crew (time clock)</span><span><i class="p over"></i>Over max crew</span></div>`;
+}
+const shortD = d => new Date(d + 'T12:00:00Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+function manpowerTable(weeks, classes, { cum = true } = {}) {
+  const n1 = v => v == null || v === 0 ? '' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  const cols = [{ label: 'Wk', key: 'wk' }, { label: 'Week start', get: r => shortD(r.week_start), csv: r => r.week_start }, { label: 'Week ending', get: r => shortD(r.week_ending), csv: r => r.week_ending },
+    { label: 'Planned hrs', num: 1, get: r => n1(r.planned_hours), csv: r => r.planned_hours }, { label: 'Planned crew', num: 1, html: r => r.over_max ? `<b style="color:var(--bad)">${r.planned_crew}</b>` : n1(r.planned_crew), csv: r => r.planned_crew },
+    { label: 'Actual hrs', num: 1, get: r => n1(r.actual_hours), csv: r => r.actual_hours }, { label: 'Actual crew', num: 1, get: r => n1(r.actual_crew), csv: r => r.actual_crew },
+    { label: 'Variance hrs', num: 1, html: r => r.variance_hours ? `<span style="color:${r.variance_hours > 0 ? 'var(--bad)' : 'inherit'}">${n1(r.variance_hours)}</span>` : '', csv: r => r.variance_hours },
+    ...(cum ? [{ label: 'Cum planned', num: 1, get: r => n1(r.cum_planned), csv: r => r.cum_planned }, { label: 'Cum actual', num: 1, get: r => n1(r.cum_actual), csv: r => r.cum_actual }] : []),
+    ...classes.map(c => ({ label: `${c} hrs`, num: 1, get: r => n1(r.by_class[c]), csv: r => r.by_class[c] })),
+    { label: 'OT hrs', num: 1, get: r => n1(r.ot_hours), csv: r => r.ot_hours }, { label: 'OT %', num: 1, get: r => r.ot_pct ? r.ot_pct + '%' : '', csv: r => r.ot_pct ?? '' },
+    { label: 'People', num: 1, get: r => r.headcount || '', csv: r => r.headcount }, { label: 'Over max crew?', html: r => r.over_max ? '<span class="pill bad">OVER</span>' : '', csv: r => r.over_max ? 'OVER' : '' }];
+  return cols;
+}
+async function wbManpower(j, W) {
+  const d = await GET(`/projects/${j.id}/manpower`), t = d.totals, cols = manpowerTable(d.weeks, d.classes);
+  const n1 = v => Number(v || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  W.innerHTML = `<div class="card"><div class="row spread"><h2>Manpower Loading</h2><div class="row no-print"><button class="btn sm" id="mcsv">CSV</button><button class="btn sm" onclick="print()">Print</button></div></div>
+    <p class="small muted">Planned hours come from the Schedule (each task's budget hours spread over its dates). Planned crew = planned hrs ÷ (${d.cfg.hours_per_day} h/day × ${d.cfg.days_per_week} days × ${d.cfg.availability} availability); actual crew = actual hrs ÷ (${d.cfg.hours_per_day} × ${d.cfg.days_per_week}). Class comes from the job's foreman and each employee's title; OT is hours past the weekly overtime threshold across all their jobs.</p>
+    <div class="grid g4" style="margin:12px 0">${kpi('Planned hours', n1(t.planned_hours), 'scheduled, whole job')}${kpi('Actual hours', n1(t.actual_hours), d.classes.filter(c => t.by_class[c]).map(c => `${c} ${n1(t.by_class[c])}`).join(' · ') || 'none yet')}
+      ${kpi('Overtime', n1(t.ot_hours), t.actual_hours ? `${Math.round(t.ot_hours / t.actual_hours * 1000) / 10}% of actual hours` : '')}${kpi('Peak crew ahead', d.peak_planned_crew_remaining, d.weeks_over_max ? `<span style="color:var(--bad)">${d.weeks_over_max} week(s) over max crew ${d.cfg.max_crew}</span>` : `max crew ${d.cfg.max_crew}`)}</div>
+    ${d.weeks.some(w => w.planned_hours || w.actual_hours) ? crewChart(d.weeks, d.cfg, todayStr()) : '<div class="empty">No scheduled or actual hours yet — add tasks with dates and budget hours on the Schedule sheet.</div>'}
+    <div style="margin-top:12px">${table(cols, d.weeks)}</div></div>`;
+  $('#mcsv', W).onclick = () => toCSV(cols, d.weeks, `${j.number}_manpower.csv`);
 }
 
 // ------------------------------------------------------------ Labor Log / Cost Log

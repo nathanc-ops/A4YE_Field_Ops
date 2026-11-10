@@ -387,10 +387,27 @@ module.exports = function workbookRoutes(app, db, X) {
   const TASK_STATUS = ['Not Started', 'In Progress', 'Complete', 'On Hold'];   // the Lists tab; the sheet also derives Late, Late Start, Update %, By Others
   const TASK_FIELDS = ['phase', 'area', 'name', 'cost_code_id', 'start_date', 'finish_date', 'predecessor_id', 'responsible', 'budget_hours', 'pct_complete', 'on_hold', 'notes', 'sort'];
 
+  // craft class for the Manpower Loading split (the Labor Log's Class column): the job's foreman, else the employee's title
+  const CLASSES = ['Foreman', 'Journeyman', 'Apprentice', 'Office'];
+  const classOf = (u, job) => u.user_id === job.foreman_id || /foreman|super/i.test(u.title || '') ? 'Foreman' : /apprent/i.test(u.title || '') ? 'Apprentice'
+    : (u.role === 'office' || u.role === 'admin') && !/journey|electric|wireman|master/i.test(u.title || '') ? 'Office' : 'Journeyman';
+  // overtime the way payroll counts it: hours past the weekly threshold (Mon–Sun, all jobs) are OT, in clock-in order
+  function overtimeByEntry(userIds) {
+    const out = new Map(); if (!userIds.length) return out;
+    const after = Number(s().overtime_weekly_hours) || 40, now = new Date().toISOString(), acc = new Map();
+    for (const t of all(db, `SELECT id, user_id, clock_in, clock_out FROM time_entries WHERE user_id IN (${userIds.map(() => '?').join(',')}) ORDER BY clock_in, id`, ...userIds)) {
+      const k = `${t.user_id}|${mondayOf(localDate(t.clock_in))}`, h = Math.max(0, (Date.parse(t.clock_out || now) - Date.parse(t.clock_in)) / 36e5), a = acc.get(k) || 0;
+      out.set(t.id, Math.max(0, h - Math.max(0, after - a))); acc.set(k, a + h);
+    }
+    return out;
+  }
   function laborEntries(job) {
     const now = new Date().toISOString();
-    return all(db, 'SELECT t.clock_in, t.clock_out, t.cost_code_id, cc.phase FROM time_entries t LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.job_id = ?', job.id)
-      .map(t => ({ date: localDate(t.clock_in), hours: Math.max(0, (Date.parse(t.clock_out || now) - Date.parse(t.clock_in)) / 36e5), code: t.cost_code_id, phase: t.phase }));
+    const rows = all(db, `SELECT t.id, t.user_id, t.clock_in, t.clock_out, t.cost_code_id, t.hourly_cost, cc.phase, u.title, u.role FROM time_entries t
+      JOIN users u ON u.id = t.user_id LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.job_id = ?`, job.id);
+    const ot = overtimeByEntry([...new Set(rows.map(t => t.user_id))]);
+    return rows.map(t => { const hours = Math.max(0, (Date.parse(t.clock_out || now) - Date.parse(t.clock_in)) / 36e5);
+      return { id: t.id, user_id: t.user_id, date: localDate(t.clock_in), hours, code: t.cost_code_id, phase: t.phase, cls: classOf(t, job), ot: Math.min(hours, ot.get(t.id) || 0), cost: hours * (t.hourly_cost || 0) }; });
   }
   function taskRows(job, asOf = today(), entries = laborEntries(job)) {
     const tasks = all(db, `SELECT t.*, cc.code cost_code, cc.name cost_code_name FROM project_tasks t LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id
@@ -418,12 +435,12 @@ module.exports = function workbookRoutes(app, db, X) {
     });
   }
   // the Manpower Loading tab's planned/actual hours by week, from the same tasks
-  function scheduleWeeks(job, rows, entries, cfg) {
+  function scheduleWeeks(job, rows, entries, cfg, win) {
     const dated = rows.filter(r => r.start_date && r.finish_date);
     const first = job.schedule_start || (dated.length ? dated.map(r => ymd(r.start_date)).sort()[0] : today());
-    const start = mondayOf(ymd(first));
+    const start = win ? win.start : mondayOf(ymd(first));
     const last = [today(), ...dated.map(r => ymd(r.finish_date))].sort().pop();
-    const n = Math.min(104, Math.max(8, Math.ceil((days(start, last) + 1) / 7)));
+    const n = win ? win.n : Math.min(104, Math.max(8, Math.ceil((days(start, last) + 1) / 7)));
     let cumP = 0, cumA = 0;
     return Array.from({ length: n }, (_, i) => {
       const ws = addD(start, i * 7), we = addD(ws, 6);
@@ -431,11 +448,14 @@ module.exports = function workbookRoutes(app, db, X) {
         const a = ymd(r.start_date), b = ymd(r.finish_date), lo = a > ws ? a : ws, hi = b < we ? b : we;
         return lo > hi || !r.budget_hours ? x : x + r.budget_hours * (days(lo, hi) + 1) / Math.max(1, days(a, b) + 1);
       }, 0));
-      const actual = r1(entries.filter(e => e.date >= ws && e.date <= we).reduce((x, e) => x + e.hours, 0));
+      const wkE = entries.filter(e => e.date >= ws && e.date <= we), sumE = (f = () => true, k = 'hours') => r1(wkE.filter(f).reduce((x, e) => x + e[k], 0));
+      const actual = sumE(), ot = sumE(undefined, 'ot');
       cumP += planned; cumA += actual;
       const crew = Math.round(planned / (cfg.hours_per_day * cfg.days_per_week * cfg.availability) * 10) / 10;
       return { wk: i + 1, week_start: ws, week_ending: we, planned_hours: planned, planned_crew: crew, actual_hours: actual,
-        actual_crew: Math.round(actual / (cfg.hours_per_day * cfg.days_per_week) * 10) / 10, variance_hours: r1(actual - planned), cum_planned: r1(cumP), cum_actual: r1(cumA), over_max: crew > cfg.max_crew };
+        actual_crew: Math.round(actual / (cfg.hours_per_day * cfg.days_per_week) * 10) / 10, variance_hours: r1(actual - planned), cum_planned: r1(cumP), cum_actual: r1(cumA), over_max: crew > cfg.max_crew,
+        by_class: Object.fromEntries(CLASSES.map(c => [c, sumE(e => e.cls === c)])), ot_hours: ot, ot_pct: actual ? Math.round(ot / actual * 1000) / 10 : null,
+        headcount: new Set(wkE.map(e => e.user_id)).size };
     });
   }
   // % complete from the field: crew assigned to the job, its foreman, or someone who clocked in on it lately — not every tech who could clock in
@@ -449,6 +469,36 @@ module.exports = function workbookRoutes(app, db, X) {
     totals.pct_complete = totals.budget_hours ? Math.round(totals.earned_hours / totals.budget_hours * 1000) / 10 : null;
     res.json({ rows, as_of: asOf, schedule_start: job.schedule_start, weeks: scheduleWeeks(job, rows, entries, cfg), cfg, totals,
       lists: { phases: LISTS.phases, task_status: TASK_STATUS }, can_edit: isOffice(req.user) && req.can('projects'), can_progress: canProgress(req, job) });
+  }));
+  // ---- Manpower Loading: planned vs actual hours and crew by week, actual split by class, overtime
+  const remainingPeak = weeks => Math.max(0, ...weeks.filter(w => w.week_ending >= today()).map(w => w.planned_crew));
+  app.get('/api/projects/:id/manpower', wrap((req, res) => {
+    const job = project(req, req.params.id), cfg = schedCfg(), entries = laborEntries(job);
+    const weeks = scheduleWeeks(job, taskRows(job, today(), entries), entries, cfg);
+    const t = k => r1(weeks.reduce((x, w) => x + (w[k] || 0), 0));
+    res.json({ weeks, cfg, classes: CLASSES, totals: { planned_hours: t('planned_hours'), actual_hours: t('actual_hours'), ot_hours: t('ot_hours'),
+      by_class: Object.fromEntries(CLASSES.map(c => [c, r1(weeks.reduce((x, w) => x + w.by_class[c], 0))])) },
+      peak_planned_crew_remaining: remainingPeak(weeks), weeks_over_max: weeks.filter(w => w.over_max).length });
+  }));
+  // every open project together (the sheet's "ALL JOBS"): who needs how many people, week by week
+  app.get('/api/manpower', wrap((req, res) => {
+    if (!isOffice(req.user)) throw bad('Office only', 403);
+    const cfg = schedCfg(), back = Math.min(26, Math.max(0, Number(req.query.back) || 4)), ahead = Math.min(52, Math.max(4, Number(req.query.ahead) || 16));
+    const win = { start: addD(mondayOf(today()), -7 * back), n: back + ahead };
+    const jobs = all(db, "SELECT * FROM jobs WHERE is_project = 1 AND status NOT IN ('completed', 'invoiced', 'cancelled') ORDER BY number");
+    const per = jobs.map(job => { const e = laborEntries(job); return { job, e, weeks: scheduleWeeks(job, taskRows(job, today(), e), e, cfg, win) }; });
+    const weeks = Array.from({ length: win.n }, (_, i) => {
+      const ws = addD(win.start, i * 7), we = addD(ws, 6), col = per.map(p => p.weeks[i]);
+      const sum = k => r1(col.reduce((x, w) => x + (w[k] || 0), 0));
+      const planned = sum('planned_hours'), actual = sum('actual_hours'), ot = sum('ot_hours');
+      const crew = Math.round(planned / (cfg.hours_per_day * cfg.days_per_week * cfg.availability) * 10) / 10;
+      return { wk: i + 1, week_start: ws, week_ending: we, planned_hours: planned, planned_crew: crew, actual_hours: actual,
+        actual_crew: Math.round(actual / (cfg.hours_per_day * cfg.days_per_week) * 10) / 10, variance_hours: r1(actual - planned), over_max: crew > cfg.max_crew,
+        by_class: Object.fromEntries(CLASSES.map(c => [c, r1(col.reduce((x, w) => x + w.by_class[c], 0))])), ot_hours: ot, ot_pct: actual ? Math.round(ot / actual * 1000) / 10 : null,
+        headcount: new Set(per.flatMap(p => p.e.filter(e => e.date >= ws && e.date <= we).map(e => e.user_id))).size };
+    });
+    res.json({ weeks, cfg, classes: CLASSES, today: today(),
+      jobs: per.map(p => ({ id: p.job.id, number: p.job.number, title: p.job.title, planned_crew: p.weeks.map(w => w.planned_crew), actual_hours: p.weeks.map(w => w.actual_hours) })) });
   }));
   const cleanTask = (job, body, row = {}) => {
     const d = clean(body, TASK_FIELDS);
@@ -557,5 +607,6 @@ module.exports = function workbookRoutes(app, db, X) {
     },
     LISTS,
     taskRows,
+    manpowerPeak: job => { const e = laborEntries(job); return remainingPeak(scheduleWeeks(job, taskRows(job, today(), e), e, schedCfg())); },
   };
 };

@@ -182,6 +182,7 @@ A commercial project's **Project** tab is laid out like `A4YE_Job_TEMPLATE.xlsx`
 |---|---|
 | Dashboard | KPIs, flags, team, crew today, hours by week |
 | Schedule | Tasks (T-001…) with phase, area, cost code, start/finish, predecessor, budget hours and % complete, drawn as a weekly Gantt. Work days (Mon–Fri), planned % against an as-of date, earned and planned hours, actual hours from the time clock on the task's code (or phase) between its dates, SPI, float to the next task, and the workbook's statuses (Not Started, In Progress, Late Start, Late, Update %, Complete, On Hold, By Others). Weekly planned hours, planned crew and actual hours run under the Gantt, and weeks over the max crew are flagged. Includes a 3-week look-ahead filter, **Build from budget** (one task per budgeted labor code), and CSV/print. The crew on the job can post % complete from the field. |
+| Manpower Loading | Per week: planned hours and crew from the Schedule, actual hours and crew from the time clock, variance, cumulative planned/actual, Foreman / Journeyman / Apprentice / Office hours, OT hours and OT %, people on site, and weeks over the max crew. Class is the job's foreman, else the employee's title (Apprentice…, Foreman…, office staff = Office, everyone else Journeyman). OT is hours past the weekly overtime threshold across all of that person's jobs, the same rule payroll uses. The Commercial Projects dashboard rolls every open project into a company manpower view (4 weeks back, 16 ahead) with planned crew by project. |
 | Cost Codes | Budget vs actual and % complete by code: earned hours, productivity, forecast |
 | Labor Log | Every punch on the project, from the A4Y Time Clock sync and the Field Ops clock |
 | Cost Log | POs (committed until received), material used, expenses and vendor bills, with open commitments |
@@ -199,7 +200,7 @@ Overdue RFIs and safety items, late or late-starting schedule tasks, late milest
 
 A project bills **either** by pay application **or** from the job's Billing tab, never both, so work can't be billed twice.
 
-Not built yet from the workbook: the full **Manpower Loading** sheet (the Schedule shows its weekly planned/actual rows; the craft split and OT columns are still missing), **Weekly History** snapshots, the **Bi-Weekly Report**, and **Estimate/Quote Import**.
+Not built yet from the workbook: **Weekly History** snapshots, the **Bi-Weekly Report**, and **Estimate/Quote Import**.
 
 ## A4Y Time Clock and cost codes
 

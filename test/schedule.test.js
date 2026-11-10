@@ -114,3 +114,33 @@ test('permissions: crew on the job posts % only; others cannot; office needs the
   const flags = JSON.stringify(p);
   assert.match(flags, /schedule task/);
 });
+
+test('manpower loading: class split from foreman/title, overtime past 40 h across all jobs, all-projects roll-up', async () => {
+  const apprentice = (await call('admin', 'POST', '/users', { name: 'Al', email: 'al@x.com', password: 'password123', role: 'tech', title: 'Apprentice 2nd yr', hourly_wage: 22 })).data.id;
+  db.prepare('UPDATE jobs SET foreman_id = ? WHERE id = ?').run(ids.tech, ids.job);
+  // a fresh week four weeks out: 36 h for Al on a service job first, then 8 h on the project → 4 h of it is OT
+  const other = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Service call' })).data.id;
+  const mon = new Date(); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7) + 28);
+  const at = (d, h) => { const x = new Date(mon); x.setDate(x.getDate() + d); x.setHours(h, 0, 0, 0); return x.toISOString(); };
+  const ins = db.prepare("INSERT INTO time_entries (user_id, job_id, kind, clock_in, clock_out, hourly_cost, hourly_wage) VALUES (?,?, 'job', ?, ?, 30, 22)");
+  for (const d of [0, 1, 2]) ins.run(apprentice, other, at(d, 6), at(d, 18));         // 36 h
+  ins.run(apprentice, ids.job, at(3, 7), at(3, 15));                                   // 8 h, 4 OT
+  // make the schedule reach that week
+  await call('admin', 'PUT', `/schedule/${ids.dev}`, { finish_date: (() => { const x = new Date(mon); x.setDate(x.getDate() + 6); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; })() });
+  const m = await call('admin', 'GET', `/projects/${ids.job}/manpower`);
+  assert.equal(m.status, 200, JSON.stringify(m.data));
+  assert.deepEqual(m.data.classes, ['Foreman', 'Journeyman', 'Apprentice', 'Office']);
+  assert.equal(m.data.totals.by_class.Foreman, 40, "Jay is the job's foreman");
+  assert.equal(m.data.totals.by_class.Apprentice, 8);
+  assert.equal(m.data.totals.ot_hours, 4);
+  const wk = m.data.weeks.find(w => w.by_class.Apprentice === 8);
+  assert.equal(wk.ot_hours, 4); assert.equal(wk.ot_pct, 50); assert.equal(wk.headcount, 1);
+  assert.equal(m.data.totals.actual_hours, 48);
+  assert.ok(m.data.peak_planned_crew_remaining >= 0);
+  // all projects (office only)
+  const a = await call('admin', 'GET', '/manpower?back=8&ahead=8');
+  assert.equal(a.status, 200); assert.equal(a.data.weeks.length, 16);
+  assert.equal(a.data.weeks.reduce((x, w) => x + w.by_class.Apprentice, 0), 8, 'service-job hours are not project manpower');
+  assert.ok(a.data.jobs.some(j => j.id === ids.job && j.planned_crew.some(Boolean)));
+  assert.equal((await call('tech', 'GET', '/manpower')).status, 403);
+});

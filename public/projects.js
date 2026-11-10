@@ -10,6 +10,18 @@ const barPct = (v, cap = 100) => `<div class="cap ${v > 100 ? 'over' : v >= 90 ?
 const daysLeft = d => d ? Math.round((new Date(d + 'T00:00:00') - new Date(todayStr() + 'T00:00:00')) / 864e5) : null;
 
 // Company roll-up of every commercial project — the Master Tracker's dashboard, live.
+// every open project's schedule rolled up: how many people the company needs each week vs who actually worked
+async function companyManpower(el) {
+  const d = await GET('/manpower'), cols = manpowerTable(d.weeks, d.classes, { cum: false });
+  const busy = d.jobs.filter(j => j.planned_crew.some(Boolean) || j.actual_hours.some(Boolean));
+  el.innerHTML = `<div class="row spread"><h2>Company manpower — all open projects</h2><button class="btn sm" id="mpcsv">CSV</button></div>
+    <p class="small muted">Four weeks back and sixteen ahead. Planned crew comes from each project's Schedule; projects without dated tasks only show actual hours. Max crew ${d.cfg.max_crew} (Settings → Commercial projects).</p>
+    ${d.weeks.some(w => w.planned_hours || w.actual_hours) ? crewChart(d.weeks, d.cfg, d.today) : '<div class="empty">No scheduled or actual project hours in this window</div>'}
+    ${busy.length ? `<h3 style="margin:14px 0 6px">Planned crew by project</h3>${table([{ label: 'Project', html: j => `<a href="#/jobs/${j.id}?tab=project&sheet=manpower"><b>${esc(j.number)}</b></a> ${esc(j.title)}` },
+      ...d.weeks.map((w, i) => ({ label: `${Number(w.week_start.slice(5, 7))}/${Number(w.week_start.slice(8))}`, num: 1, get: j => j.planned_crew[i] || '' }))], busy)}` : ''}
+    <details style="margin-top:10px"><summary class="small">Week-by-week detail</summary>${table(cols, d.weeks)}</details>`;
+  $('#mpcsv', el).onclick = () => toCSV(cols, d.weeks, `company_manpower_${d.today}.csv`);
+}
 async function viewProjects() {
   const { params } = hashParams(); const status = params.get('status') || 'active';
   if (!isOffice()) return viewMyProjects();
@@ -84,7 +96,9 @@ async function viewProjects() {
       ${table([{ label: 'Division', key: 'division' }, { label: 'Budget hrs', num: 1, get: x => num(x.budget_hours, 0) },
         { label: 'Actual hrs', num: 1, html: x => `${num(x.hours, 0)}${x.budget_hours ? barPct(x.hours / x.budget_hours * 100) : ''}` },
         ...(M ? [{ label: 'Material budget', num: 1, get: x => money0(x.budget_material) }, { label: 'Material actual', num: 1, get: x => money0(x.material_cost) }, { label: 'Total cost', num: 1, get: x => money0(x.cost) }] : [])],
-        d.divisions, { empty: 'No cost-coded budget or hours yet' })}</div>`;
+        d.divisions, { empty: 'No cost-coded budget or hours yet' })}</div>
+    <div class="card" style="margin-top:14px" id="mpall"><h2>Company manpower — all open projects</h2><div class="muted small">Loading…</div></div>`;
+  companyManpower($('#mpall'));
   $('#pcsv').onclick = () => toCSV(cols, d.projects, `commercial_dashboard_${d.as_of}.csv`);
   if ($('#newp')) $('#newp').onclick = () => jobForm({ is_project: 1, billing_type: 'fixed', job_type: 'commercial' });
 }

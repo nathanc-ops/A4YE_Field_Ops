@@ -390,3 +390,19 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
 .gantt tfoot .g-foot { z-index: 1; text-align: left; }
 .pct-in { width: 58px; padding: 2px 4px; text-align: right; font-size: 12px; }
 @media print { .gantt-wrap { max-height: none; overflow: visible; border: 0; } .gantt td.g-on, .gantt td.g-done, .gantt td.g-late { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+
+/* manpower crew chart */
+.crew-chart { position: relative; display: flex; gap: 2px; align-items: flex-end; overflow-x: auto; padding: 8px 0 0; border-bottom: 1px solid var(--border); }
+.crew-chart .cc-wk { flex: 1 0 26px; display: flex; flex-direction: column; align-items: center; border-radius: 4px; }
+.crew-chart .cc-wk:hover { background: var(--surface-2); }
+.crew-chart .cc-wk.now { box-shadow: inset 0 -2px 0 var(--warn); }
+.crew-chart .cc-bars { display: flex; align-items: flex-end; gap: 2px; }
+.crew-chart i, .cc-legend i { display: inline-block; width: 9px; border-radius: 4px 4px 0 0; }
+.crew-chart i.p, .cc-legend i.p { background: color-mix(in srgb, var(--info) 35%, transparent); }
+.crew-chart i.a, .cc-legend i.a { background: var(--info); }
+.crew-chart i.over, .cc-legend i.over { background: color-mix(in srgb, var(--bad) 55%, transparent); }
+.crew-chart .cc-lab { font-size: 10px; color: var(--muted); padding: 3px 0; font-variant-numeric: tabular-nums; }
+.crew-chart .cc-max { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--muted); pointer-events: none; }
+.crew-chart .cc-max span { position: absolute; right: 0; top: -15px; font-size: 10px; color: var(--muted); background: var(--surface); padding: 0 4px; }
+.cc-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; color: var(--text-2); }
+.cc-legend i { height: 9px; border-radius: 2px; margin-right: 5px; }
