@@ -1519,13 +1519,15 @@ async function emailSetup(el) {
       ${fieldHtml({ name: 'security', label: 'Secure connection', type: 'select', options: [['starttls', 'STARTTLS (ports 587, 2525, 2587)'], ['ssl', 'SSL/TLS (port 465)'], ['none', 'None (not recommended)']], blank: false }, e.security || 'starttls')}
       ${fieldHtml({ name: 'user', label: 'Username' }, e.user)}
       ${fieldHtml({ name: 'pass', label: e.pass_set ? 'Password / API key (saved — leave blank to keep)' : 'Password / API key', type: 'password' }, '')}
-      ${fieldHtml({ name: 'from_email', label: 'Send from address', type: 'email', placeholder: 'e.g. office@yourcompany.com' }, e.from_email)}
+      ${fieldHtml({ name: 'from_email', label: 'Send from address', type: 'email', placeholder: 'e.g. noreply@yourcompany.com' }, e.from_email)}
       ${fieldHtml({ name: 'from_name', label: 'Send from name', placeholder: S.settings.company_name || '' }, e.from_name)}
     </div>
     <div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px"><button class="btn primary">Save</button>
       <input name="test_to" type="email" placeholder="Send a test to…" value="${esc(S.user.email || '')}" style="width:auto;min-width:220px"><button type="button" class="btn" id="mailtest">Send test email</button>
       ${e.configured && e.source === 'settings' ? '<button type="button" class="btn danger sm" id="mailoff">Turn off</button>' : ''}</div>
-    <p class="small muted" style="margin-top:8px">The test uses what's in the form, saved or not. Replies to customer emails go to the company email above. For mail to land in inboxes rather than spam, the provider will ask you to add a few DNS records (SPF/DKIM) for your domain — they show you exactly which.</p></form>
+    ${e.reply_to ? `<p class="small" style="margin-top:8px">↩ Customer replies go to <b>${esc(e.reply_to)}</b> (the company email above), whatever the send-from address is — so a no-reply address is fine.</p>`
+      : '<div class="alert" style="margin-top:8px"><b>Replies have nowhere to go.</b> Set the company <b>Email</b> above — customer replies are sent there. Without it, a reply to a no-reply address is lost.</div>'}
+    <p class="small muted" style="margin-top:8px">The test uses what's in the form, saved or not. For mail to land in inboxes rather than spam, the provider will ask you to add a few DNS records (SPF/DKIM) for your domain — they show you exactly which.</p></form>
     ${recent}`;
   const f = $('#mailf', el);
   const hint = () => { const p = MAIL_PRESETS.find(x => x[0] === f.preset.value); $('#mailhint', el).textContent = p[5]; };
@@ -1542,7 +1544,7 @@ async function emailSetup(el) {
     const to = f.test_to.value.trim(); if (!to) return toast('Enter an address for the test', true);
     const b = $('#mailtest', el); b.disabled = true; b.textContent = 'Sending…';
     try { const r = await POST('/settings/email-test', { to, ...vals() });
-      if (r.ok) toast(`Test sent to ${to} from ${r.from} — check the inbox (and spam)`); else toast(r.error, true);
+      if (r.ok) toast(`Test sent to ${to} from ${r.from}${r.reply_to ? ` (replies → ${r.reply_to})` : ''} — check the inbox (and spam)`); else toast(r.error, true);
     } catch (err) { toast(err.message, true); }
     emailSetup(el); };
   if ($('#mailoff', el)) $('#mailoff', el).onclick = async () => { if (!confirm('Turn off email sending? Sends will be recorded and copied for you instead.')) return;

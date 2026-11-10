@@ -117,7 +117,7 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 - **Use a sending service on a DigitalOcean server.** DigitalOcean blocks outgoing mail ports 25, 465 and 587 on many accounts, so connect on port **2525**. Postmark (recommended), SendGrid and Brevo all accept it, as does Amazon SES on 2587. Each will have you verify your domain with a few DNS records (SPF/DKIM) so mail lands in inboxes instead of spam.
 - **Microsoft 365:** Microsoft has been turning off password sign-in for SMTP, so a mailbox password usually no longer works. Send through one of the services above using your domain.
 - **Google Workspace:** works with an App Password, if the server can reach port 587.
-- Replies to customer emails go to the **company email** in Settings.
+- **Sending from a no-reply address** (e.g. `noreply@yourdomain.com`): every email carries a Reply-To of the **company email** in Settings → Company, so customers who press Reply still reach the office. Invoice and estimate emails say "Questions? Reply to this email or call …". Settings → Email shows where replies go, and warns if the company email is blank. With Postmark, SendGrid, Brevo or SES the no-reply address needs no mailbox, only the verified domain. With Google Workspace or Microsoft 365 it must be a real mailbox or an alias the account may send as.
 
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM` on the server still work, and take priority over Settings when set.
 

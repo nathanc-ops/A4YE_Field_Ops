@@ -38,6 +38,16 @@ function getTransport(db) {
 }
 const configured = db => !!config(db);
 
+// Where a customer's reply goes. Sending from a no-reply address is fine as long as this is set: the company email
+// (Settings → Company), unless the send names someone (a PM on a bi-weekly report).
+const EMAIL = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
+const addrOf = from => ((String(from || '').match(/<([^>]+)>/) || [])[1] || String(from || '')).trim().toLowerCase();
+function defaultReplyTo(db, from) {
+  const ce = String(settings(db).company_email || '').trim();
+  return EMAIL.test(ce) && ce.toLowerCase() !== addrOf(from) ? ce : undefined;
+}
+const isNoReply = from => /^(no-?reply|do-?not-?reply|donotreply)@/i.test(addrOf(from));
+
 async function send(db, { to, cc, replyTo, subject, text, html, related, attachments }) {
   const tc = getTransport(db);
   const info = run(db, 'INSERT INTO outbox (to_email, subject, body, status, related) VALUES (?,?,?,?,?)',
@@ -45,7 +55,7 @@ async function send(db, { to, cc, replyTo, subject, text, html, related, attachm
   const id = Number(info.lastInsertRowid);
   if (!tc) return { status: 'not_configured', id };
   try {
-    await tc.t.sendMail({ from: tc.c.from, to, cc: cc || undefined, replyTo: replyTo || undefined, subject, text, html, attachments: attachments || undefined });
+    await tc.t.sendMail({ from: tc.c.from, to, cc: cc || undefined, replyTo: replyTo || defaultReplyTo(db, tc.c.from), subject, text, html, attachments: attachments || undefined });
     run(db, "UPDATE outbox SET status = 'sent' WHERE id = ?", id);
     return { status: 'sent', id };
   } catch (e) {
@@ -84,10 +94,11 @@ async function test(db, to, overrides = {}) {
   try {
     await t.verify();
     const s = settings(db);
-    await t.sendMail({ from: c.from, to, subject: `Test email from ${s.company_name || 'A4YE Field Ops'}`,
-      text: `This is a test from A4YE Field Ops.\n\nIf you're reading it, estimates, invoices, reports and appointment confirmations will send from ${c.from} through ${c.host}:${c.port}.\n` });
-    return { ok: true, from: c.from, host: c.host, port: c.port };
+    const reply = defaultReplyTo(db, c.from);
+    await t.sendMail({ from: c.from, to, replyTo: reply, subject: `Test email from ${s.company_name || 'A4YE Field Ops'}`,
+      text: `This is a test from A4YE Field Ops.\n\nIf you're reading it, estimates, invoices, reports and appointment confirmations will send from ${c.from} through ${c.host}:${c.port}.\n${reply ? `Customer replies go to ${reply} — press Reply on this email to check.\n` : ''}` });
+    return { ok: true, from: c.from, host: c.host, port: c.port, reply_to: reply || null };
   } catch (e) { return { ok: false, error: explain(e, c) }; } finally { t.close(); }
 }
 
-module.exports = { send, configured, config, test, explain };
+module.exports = { send, configured, config, test, explain, defaultReplyTo, isNoReply };

@@ -129,3 +129,32 @@ test('SMTP_* on the server still wins over Settings', async () => {
     assert.equal(e.source, 'server'); assert.equal(e.server_env, true); assert.equal(e.env.host, '127.0.0.1');
   } finally { for (const k of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM']) delete process.env[k]; }
 });
+
+test('sending from a no-reply address: invoices, estimates and confirmations carry Reply-To = the company email', async () => {
+  await call('admin', 'PUT', '/settings', { smtp_host: '127.0.0.1', smtp_port: String(smtp.port), smtp_security: 'none', smtp_user: 'apikey', smtp_pass: 'right-key',
+    smtp_from_email: 'noreply@a4ye.example', smtp_from_name: 'All 4 You Electrical' });
+  const e = (await call('admin', 'GET', '/settings/email')).data;
+  assert.equal(e.no_reply_sender, true); assert.equal(e.reply_to, 'office@a4ye.example');
+  const cust = (await call('admin', 'POST', '/customers', { name: 'Pat Payer', email: 'pat@example.com' })).data.id;
+  const inv = (await call('admin', 'POST', '/invoices', { customer_id: cust, tax_rate: 0, items: [{ description: 'Service call', qty: 1, unit_price: 250 }] })).data.id;
+  const est = (await call('admin', 'POST', '/estimates', { customer_id: cust, title: 'Panel', tax_rate: 0, items: [{ description: '200A panel', qty: 1, unit_price: 3200 }] })).data.id;
+  for (const [path, subj] of [[`/invoices/${inv}/send`, /Invoice INV-/], [`/estimates/${est}/send`, /Estimate EST-/]]) {
+    const n = smtp.got.length;
+    const r = await call('admin', 'POST', path, {});
+    assert.equal(r.data.status, 'sent', JSON.stringify(r.data));
+    const m = smtp.got[n];
+    assert.match(m.from, /noreply@a4ye\.example/, 'envelope sender');
+    assert.match(m.data, /From: All 4 You Electrical <noreply@a4ye\.example>/);
+    assert.match(m.data, /Reply-To: office@a4ye\.example/, `${path}: replies reach the office`);
+    assert.match(m.data, subj);
+    assert.match(m.data, /Questions\? Reply to this email or call \(208\) 555-0100\./);
+  }
+  // the test email says where replies go
+  const t = (await call('admin', 'POST', '/settings/email-test', { to: 'owner@a4ye.example' })).data;
+  assert.equal(t.ok, true); assert.equal(t.reply_to, 'office@a4ye.example');
+  assert.match(smtp.got[smtp.got.length - 1].data, /Reply-To: office@a4ye\.example/);
+  // no company email → nowhere for replies; the status says so
+  await call('admin', 'PUT', '/settings', { company_email: '' });
+  assert.equal((await call('admin', 'GET', '/settings/email')).data.reply_to, null);
+  await call('admin', 'PUT', '/settings', { company_email: 'office@a4ye.example' });
+});

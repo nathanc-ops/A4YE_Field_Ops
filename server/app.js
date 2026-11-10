@@ -36,6 +36,8 @@ function createApp(db) {
   const addDays = (d, n) => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
   const pick = (obj, keys) => Object.fromEntries(keys.filter(k => obj[k] !== undefined).map(k => [k, obj[k] === '' ? null : obj[k]]));
   const baseUrl = req => process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
+  // the line under customer emails: replying reaches the office (Reply-To is the company email) even from a no-reply sender
+  const questions = s => (s.company_email || s.company_phone ? `Questions? ${s.company_email ? 'Reply to this email' : ''}${s.company_email && s.company_phone ? ' or call ' : s.company_phone ? 'Call ' : ''}${s.company_phone || ''}.\n\n` : '');
 
   function insert(table, data) {
     const keys = Object.keys(data);
@@ -225,6 +227,7 @@ function createApp(db) {
     res.json({ configured: !!c, source: c ? c.source : null, server_env: !!process.env.SMTP_HOST, from: c ? c.from : null,
       host: s.smtp_host || '', port: s.smtp_port || '', security: s.smtp_security || '', user: s.smtp_user || '', pass_set: !!s.smtp_pass,
       from_name: s.smtp_from_name || '', from_email: s.smtp_from_email || '', last_test: last,
+      reply_to: c ? mailer.defaultReplyTo(db, c.from) || null : (s.company_email || null), no_reply_sender: c ? mailer.isNoReply(c.from) : false,
       ...(process.env.SMTP_HOST ? { env: { host: process.env.SMTP_HOST, port: process.env.SMTP_PORT || '587', user: process.env.SMTP_USER || '' } } : {}) });
   });
   app.post('/api/settings/email-test', admin, wrap(async (req, res) => {
@@ -787,7 +790,7 @@ function createApp(db) {
     const url = `${baseUrl(req)}/p/estimate/${e.public_token}`;
     const r = await mailer.send(db, { to, related: `estimate:${e.id}`,
       subject: `Estimate ${e.number} from ${s.company_name}`,
-      text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for the opportunity. Your estimate is ready to review.'}\n\nEstimate ${e.number}: $${e.total.toFixed(2)}\nView and approve online: ${url}\n\n${s.company_name}\n${s.company_phone || ''}` });
+      text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for the opportunity. Your estimate is ready to review.'}\n\nEstimate ${e.number}: $${e.total.toFixed(2)}\nView and approve online: ${url}\n\n${questions(s)}${s.company_name}\n${s.company_phone || ''}` });
     if (e.status === 'draft') run(db, "UPDATE estimates SET status = 'sent', sent_at = datetime('now') WHERE id = ?", e.id);
     if (e.review_status === 'pending') run(db, "UPDATE estimates SET review_status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?", req.user.id, e.id);
     res.json({ ...r, url });
@@ -894,7 +897,7 @@ function createApp(db) {
     const url = `${baseUrl(req)}/p/invoice/${inv.public_token}`;
     const r = await mailer.send(db, { to, related: `invoice:${inv.id}`,
       subject: `Invoice ${inv.number} from ${s.company_name}`,
-      text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for your business. Your invoice is attached below.'}\n\nInvoice ${inv.number}\nAmount due: $${inv.balance.toFixed(2)}\nDue: ${inv.due_date || 'on receipt'}\nView online: ${url}\n\n${s.company_name}\n${s.company_phone || ''}` });
+      text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for your business. Your invoice is ready to view online.'}\n\nInvoice ${inv.number}\nAmount due: $${inv.balance.toFixed(2)}\nDue: ${inv.due_date || 'on receipt'}\nView online: ${url}\n\n${questions(s)}${s.company_name}\n${s.company_phone || ''}` });
     res.json({ ...r, url });
   }));
   app.post('/api/invoices/:id/payments', office, wrap((req, res) => {
