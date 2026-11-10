@@ -8,7 +8,7 @@ ROUTES.push([/^\/import$/, () => viewImport()]);
 const IMPORT_ORDER = [
   ['accounts', 'Set up your books'], ['opening_balances', 'Set up your books'],
   ['customers', 'People'], ['vendors', 'People'],
-  ['pricebook', 'Materials'],
+  ['cost_codes', 'Materials'], ['pricebook', 'Materials'],
   ['jobs', 'Work history'], ['estimates', 'Work history'], ['invoices', 'Work history'], ['notes', 'Work history'], ['job_materials', 'Work history'],
   ['journal', 'Accounting history'],
 ];

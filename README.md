@@ -128,6 +128,37 @@ When you type a service address on a customer or location, the app looks it up. 
 - **Free (default):** uses the US Census address database. It only checks an address once the house number and street are typed, and gives no suggestions while you type.
 - **Google (recommended):** under Settings → Address lookup, paste a Google Maps API key with **Places API (New)** enabled. You then get suggestions as you type. The key stays on the server.
 
+## Employee permissions
+
+**Team → click a person** shows permission checkboxes under their role.
+- **Office:** turn on or off customers, jobs and schedule, projects, estimates, invoices, purchasing, price book, expenses, timesheets, business reports, accounting, and seeing costs.
+- **Technician:** field estimates, seeing costs, daily logs, and clocking into any open project.
+
+Each role starts from sensible defaults; a "custom permissions" tag shows who differs. Admins always have everything, and Team, Settings and Import stay admin-only.
+
+People without **See costs** never receive costs, wages or margins from the server. When they edit an estimate, the hidden costs are kept.
+
+## Commercial projects
+
+Tick **Commercial project** when booking a job, or use **Projects → + New project**. That adds a project manager, a foreman, start and target-completion dates, and a site contact.
+
+The **Project** tab on the job shows:
+- % complete, labor hours vs budget, contract and billed-to-date, and over/under-billing.
+- **Progress by cost code.** The PM or the foreman enters % complete for each code. The page then works out earned hours, productivity (earned ÷ used) and forecast hours at completion.
+- Crew on site today, hours by week, and **daily logs** (work performed, delays, safety, visitors, deliveries). Each log also shows that day's time clock hours.
+
+The **Projects** page lists every open project with flags:
+- forecast over budget;
+- a cost code that has used up its hours;
+- past the target completion date;
+- under-billed;
+- crew on site but no daily log.
+
+**Time clock on projects:**
+- Crews can clock in on any open project (each person's permission controls this).
+- A cost code is required, and the project's budgeted codes are listed first. Both are switchable under Settings → Commercial projects.
+- To load your cost-code list from another system, use **Import Data → Cost codes**.
+
 ## Schedule blocks
 
 The tech board, week view and dispatch list group people by the **Title** on their Team profile:

@@ -183,6 +183,13 @@ function seed(db) {
   ins('invoice_items', { invoice_id: tiInv, description: 'Less retainage withheld (10%)', qty: 1, unit_price: -Math.round(tiTotal * 0.2 * 0.1 * 100) / 100, taxable: 0, sort: 1 });
   ins('payments', { invoice_id: tiInv, amount: Math.round(tiTotal * 0.2 * 0.9 * 100) / 100, method: 'ach', paid_at: date(-25) });
   run(db, 'UPDATE billing_milestones SET invoice_id = ? WHERE id = ?', tiInv, ms[0]);
+  // ...tracked as a commercial project: budget by cost code, progress, a daily log
+  run(db, `UPDATE jobs SET is_project = 1, project_manager_id = ?, foreman_id = ?, start_date = ?, end_date = ?, gc_contact = 'Ray Patel', gc_phone = '(555) 410-7720' WHERE id = ?`,
+    users[1].id, mike.id, date(-20), date(10), ti);
+  for (const [code, h, m, p] of [['100', 8, 0, 100], ['400', 110, 1500, 75], ['500', 16, 700, 20], ['600', 30, 200, null], ['980', 0, 0, null]])
+    ins('job_budgets', { job_id: ti, cost_code_id: cc(code), budget_hours: h, budget_material: m, budget_other: code === '980' ? 175 : 0, percent_complete: p });
+  ins('daily_logs', { job_id: ti, log_date: date(-8), user_id: mike.id, weather: 'Clear, 48°F', crew_count: 2,
+    work_performed: 'Finished branch rough-in in the open office, started the conference room. Mounted the 100 A sub-panel.', delays: 'Ceiling grid going in early; need above-ceiling inspection by Thursday.' });
 
   // More of today's work so the hourly board shows several visits per tech
   const quick = (c, title, techs, h0, h1, type = 'service', status = 'scheduled') => job({ customer_id: c.id, location_id: c.lid, title, job_type: type, status,

@@ -20,6 +20,8 @@ const toLocalInput = s => { if (!s) return ''; const d = new Date(s); d.setMinut
 const fromLocalInput = s => s ? new Date(s).toISOString() : null;
 const isOffice = () => S.user && S.user.role !== 'tech';
 const isAdmin = () => S.user && S.user.role === 'admin';
+// per-employee permissions (Team → edit person). Admins can do everything.
+const can = k => !!S.user && (S.user.role === 'admin' || !!(S.user.perms || {})[k]);
 const label = s => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 const STATUS_TONE = {
@@ -189,21 +191,21 @@ const NAV = [
   { href: '#/permits', label: 'Permits & Inspections', icon: '📋' },
   { sect: 'Sales & Billing', roles: ['admin', 'office'] },
   { href: '#/customers', label: 'Customers', icon: '👥', roles: ['admin', 'office'] },
-  { href: '#/estimates', label: 'Estimates', icon: '📝', roles: ['admin', 'office'] },
-  { href: '#/estimates', label: 'My Estimates', icon: '📝', roles: ['tech'] },
-  { href: '#/invoices', label: 'Invoices', icon: '💵', roles: ['admin', 'office'] },
+  { href: '#/estimates', label: 'Estimates', icon: '📝', roles: ['admin', 'office'], perm: 'estimates' },
+  { href: '#/estimates', label: 'My Estimates', icon: '📝', roles: ['tech'], perm: 'field_estimates' },
+  { href: '#/invoices', label: 'Invoices', icon: '💵', roles: ['admin', 'office'], perm: 'invoices' },
   { href: '#/agreements', label: 'Service Agreements', icon: '🔁', roles: ['admin', 'office'] },
   { sect: 'Back Office', roles: ['admin', 'office'] },
-  { href: '#/purchasing', label: 'Purchasing & Pick Lists', icon: '🚚', roles: ['admin', 'office'] },
+  { href: '#/purchasing', label: 'Purchasing & Pick Lists', icon: '🚚', roles: ['admin', 'office'], perm: 'purchasing' },
   { href: '#/pricebook', label: 'Price Book & Inventory', icon: '📦', roles: ['admin', 'office'] },
-  { href: '#/expenses', label: 'Expenses', icon: '🧾', roles: ['admin', 'office'] },
-  { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'office'] },
-  { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin'] },
+  { href: '#/expenses', label: 'Expenses', icon: '🧾', roles: ['admin', 'office'], perm: 'expenses' },
+  { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
+  { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin', 'office'], perm: 'accounting' },
   { href: '#/team', label: 'Team', icon: '👷', roles: ['admin'] },
   { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'office'] },
 ];
 function renderShell() {
-  const nav = NAV.filter(n => !n.roles || n.roles.includes(S.user.role));
+  const nav = NAV.filter(n => (!n.roles || n.roles.includes(S.user.role)) && (!n.perm || [].concat(n.perm).some(can)));
   $('#root').innerHTML = `<div class="app">
     <nav class="side" id="side"><div class="brand">${S.settings.logo_url ? `<img class="logo" src="${esc(S.settings.logo_url)}" alt="${esc(S.settings.company_name || '')}">` : `<span class="bolt">⚡</span> <span>${esc(S.settings.company_name || 'Field Ops')}</span>`}</div>
       ${nav.map(n => n.sect ? `<div class="sect">${esc(n.sect)}</div>` : `<a href="${n.href}" data-nav>${n.icon} &nbsp;${esc(n.label)}</a>`).join('')}
@@ -281,15 +283,17 @@ function kpi(lbl, value, sub = '') { return `<div class="card kpi"><div class="l
 
 async function viewDashboard() {
   const d = await GET('/dashboard');
-  const gmOk = d.mtd.gross_margin_pct >= d.target_gross_margin;
-  const overdue = d.ar.total - d.ar.buckets.current;
-  $('#view').innerHTML = setTop('Dashboard', `<a class="btn" href="#/jobs?new=1">+ Book job</a><a class="btn" href="#/estimates/new">+ Estimate</a><a class="btn primary" href="#/invoices/new">+ Invoice</a>`,
+  const money = d.money !== false;
+  const gmOk = money && d.mtd.gross_margin_pct >= d.target_gross_margin;
+  const overdue = money ? d.ar.total - d.ar.buckets.current : 0;
+  $('#view').innerHTML = setTop('Dashboard', `${can('jobs') ? '<a class="btn" href="#/jobs?new=1">+ Book job</a>' : ''}${can('estimates') ? '<a class="btn" href="#/estimates/new">+ Estimate</a>' : ''}${can('invoices') ? '<a class="btn primary" href="#/invoices/new">+ Invoice</a>' : ''}`,
     new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })) + `
-    <div class="grid g4">
+    <div class="grid g4">${money ? `
       ${kpi('Revenue · month to date', money0(d.mtd.revenue), `${money0(d.mtd.cash_collected)} collected`)}
       ${kpi('Gross margin · MTD', pct(d.mtd.gross_margin_pct), `<span class="pill ${gmOk ? 'good' : 'warn'}">${gmOk ? '✓ at/above' : '⚠ below'} ${d.target_gross_margin}% target</span>`)}
       ${kpi('Receivables', money0(d.ar.total), overdue > 0 ? `<span class="pill bad">⚠ ${money0(overdue)} past due</span>` : 'nothing past due')}
-      ${kpi('Open estimates', money0(d.open_estimates.open_value), `${d.open_estimates.open} awaiting answer · ${pct(d.open_estimates.close_rate_pct)} close rate`)}
+      ${kpi('Open estimates', money0(d.open_estimates.open_value), `${d.open_estimates.open} awaiting answer · ${pct(d.open_estimates.close_rate_pct)} close rate`)}` : `
+      ${kpi("Today's visits", d.today_jobs.length)}${kpi('Waiting to be scheduled', d.unscheduled)}${kpi('On the clock now', d.clocked_in.length)}${kpi('Ready to invoice', d.to_invoice.length)}`}
     </div>
     <div class="grid g2" style="margin-top:14px">
       <div class="card"><div class="row spread"><h2>Today's visits</h2><a href="#/schedule">Tech board →</a></div>
@@ -297,8 +301,8 @@ async function viewDashboard() {
           { label: 'Tech', get: a => a.tech_names || 'Unassigned' }, { label: 'Status', html: a => pill(a.status) }], d.today_jobs, { onClick: a => go('#/jobs/' + a.job_id), empty: 'No visits scheduled today' })}
         ${d.unscheduled ? `<div class="alert" style="margin-top:10px">${d.unscheduled} job(s) waiting to be scheduled. <a href="#/schedule">Schedule them</a></div>` : ''}
       </div>
-      <div class="card"><h2>Revenue — last 6 months</h2>${bars(d.trend, 'revenue', 'month')}
-        <div class="small muted" style="margin-top:8px">Hover a bar for net profit. Full detail in <a href="#/reports">Reports</a>.</div></div>
+      ${money ? `<div class="card"><h2>Revenue — last 6 months</h2>${bars(d.trend, 'revenue', 'month')}
+        <div class="small muted" style="margin-top:8px">Hover a bar for net profit. Full detail in <a href="#/reports">Reports</a>.</div></div>` : ''}
     </div>
     <div class="grid g3" style="margin-top:14px">
       <div class="card"><h2>Ready to invoice</h2>
@@ -310,8 +314,8 @@ async function viewDashboard() {
         ${d.inspections_upcoming.map(p => `<div class="row spread" style="padding:4px 0"><span>📋 ${esc(p.permit_type || 'Inspection')} · <a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a></span><span class="muted">${fmtDate(p.inspection_date)}</span></div>`).join('')}
         ${d.agreements_due.map(a => `<div class="row spread" style="padding:4px 0"><span>🔁 ${esc(a.customer_name)} — ${esc(a.name)}</span><span class="muted">${fmtDate(a.next_visit)}</span></div>`).join('')}
         ${d.low_stock.map(p => `<div class="row spread" style="padding:4px 0"><span>📦 Low stock: ${esc(p.name)}</span><span class="pill warn">${num(p.qty_on_hand)} left</span></div>`).join('')}
-        ${d.ar.invoices.filter(i => i.days_past_due > 0).slice(0, 5).map(i => `<div class="row spread" style="padding:4px 0"><span>💵 <a href="#/invoices/${i.id}">${esc(i.number)}</a> ${esc(i.customer_name)}</span><span class="pill bad">${i.days_past_due}d · ${money0(i.balance)}</span></div>`).join('')}
-        ${!d.inspections_upcoming.length && !d.agreements_due.length && !d.low_stock.length && !d.ar.invoices.some(i => i.days_past_due > 0) ? '<div class="empty">All clear</div>' : ''}
+        ${(money ? d.ar.invoices : []).filter(i => i.days_past_due > 0).slice(0, 5).map(i => `<div class="row spread" style="padding:4px 0"><span>💵 <a href="#/invoices/${i.id}">${esc(i.number)}</a> ${esc(i.customer_name)}</span><span class="pill bad">${i.days_past_due}d · ${money0(i.balance)}</span></div>`).join('')}
+        ${!d.inspections_upcoming.length && !d.agreements_due.length && !d.low_stock.length && !(money ? d.ar.invoices : []).some(i => i.days_past_due > 0) ? '<div class="empty">All clear</div>' : ''}
       </div>
     </div>`;
   $$('[data-inv]').forEach(b => b.onclick = async () => { const r = await act(() => POST(`/jobs/${b.dataset.inv}/invoice`), 'Invoice created'); go('#/invoices/' + r.id); });
@@ -320,26 +324,46 @@ async function viewDashboard() {
 // ============================================================ time clock widget
 function elapsed(from) { const s = Math.max(0, Math.floor((Date.now() - new Date(from)) / 1000)); return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; }
 async function clockCard(el, { jobId } = {}) {
-  const { open } = await GET('/time/status');
-  const myJobs = await GET('/jobs' + qs({ mine: 1, status: 'scheduled,dispatched,in_progress,on_hold,unscheduled' }));
+  const [{ open }, opts] = await Promise.all([GET('/time/status'), GET('/time/options'), loadCostCodes()]);
+  const projById = Object.fromEntries(opts.projects.map(p => [String(p.id), p]));
+  const labor = S.costCodes.filter(c => c.active !== 0 && (c.kind === 'labor' || c.kind === 'both'));
   const draw = () => {
     el.innerHTML = `<div class="card clock">
       ${open ? `<div class="muted">Clocked in${open.job_number ? ` on <a href="#/jobs/${open.job_id}">${esc(open.job_number)} ${esc(open.job_title)}</a>` : ` — ${esc(label(open.kind))}`}${open.cost_code ? ` · ${esc(open.cost_code)} ${esc(open.cost_code_name)}` : ''} since ${fmtTime(open.clock_in)}</div>
         <div class="timer" id="timer">${elapsed(open.clock_in)}</div>` : `<div class="muted">You are off the clock</div><div class="timer">0:00:00</div>`}
-      <div class="row" style="justify-content:center">
-        <select id="ck_job" style="max-width:320px"><option value="">— No job (shop/training) —</option>${myJobs.map(j => `<option value="${j.id}" ${String(jobId || '') === String(j.id) ? 'selected' : ''}>${esc(j.number)} · ${esc(j.title)}</option>`).join('')}</select>
+      <div class="row" style="justify-content:center;flex-wrap:wrap">
+        <select id="ck_job" style="max-width:340px"><option value="">— No job (shop/training) —</option>
+          ${opts.jobs.length ? `<optgroup label="My jobs">${opts.jobs.map(j => `<option value="${j.id}" ${String(jobId || '') === String(j.id) ? 'selected' : ''}>${esc(j.number)} · ${esc(j.title)}</option>`).join('')}</optgroup>` : ''}
+          ${opts.projects.length ? `<optgroup label="Commercial projects">${opts.projects.map(j => `<option value="${j.id}" ${String(jobId || '') === String(j.id) ? 'selected' : ''}>${esc(j.number)} · ${esc(j.title)} (${esc(j.customer_name)})</option>`).join('')}</optgroup>` : ''}</select>
         <select id="ck_kind" style="max-width:140px">${['job', 'travel', 'shop', 'training'].map(k => `<option value="${k}">${label(k)}</option>`).join('')}</select>
-        <select id="ck_cc" style="max-width:260px"><option value="">Cost code…</option>${ccOptions('labor').map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>
+        <select id="ck_cc" style="max-width:300px"></select>
       </div>
+      <div class="small muted" id="ck_hint" style="text-align:center;margin-top:6px"></div>
       <div class="row" style="justify-content:center;margin-top:12px">
         <button class="btn big go" id="ck_in">${open ? 'Switch job' : 'Clock in'}</button>
         ${open ? '<button class="btn big stop" id="ck_out">Clock out</button>' : ''}
       </div></div>`;
+    const jobSel = $('#ck_job', el), ccSel = $('#ck_cc', el), kindSel = $('#ck_kind', el);
+    // a project's budgeted codes come first; the rest stay available below
+    const fillCodes = () => {
+      const p = projById[jobSel.value], keep = ccSel.value;
+      const mine = p ? labor.filter(c => p.cost_code_ids.includes(c.id)) : [], rest = labor.filter(c => !mine.includes(c));
+      const opt = c => `<option value="${c.id}">${esc(c.code)} · ${esc(c.name)}</option>`;
+      const need = p && opts.require_cost_code && kindSel.value === 'job';
+      ccSel.innerHTML = `<option value="">${need ? 'Cost code (required)…' : 'Cost code…'}</option>` +
+        (mine.length ? `<optgroup label="This project">${mine.map(opt).join('')}</optgroup><optgroup label="Other codes">${rest.map(opt).join('')}</optgroup>` : rest.map(opt).join(''));
+      if ([...ccSel.options].some(o => o.value === keep)) ccSel.value = keep;
+      ccSel.classList.toggle('need', !!need && !ccSel.value);
+      $('#ck_hint', el).textContent = need ? 'Commercial project: pick the cost code you are working on. Switch job when you change tasks.' : '';
+    };
+    jobSel.onchange = fillCodes; kindSel.onchange = fillCodes; ccSel.onchange = () => ccSel.classList.remove('need');
+    fillCodes();
     $('#ck_in', el).onclick = async () => {
-      const job_id = $('#ck_job', el).value || null; let kind = $('#ck_kind', el).value;
+      const job_id = jobSel.value || null; let kind = kindSel.value;
       if (!job_id && (kind === 'job' || kind === 'travel')) kind = 'shop';
+      if (projById[job_id] && opts.require_cost_code && kind === 'job' && !ccSel.value) { ccSel.focus(); return toast('Pick a cost code for this project', true); }
       const loc = await getLoc();
-      await act(() => POST('/time/clock-in', { job_id, kind, cost_code_id: $('#ck_cc', el).value || null, ...loc }), 'Clocked in'); route();
+      await act(() => POST('/time/clock-in', { job_id, kind, cost_code_id: ccSel.value || null, ...loc }), 'Clocked in'); route();
     };
     if (open) $('#ck_out', el).onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-out', loc), 'Clocked out'); route(); };
   };
@@ -431,6 +455,12 @@ async function jobForm(job, { customerId } = {}) {
     { name: 'po_number', label: 'Customer PO #' },
     { name: 'budget_hours', label: 'Budgeted labor hours', type: 'number' }, { name: 'budget_materials', label: 'Budgeted material cost ($)', type: 'number' },
     { name: 'description', label: 'Scope / description', type: 'textarea', full: true },
+    { name: 'is_project', label: 'Commercial project: track progress by cost code, crew and daily logs', type: 'checkbox', full: true },
+    { name: 'project_manager_id', label: 'Project manager', type: 'select', options: S.users.filter(u => u.active && u.role !== 'tech').map(u => [u.id, u.name]), proj: 1 },
+    { name: 'foreman_id', label: 'Foreman (can update progress)', type: 'select', options: S.users.filter(u => u.active).map(u => [u.id, `${u.name}${u.title ? ` · ${u.title}` : ''}`]), proj: 1 },
+    { name: 'start_date', label: 'Start date', type: 'date', proj: 1 }, { name: 'end_date', label: 'Target completion', type: 'date', proj: 1 },
+    { name: 'gc_contact', label: 'GC / site contact', proj: 1 }, { name: 'gc_phone', label: 'Site contact phone', type: 'tel', proj: 1 },
+    { name: 'gc_email', label: 'Site contact email', type: 'email', proj: 1 },
   ];
   const techBoxes = `<div style="margin-top:10px"><label class="f"><span>Assigned techs</span></label><div class="row">${S.users.filter(u => u.active).map(u =>
     `<label class="check"><input type="checkbox" name="tech" value="${u.id}" ${(job.tech_ids || []).includes(u.id) ? 'checked' : ''}> ${esc(u.name)}</label>`).join('')}</div></div>`;
@@ -451,6 +481,9 @@ async function jobForm(job, { customerId } = {}) {
   // show only the pricing fields for the chosen billing type
   const showBT = () => fields.filter(f => f.bt).forEach(f => { const el = form.elements[f.name]; const box = el && el.closest('label'); if (box) box.style.display = form.billing_type.value === f.bt ? '' : 'none'; });
   form.billing_type.onchange = showBT; showBT();
+  const showProj = () => fields.filter(f => f.proj).forEach(f => { const box = form.elements[f.name] && form.elements[f.name].closest('label'); if (box) box.style.display = form.is_project.checked ? '' : 'none'; });
+  form.is_project.onchange = () => { showProj(); if (form.is_project.checked && !job.id) { form.billing_type.value = 'fixed'; form.job_type.value = 'commercial'; showBT(); } };
+  showProj();
   const loadLocs = async () => {
     const cid = form.customer_id.value; const sel = form.location_id;
     if (!cid) { sel.innerHTML = '<option value="">—</option>'; return; }
@@ -504,13 +537,14 @@ async function viewJob(id) {
   const formsDone = j.forms.filter(f => f.completed_at).length;
   const tabs = [['overview', 'Overview'], ['forms', `Checklists (${formsDone}/${j.forms.length})`], ['photos', `Photos & files (${j.attachments.length})`], ['time', `Time (${j.time.length})`],
     ['materials', `Materials (${j.materials.length})`], ['equipment', `Equipment (${j.equipment.length})`], ['permits', `Permits (${j.permits.length})`]];
-  if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Billing'], ['costs', 'Other costs'], ['costing', 'Job costing']);
+  if (j.is_project) tabs.splice(1, 0, ['project', 'Project']);
+  if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Billing'], ...(can('see_costs') ? [['costs', 'Other costs'], ['costing', 'Job costing']] : []));
   else if (j.pick_lists.length) tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
   const statusOpts = isOffice() ? JOB_STATUSES : ['dispatched', 'in_progress', 'on_hold', 'completed'];
   $('#view').innerHTML = setTop(`${esc(j.number)} · ${esc(j.title)}`,
     `<select id="status" style="width:auto">${(statusOpts.includes(j.status) ? statusOpts : [j.status, ...statusOpts]).map(s => `<option value="${s}" ${s === j.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
      ${!['completed', 'invoiced', 'cancelled'].includes(j.status) ? '<button class="btn go" id="completejob">✓ Complete job</button>' : ''}
-     ${!isOffice() && S.settings.tech_estimates !== '0' && !['invoiced', 'cancelled'].includes(j.status) ? `<a class="btn" href="#/estimates/new?job_id=${j.id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a>` : ''}
+     ${!isOffice() && can('field_estimates') && !['invoiced', 'cancelled'].includes(j.status) ? `<a class="btn" href="#/estimates/new?job_id=${j.id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a>` : ''}
      ${isOffice() && j.status === 'cancelled' ? '<button class="btn" id="reopenjob">Reopen job</button>' : ''}
      ${isOffice() && j.status !== 'cancelled' ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a><button class="btn primary" id="invoice">Bill job</button>` : ''}
      ${isOffice() && !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn danger" id="canceljob">Cancel job</button>' : ''}
@@ -540,7 +574,10 @@ async function viewJob(id) {
   if (isOffice()) {
     if ($('#edit')) $('#edit').onclick = () => jobForm(j);
     if ($('#invoice')) $('#invoice').onclick = () => go(`#/jobs/${j.id}?tab=billing`);
-  } else if ($('#clockhere')) $('#clockhere').onclick = async () => { const loc = await getLoc(); await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job', ...loc }), 'Clocked in on ' + j.number); route(); };
+  } else if ($('#clockhere')) $('#clockhere').onclick = async () => {
+    if (j.is_project) { const m = modal('<h2>Clock in</h2><div id="ckm"></div><div class="actions"><button type="button" class="btn" data-x>Close</button></div>', { wide: true }); $('[data-x]', m.el).onclick = m.close; return clockCard($('#ckm', m.el), { jobId: j.id }); }
+    const loc = await getLoc(); await act(() => POST('/time/clock-in', { job_id: j.id, kind: 'job', ...loc }), 'Clocked in on ' + j.number); route();
+  };
 
   const T = $('#tab');
   if (tab === 'overview') {
@@ -600,6 +637,7 @@ async function viewJob(id) {
       ${table(permitCols(false), j.permits, { empty: 'No permits on this job', onClick: isOffice() ? p => permitForm(p) : null })}</div>`;
     if (isOffice()) $('#addp').onclick = () => permitForm({ job_id: j.id });
   }
+  if (tab === 'project') await projectTab(j, T);
   if (tab === 'forms') fieldFormsTab(j, T);
   if (tab === 'photos') fieldPhotosTab(j, T);
   if (tab === 'equipment') fieldEquipmentTab(j, T);
@@ -787,7 +825,7 @@ async function viewDoc(kind, id) {
   } else doc = await GET(`${base}/${id}`);
   const techMode = !isOffice();
   if (techMode && (!isEst || (id === 'new' && !doc.job_id))) throw new Error('Start an estimate from one of your jobs');
-  const seeCosts = !techMode || S.settings.tech_see_costs === '1';
+  const seeCosts = can('see_costs');
   const locked = isEst ? (['approved', 'cancelled'].includes(doc.status) || (techMode && ['declined', 'expired'].includes(doc.status))) : (doc.status === 'void' || (doc.payments || []).length > 0);
   const maxDisc = Number(S.settings.tech_max_discount_pct) || 0;
   const review = isEst && id !== 'new' ? { status: doc.review_status, reasons: doc.review_reasons ? (Array.isArray(doc.review_reasons) ? doc.review_reasons : JSON.parse(doc.review_reasons)) : [], note: doc.review_note } : { status: null, reasons: [] };
@@ -1263,7 +1301,11 @@ async function viewReports() {
   const r = params.get('r') || 'pl';
   const [defFrom, defTo] = presetRange('mtd');
   const from = params.get('from') || defFrom, to = params.get('to') || defTo;
-  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled'], ['permits', 'Permits']];
+  const REPORT_PERM = { hours: 'timesheets', payroll: 'timesheets', permits: 'jobs' };
+  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled'], ['permits', 'Permits']]
+    .filter(([k]) => can(REPORT_PERM[k] || 'reports'));
+  if (!tabs.length) { $('#view').innerHTML = setTop('Reports') + '<div class="card empty">You don\'t have access to any reports. Ask the owner to turn some on under Team.</div>'; return; }
+  if (!tabs.some(([k]) => k === r)) return go('#/reports' + qs({ r: tabs[0][0], from: params.get('from'), to: params.get('to') }));
   $('#view').innerHTML = setTop('Reports', '<button class="btn" id="csv">Export CSV</button><button class="btn" onclick="print()">Print</button>') + `
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === r ? 'on' : ''}" data-r="${k}">${l}</button>`).join('')}</div>
     ${r === 'ar' || r === 'wip' ? '' : `<form id="rng" class="row no-print" style="margin-bottom:14px"><input type="date" name="from" value="${from}" style="width:auto"> to <input type="date" name="to" value="${to}" style="width:auto"><button class="btn">Run</button>
@@ -1374,23 +1416,46 @@ async function viewTeam() {
   const users = await loadUsers(true);
   $('#view').innerHTML = setTop('Team', '<button class="btn primary" id="new">+ Employee</button>', 'Wage + burden = loaded labor cost used in job costing and P&L. Bill rate is used for T&M invoices.') + `<div class="card">
     ${table([{ label: 'Name', html: u => `<span class="dot" style="background:${esc(u.color)}"></span> <b>${esc(u.name)}</b>${u.active ? '' : ' <span class="pill">Inactive</span>'}<div class="muted small">${esc(u.email)}</div>` },
-      { label: 'Role', get: u => label(u.role) }, { label: 'Title', key: 'title' }, { label: 'License', key: 'license_number' }, { label: 'Wage', num: 1, get: u => money(u.hourly_wage) },
+      { label: 'Role', html: u => `${esc(label(u.role))}${u.custom_perms && u.custom_perms.length ? ` <span class="pill warn" title="${esc(u.custom_perms.join(', '))}">custom permissions</span>` : ''}` }, { label: 'Title', key: 'title' }, { label: 'License', key: 'license_number' }, { label: 'Wage', num: 1, get: u => money(u.hourly_wage) },
       { label: 'Burden', num: 1, get: u => pct(u.burden_pct) }, { label: 'Loaded cost/hr', num: 1, get: u => money(u.hourly_wage * (1 + u.burden_pct / 100)) }, { label: 'Bill rate', num: 1, get: u => money(u.bill_rate) }],
     users, { onClick: u => userForm(u) })}</div>`;
   $('#new').onclick = () => userForm({});
 }
-function userForm(u) {
-  formModal({
+async function userForm(u) {
+  const P = await GET('/permissions');
+  const role0 = u.role || 'tech';
+  const permBox = role => {
+    if (role === 'admin') return '<p class="small muted">Admins can do everything, including Team, Settings and Import. Use the Office role to limit what someone can do.</p>';
+    const list = P.list.filter(p => p.roles.includes(role)), def = P.defaults[role];
+    const cur = role === role0 && u.perms ? u.perms : def;
+    return `<p class="small muted">Ticked = allowed. Starts from the ${role === 'tech' ? 'Technician' : 'Office'} defaults; <a href="#" id="permreset">reset to defaults</a>. Team, Settings and Import are always admin-only.</p>
+      <div class="permgrid">${list.map(p => `<label class="check"><input type="checkbox" name="perm_${p.key}" ${cur[p.key] ? 'checked' : ''}> ${esc(p.label)}${!!cur[p.key] !== !!def[p.key] ? ' <span class="pill warn" title="Different from the role default">custom</span>' : ''}</label>`).join('')}</div>`;
+  };
+  const m = formModal({
     title: u.id ? `Edit ${u.name}` : 'Add employee', values: u, wide: true,
     fields: [{ name: 'name', label: 'Name', required: true }, { name: 'email', label: 'Email (login)', type: 'email', required: true },
-      { name: 'role', label: 'Role', type: 'select', options: [['tech', 'Technician (field app only)'], ['office', 'Office (no settings/team)'], ['admin', 'Admin (everything)']], blank: false, default: 'tech' },
-      { name: 'title', label: 'Title (Apprentice, Journeyman…)' }, { name: 'phone', label: 'Phone' }, { name: 'license_number', label: 'License #' },
+      { name: 'role', label: 'Role', type: 'select', options: [['tech', 'Technician (field app)'], ['office', 'Office (choose what they can do below)'], ['admin', 'Admin (everything)']], blank: false, default: 'tech' },
+      { name: 'title', label: 'Title (Apprentice, Journeyman, Foreman…)' }, { name: 'phone', label: 'Phone' }, { name: 'license_number', label: 'License #' },
       { name: 'hourly_wage', label: 'Hourly wage $', type: 'number', default: 0 }, { name: 'burden_pct', label: 'Burden % (taxes, WC, benefits)', type: 'number', default: 25 },
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },
       { name: 'password', label: u.id ? 'New password (leave blank to keep)' : 'Password (8+ chars)', type: 'password', required: !u.id },
       { name: 'active', label: 'Active (can sign in)', type: 'checkbox', default: 1 }],
-    submit: async d => { if (!d.password) delete d.password; if (u.id) await PUT('/users/' + u.id, d); else await POST('/users', d); await loadUsers(true); toast('Saved'); route(); },
+    extra: `<h3 style="margin-top:14px">Permissions</h3><div id="perms"></div>`,
+    submit: async (d, form) => {
+      if (!d.password) delete d.password;
+      if (d.role !== 'admin') d.perms = Object.fromEntries(P.list.filter(p => p.roles.includes(d.role)).map(p => [p.key, !!(form.elements['perm_' + p.key] || {}).checked]));
+      if (u.id) await PUT('/users/' + u.id, d); else await POST('/users', d);
+      await loadUsers(true); toast('Saved'); route();
+    },
   });
+  const form = $('form', m.el);
+  const draw = (role, reset) => {
+    $('#perms', m.el).innerHTML = permBox(role);
+    if (reset) for (const p of P.list) { const el = form.elements['perm_' + p.key]; if (el) el.checked = !!P.defaults[role][p.key]; }
+    const r = $('#permreset', m.el); if (r) r.onclick = e => { e.preventDefault(); draw(role, true); $$('.pill.warn', $('#perms', m.el)).forEach(x => x.remove()); };
+  };
+  form.role.onchange = () => draw(form.role.value, form.role.value !== role0);
+  draw(role0);
 }
 async function viewSettings() {
   const s = S.settings;

@@ -7,6 +7,7 @@ const mailer = require('./mailer');
 const A = require('./accounting');
 const Bill = require('./billing');
 const Geo = require('./geo');
+const P = require('./perms');
 
 const { all, get, run, tx } = D;
 
@@ -62,11 +63,15 @@ function createApp(db) {
     if (!u) return res.status(401).json({ error: 'Not signed in' });
     delete u.password_hash;
     req.user = u; req.token = tok;
+    req.perms = P.effective(u, D.settings(db));
+    req.can = k => !!req.perms[k];
     next();
   }
   const role = (...roles) => (req, res, next) => roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'You do not have permission for this' });
   const office = role('admin', 'office');
-  const admin = role('admin');
+  // admin-only routes also open to an office person who was given that area's permission (e.g. Accounting)
+  const admin = (req, res, next) => req.user.role === 'admin' || (req.user.role === 'office' && req.permGranted)
+    ? next() : res.status(403).json({ error: 'You do not have permission for this' });
 
   app.get('/api/setup', wrap((req, res) => {
     const s = D.settings(db);
@@ -156,6 +161,25 @@ function createApp(db) {
 
   // everything below requires sign-in
   app.use('/api', auth);
+  // Per-employee permissions for office staff: one rule table (perms.js) decides which area a request belongs to.
+  const COST_KEYS = new Set(['unit_cost', 'est_cost', 'est_margin_pct', 'hourly_cost', 'hourly_wage', 'burden_pct', 'labor_cost', 'materials_cost', 'material_cost',
+    'other_cost', 'total_cost', 'cost_to_date', 'estimated_cost', 'projected_profit', 'projected_margin_pct', 'profit', 'margin_pct', 'budget_cost', 'budget_material',
+    'budget_other', 'budget_materials', 'material_variance', 'loaded_rate', 'loaded_cost', 'permit_fees', 'forecast_cost', 'cost_variance']);
+  const stripCosts = v => {
+    if (Array.isArray(v)) { v.forEach(stripCosts); return v; }
+    if (v && typeof v === 'object') for (const k of Object.keys(v)) { if (COST_KEYS.has(k)) delete v[k]; else stripCosts(v[k]); }
+    return v;
+  };
+  app.use('/api', (req, res, next) => {
+    if (req.user.role !== 'office') return next();
+    const rule = P.ruleFor(req.method, req.originalUrl.split('?')[0]);
+    if (rule) {
+      if (!req.can(rule.perm)) return res.status(403).json({ error: `You don't have permission for ${P.LABEL[rule.perm]}. Ask the owner to turn it on under Team.` });
+      req.permGranted = true;
+    }
+    if (!req.can('see_costs')) { const json = res.json.bind(res); res.json = body => json(stripCosts(body)); }
+    next();
+  });
 
   const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key'];
   function publicSettings(user) {
@@ -164,7 +188,11 @@ function createApp(db) {
     if (user.role === 'tech') for (const k of Object.keys(s)) if (k.startsWith('ply_') || k.startsWith('default_') && k.endsWith('_account')) delete s[k];
     return s;
   }
-  app.get('/api/me', (req, res) => res.json({ user: req.user, settings: publicSettings(req.user) }));
+  app.get('/api/me', (req, res) => { const { permissions, ...user } = req.user; res.json({ user: { ...user, perms: req.perms }, settings: publicSettings(req.user) }); });
+  app.get('/api/permissions', admin, (req, res) => {
+    const s = D.settings(db);
+    res.json({ list: P.PERMS, defaults: { office: P.defaults('office', s), tech: P.defaults('tech', s), admin: P.defaults('admin', s) } });
+  });
   app.post('/api/logout', wrap((req, res) => { run(db, 'DELETE FROM sessions WHERE token = ?', req.token); res.json({ ok: true }); }));
   app.post('/api/me/password', wrap((req, res) => {
     const u = get(db, 'SELECT * FROM users WHERE id = ?', req.user.id);
@@ -189,16 +217,26 @@ function createApp(db) {
   // ------------------------------------------------------------ users / employees
   const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active'];
   app.get('/api/users', wrap((req, res) => {
-    const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at';
-    res.json(all(db, `SELECT ${cols} FROM users ORDER BY active DESC, name`));
+    const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions';
+    const s = D.settings(db);
+    res.json(all(db, `SELECT ${cols} FROM users ORDER BY active DESC, name`).map(u => {
+      if (req.user.role !== 'admin') { delete u.permissions; return u; }
+      const { permissions, ...rest } = u;
+      return { ...rest, perms: P.effective(u, s), custom_perms: Object.keys(JSON.parse(permissions || '{}')) };
+    }));
   }));
   app.post('/api/users', admin, wrap((req, res) => {
     if (!req.body.password || req.body.password.length < 8) throw bad('Password must be 8+ characters');
-    const id = insert('users', { ...pick(req.body, USER_FIELDS), password_hash: D.hashPassword(req.body.password) });
+    const id = insert('users', { ...pick(req.body, USER_FIELDS), password_hash: D.hashPassword(req.body.password),
+      permissions: P.overridesFrom(req.body.role || 'tech', req.body.perms, D.settings(db)) });
     res.json({ id });
   }));
   app.put('/api/users/:id', admin, wrap((req, res) => {
     const data = pick(req.body, USER_FIELDS);
+    const target = get(db, 'SELECT * FROM users WHERE id = ?', req.params.id);
+    if (!target) throw bad('Not found', 404);
+    if (req.body.perms !== undefined || data.role) data.permissions = P.overridesFrom(data.role || target.role, req.body.perms !== undefined ? req.body.perms : P.effective(target, D.settings(db)), D.settings(db));
+    if (Number(req.params.id) === req.user.id && data.role && data.role !== 'admin') throw bad("You can't take admin away from yourself");
     if (req.body.password) { if (req.body.password.length < 8) throw bad('Password must be 8+ characters'); data.password_hash = D.hashPassword(req.body.password); }
     update('users', req.params.id, data);
     if (data.active === 0 || data.active === false) run(db, 'DELETE FROM sessions WHERE user_id = ?', req.params.id);
@@ -294,9 +332,10 @@ function createApp(db) {
   // ------------------------------------------------------------ jobs
   const JOB_FIELDS = ['customer_id', 'location_id', 'title', 'description', 'job_type', 'priority', 'status', 'scheduled_start', 'scheduled_end',
     'lead_source', 'po_number', 'contract_amount', 'budget_hours', 'budget_materials', 'completion_notes',
-    'billing_type', 'retainage_pct', 'percent_complete', 'labor_rate', 'material_markup_pct', 'trip_charge', 'nte_amount', 'bill_travel'];
+    'billing_type', 'retainage_pct', 'percent_complete', 'labor_rate', 'material_markup_pct', 'trip_charge', 'nte_amount', 'bill_travel',
+    'is_project', 'project_manager_id', 'foreman_id', 'start_date', 'end_date', 'gc_contact', 'gc_phone', 'gc_email'];
   // A blank box means "use the default" for columns that can't be empty (the form blanks the other billing type's fields).
-  const JOB_NOT_BLANK = { retainage_pct: 0, bill_travel: 1, job_type: 'service', priority: 'normal', billing_type: 'tm' };
+  const JOB_NOT_BLANK = { retainage_pct: 0, bill_travel: 1, job_type: 'service', priority: 'normal', billing_type: 'tm', is_project: 0 };
   const jobData = body => { const d = pick(body, JOB_FIELDS); for (const [k, v] of Object.entries(JOB_NOT_BLANK)) if (k in d && (d[k] === null || d[k] === '')) d[k] = v; return d; };
   const jobSelect = `SELECT j.*, c.name customer_name, c.type customer_type, c.phone customer_phone,
     l.address, l.city, l.state, l.zip,
@@ -514,6 +553,19 @@ function createApp(db) {
   app.get('/api/time/status', wrap((req, res) => {
     res.json({ open: get(db, `SELECT t.*, j.number job_number, j.title job_title, cc.code cost_code, cc.name cost_code_name FROM time_entries t LEFT JOIN jobs j ON j.id = t.job_id LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.user_id = ? AND t.clock_out IS NULL ORDER BY id DESC LIMIT 1`, req.user.id) });
   }));
+  // What this person can clock into: their assigned jobs, plus open commercial projects (all of them if allowed).
+  app.get('/api/time/options', wrap((req, res) => {
+    const open = "j.status IN ('unscheduled','scheduled','dispatched','in_progress','on_hold')";
+    const mine = all(db, `SELECT j.id, j.number, j.title, j.is_project, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id
+      WHERE ${open} AND EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = j.id AND jt.user_id = ?) ORDER BY j.scheduled_start, j.id`, req.user.id);
+    const anyProject = req.user.role !== 'tech' || req.can('any_project');
+    const projects = all(db, `SELECT j.id, j.number, j.title, j.is_project, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id
+      WHERE ${open} AND j.is_project = 1 ${anyProject ? '' : 'AND (EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = j.id AND jt.user_id = ?) OR j.foreman_id = ?)'} ORDER BY j.number`,
+      ...(anyProject ? [] : [req.user.id, req.user.id]));
+    const codes = id => all(db, 'SELECT cost_code_id FROM job_budgets WHERE job_id = ?', id).map(r => r.cost_code_id);
+    res.json({ jobs: mine.filter(j => !j.is_project), projects: projects.map(p => ({ ...p, cost_code_ids: codes(p.id) })),
+      require_cost_code: D.settings(db).project_require_cost_code !== '0' });
+  }));
   app.get('/api/time/clocked-in', office, wrap((req, res) => {
     res.json(all(db, `SELECT t.*, u.name user_name, j.number job_number, j.title job_title FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE t.clock_out IS NULL ORDER BY t.clock_in`));
   }));
@@ -521,6 +573,11 @@ function createApp(db) {
     const now = new Date().toISOString();
     const u = get(db, 'SELECT * FROM users WHERE id = ?', req.user.id);
     const kind = req.body.kind || (req.body.job_id ? 'job' : 'shop');
+    const pj = req.body.job_id ? get(db, 'SELECT id, number, is_project FROM jobs WHERE id = ?', req.body.job_id) : null;
+    if (req.body.job_id && !pj) throw bad('That job no longer exists');
+    if (pj && pj.is_project && kind === 'job' && !req.body.cost_code_id && D.settings(db).project_require_cost_code !== '0')
+      throw bad(`Pick a cost code for ${pj.number}: commercial projects track hours by cost code`);
+    if (req.body.cost_code_id && !get(db, 'SELECT 1 x FROM cost_codes WHERE id = ? AND active = 1', req.body.cost_code_id)) throw bad('That cost code is not active');
     tx(db, () => {
       // switching jobs closes the open entry automatically
       const g = gps(req.body);
@@ -569,12 +626,15 @@ function createApp(db) {
   const DOC_FIELDS = ['customer_id', 'title', 'tax_rate', 'discount', 'notes', 'terms'];
   function saveItems(table, fk, id, items, optionIds) {
     if (!Array.isArray(items)) return;
+    // someone who can't see costs never receives unit_cost, so a line without one keeps the cost it had (or the price book's)
+    const prevCost = new Map(all(db, `SELECT id, unit_cost FROM ${table} WHERE ${fk} = ?`, id).map(r => [r.id, r.unit_cost]));
+    const pbCost = pid => pid ? (get(db, 'SELECT unit_cost FROM pricebook WHERE id = ?', pid) || {}).unit_cost : undefined;
     run(db, `DELETE FROM ${table} WHERE ${fk} = ?`, id);
     items.forEach((it, i) => {
       if (!it.description) return;
       const option = optionIds ? (it.option_index != null && it.option_index !== '' ? optionIds[Number(it.option_index)] ?? null : null) : undefined;
       insert(table, { [fk]: id, pricebook_id: it.pricebook_id || null, description: it.description, qty: Number(it.qty) || 0,
-        unit_price: Number(it.unit_price) || 0, unit_cost: Number(it.unit_cost) || 0, taxable: it.taxable ? 1 : 0, cost_code_id: it.cost_code_id || null, sort: i,
+        unit_price: Number(it.unit_price) || 0, unit_cost: it.unit_cost !== undefined ? Number(it.unit_cost) || 0 : prevCost.get(it.id) ?? pbCost(it.pricebook_id) ?? 0, taxable: it.taxable ? 1 : 0, cost_code_id: it.cost_code_id || null, sort: i,
         ...(option !== undefined ? { option_id: option } : it.option_id ? { option_id: it.option_id } : {}) });
     });
   }
@@ -869,24 +929,25 @@ function createApp(db) {
   app.get('/api/dashboard', office, wrap((req, res) => {
     const t = today();
     const monthStart = t.slice(0, 8) + '01';
-    const pl = C.profitAndLoss(db, monthStart, t);
-    const ar = C.arAging(db);
+    const money = req.can('reports'); // revenue, margins, receivables only for people with business reports
+    const pl = money ? C.profitAndLoss(db, monthStart, t) : undefined;
+    const ar = money ? C.arAging(db) : undefined;
     const s = D.settings(db);
     const dayStart = C.startOfDay(t), dayEnd = C.endOfDay(t);
-    res.json({
+    res.json({ money,
       today_jobs: H.appointments("a.start < ? AND a.end >= ? AND a.status != 'cancelled'", [dayEnd, dayStart]),
       unscheduled: get(db, "SELECT COUNT(*) n FROM jobs WHERE status = 'unscheduled'").n,
       to_invoice: all(db, `${jobSelect} WHERE j.status = 'completed' ORDER BY j.completed_at`).map(fixTechs),
-      wip: Bill.wipReport(db).totals,
+      wip: money ? Bill.wipReport(db).totals : undefined,
       estimates_review: get(db, "SELECT COUNT(*) n FROM estimates WHERE review_status = 'pending'").n,
       clocked_in: all(db, 'SELECT t.*, u.name user_name, j.number job_number, j.title job_title FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE t.clock_out IS NULL'),
-      open_estimates: C.estimateConversion(db, '0000-01-01', t),
+      open_estimates: money ? C.estimateConversion(db, '0000-01-01', t) : undefined,
       ar, mtd: pl,
       target_gross_margin: Number(s.target_gross_margin) || 0,
       inspections_upcoming: all(db, `SELECT p.*, j.number job_number, j.title job_title FROM permits p JOIN jobs j ON j.id = p.job_id WHERE p.inspection_date >= ? AND p.status NOT IN ('passed','closed') ORDER BY p.inspection_date LIMIT 10`, t),
       low_stock: all(db, 'SELECT id, code, name, qty_on_hand, reorder_point FROM pricebook WHERE active = 1 AND reorder_point > 0 AND qty_on_hand <= reorder_point ORDER BY name'),
       agreements_due: all(db, `SELECT a.*, c.name customer_name FROM agreements a JOIN customers c ON c.id = a.customer_id WHERE a.status = 'active' AND a.next_visit <= ? ORDER BY a.next_visit`, addDays(t, 30)),
-      trend: C.monthlyTrend(db, 6),
+      trend: money ? C.monthlyTrend(db, 6) : undefined,
     });
   }));
   const range = req => ({ from: req.query.from || today().slice(0, 8) + '01', to: req.query.to || today() });
@@ -970,6 +1031,7 @@ function createApp(db) {
   }));
   app.get('/api/reports/wip', office, wrap((req, res) => res.json(Bill.wipReport(db))));
   require('./routes_import')(app, db, { wrap, bad, admin, H });
+  require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

@@ -34,13 +34,29 @@ function contractValue(db, job) {
   return { base: r2(job.contract_amount || 0), change_orders: r2(cos.reduce((s, c) => s + c.amount, 0)), total: r2((job.contract_amount || 0) + cos.reduce((s, c) => s + c.amount, 0)) };
 }
 // Estimated total cost from the budget (hours × average loaded rate of the job's techs + material + other).
+// Average loaded labor cost per hour for the job's crew (or all techs when no one is assigned).
+function laborRate(db, job) {
+  return get(db, `SELECT AVG(u.hourly_wage * (1 + u.burden_pct / 100.0)) r FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = ? AND u.hourly_wage > 0`, job.id).r
+    || get(db, "SELECT AVG(hourly_wage * (1 + burden_pct / 100.0)) r FROM users WHERE role = 'tech' AND active = 1 AND hourly_wage > 0").r || 0;
+}
 function budgetCost(db, job) {
   const b = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m, SUM(budget_other) o FROM job_budgets WHERE job_id = ?', job.id);
   const hours = b.h ?? job.budget_hours ?? 0, mat = b.m ?? job.budget_materials ?? 0, other = b.o ?? 0;
-  const rate = get(db, `SELECT AVG(u.hourly_wage * (1 + u.burden_pct / 100.0)) r FROM job_techs jt JOIN users u ON u.id = jt.user_id WHERE jt.job_id = ? AND u.hourly_wage > 0`, job.id).r
-    || get(db, "SELECT AVG(hourly_wage * (1 + burden_pct / 100.0)) r FROM users WHERE role = 'tech' AND active = 1 AND hourly_wage > 0").r || 0;
-  const total = hours * rate + mat + other;
+  const total = hours * laborRate(db, job) + mat + other;
   return total > 0 ? r2(total) : null;
+}
+// % complete rolled up from the per-cost-code % complete the PM/foreman enters, weighted by each code's budget
+// (hours at the crew rate + material + other). Codes not yet marked count as 0%. null when nothing has been entered.
+function codesPercent(db, job) {
+  const rows = all(db, 'SELECT * FROM job_budgets WHERE job_id = ?', job.id);
+  if (!rows.some(r => r.percent_complete != null)) return null;
+  const rate = laborRate(db, job);
+  let w = 0, done = 0;
+  for (const r of rows) {
+    const weight = (r.budget_hours || 0) * (rate || 1) + (r.budget_material || 0) + (r.budget_other || 0);
+    w += weight; done += weight * Math.min(100, Math.max(0, r.percent_complete || 0)) / 100;
+  }
+  return w > 0 ? r2(done / w * 100) : null;
 }
 function milestonesFor(db, job, contract) {
   return all(db, 'SELECT m.*, i.number invoice_number, i.status invoice_status FROM billing_milestones m LEFT JOIN invoices i ON i.id = m.invoice_id WHERE m.job_id = ? ORDER BY m.sort, m.id', job.id)
@@ -55,7 +71,8 @@ function fixedSummary(db, jobId) {
   const cost = C.jobCosting(db, jobId);
   const estCost = budgetCost(db, job);
   const costPct = estCost ? Math.min(100, cost.total_cost / estCost * 100) : null;
-  const pct = job.percent_complete != null ? job.percent_complete : costPct;
+  const codesPct = codesPercent(db, job);
+  const pct = job.percent_complete != null ? job.percent_complete : codesPct != null ? codesPct : costPct;
   const earned = pct != null ? r2(cv.total * pct / 100) : null;
   const projectedCost = estCost != null ? Math.max(estCost, cost.total_cost) : cost.total_cost;
   return {
@@ -64,7 +81,7 @@ function fixedSummary(db, jobId) {
     retainage_pct: job.retainage_pct || 0, retainage_held: retainageHeld,
     collected: r2(invs.reduce((s, i) => s + i.paid, 0)), outstanding: r2(invs.reduce((s, i) => s + i.balance, 0)),
     cost_to_date: cost.total_cost, estimated_cost: estCost, cost_pct_complete: costPct != null ? r2(costPct) : null,
-    percent_complete: pct != null ? r2(pct) : null, percent_source: job.percent_complete != null ? 'entered' : costPct != null ? 'cost' : null,
+    percent_complete: pct != null ? r2(pct) : null, percent_source: job.percent_complete != null ? 'entered' : codesPct != null ? 'cost_codes' : costPct != null ? 'cost' : null,
     earned, over_under: earned != null ? r2(billed - earned) : null, // + over-billed (ahead), − under-billed (behind)
     projected_profit: r2(cv.total - projectedCost), projected_margin_pct: cv.total ? r2((cv.total - projectedCost) / cv.total * 100) : null,
     invoices: invs.map(i => ({ id: i.id, number: i.number, kind: i.billing_kind, issue_date: i.issue_date, status: i.status, amount: r2(i.subtotal - i.discount + (i.retainage || 0)), retainage: i.retainage, total: i.total, balance: i.balance })),
@@ -281,4 +298,4 @@ function wipReport(db) {
 }
 function money(n) { return (Number(n) || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' }); }
 
-module.exports = { contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };
+module.exports = { laborRate, codesPercent, contractValue, fixedSummary, billFixed, tmSummary, billTM, releaseInvoice, assertUnbilled, jobBilling, wipReport, changeOrders };

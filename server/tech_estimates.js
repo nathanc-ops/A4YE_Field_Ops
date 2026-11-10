@@ -19,9 +19,10 @@ const r2 = C.r2;
 module.exports = function techEstimates(app, db, X) {
   const { wrap, bad, mustGet, pick, insert, update, saveItems, saveOptions, baseUrl, today, addDays, office } = X;
   const techOnly = (req, res, next) => (req.user.role === 'tech' ? next() : next('route'));
-  const cfg = () => {
+  // req given → this person's own switches (Team → permissions); the company settings are only the defaults
+  const cfg = req => {
     const s = settings(db);
-    return { enabled: s.tech_estimates !== '0', seeCosts: s.tech_see_costs === '1', maxDiscount: Number(s.tech_max_discount_pct) || 0,
+    return { enabled: req ? req.can('field_estimates') : s.tech_estimates !== '0', seeCosts: req ? req.can('see_costs') : s.tech_see_costs === '1', maxDiscount: Number(s.tech_max_discount_pct) || 0,
       minMargin: Number(s.tech_min_margin_pct) || 0, custom: s.tech_custom_lines || 'review', s };
   };
   const assigned = (user, jobId) => jobId && !!get(db, 'SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?', jobId, user.id);
@@ -66,8 +67,8 @@ module.exports = function techEstimates(app, db, X) {
   }
 
   // Price-book lines are repriced from the price book; custom lines follow the custom-line policy.
-  function cleanItems(items) {
-    const c = cfg();
+  function cleanItems(items, req) {
+    const c = cfg(req);
     return (items || []).filter(i => i && i.description).map(it => {
       if (it.pricebook_id) {
         const p = get(db, 'SELECT * FROM pricebook WHERE id = ? AND active = 1', it.pricebook_id);
@@ -81,7 +82,7 @@ module.exports = function techEstimates(app, db, X) {
   }
   // What a tech may see of an estimate.
   function forTech(req, e) {
-    const c = cfg();
+    const c = cfg(req);
     const full = C.estimateWithTotals(db, e);
     const ev = evaluate(e.id);
     full.guard = { checks: c.seeCosts ? ev.checks : ev.checks.map(({ margin, ...rest }) => rest), max_discount_pct: c.maxDiscount, min_margin_pct: c.seeCosts ? c.minMargin : undefined, custom_lines: c.custom, see_costs: c.seeCosts };
@@ -99,21 +100,21 @@ module.exports = function techEstimates(app, db, X) {
 
   // ---------------------------------------------------------------- tech routes
   app.get('/api/estimates', techOnly, wrap((req, res) => {
-    const c = cfg();
+    const c = cfg(req);
     const rows = all(db, `SELECT e.*, c.name customer_name, j.number job_number FROM estimates e JOIN customers c ON c.id = e.customer_id JOIN jobs j ON j.id = e.job_id
       WHERE EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = e.job_id AND jt.user_id = ?) ORDER BY e.id DESC LIMIT 200`, req.user.id);
     res.json(rows.map(e => { const f = C.estimateWithTotals(db, e); if (!c.seeCosts) { delete f.est_cost; delete f.est_margin_pct; for (const o of f.options) { delete o.est_cost; delete o.est_margin_pct; } for (const it of [...f.items, ...f.chosen_items]) delete it.unit_cost; } return f; }));
   }));
   app.get('/api/estimates/:id', techOnly, wrap((req, res) => res.json(forTech(req, techEstimate(req.user, req.params.id)))));
   app.post('/api/estimates', techOnly, wrap((req, res) => {
-    const c = cfg();
+    const c = cfg(req);
     if (!c.enabled) throw bad('Field estimating is turned off — ask the office', 403);
     const b = req.body;
     const job = b.job_id ? get(db, 'SELECT * FROM jobs WHERE id = ?', b.job_id) : null;
     if (!job || !assigned(req.user, job.id)) throw bad('Start an estimate from one of your jobs', 403);
     const cust = mustGet('customers', job.customer_id);
     const changeOrder = job.billing_type === 'fixed' && (job.contract_amount > 0 || get(db, "SELECT 1 x FROM estimates WHERE job_id = ? AND status = 'approved'", job.id)) ? 1 : 0;
-    const items = cleanItems(b.items);
+    const items = cleanItems(b.items, req);
     const eid = insert('estimates', {
       customer_id: job.customer_id, location_id: job.location_id, job_id: job.id, change_order: changeOrder,
       title: b.title || (changeOrder ? `Change order — ${job.title}` : job.title), notes: b.notes || null, discount: Number(b.discount) || 0,
@@ -130,7 +131,7 @@ module.exports = function techEstimates(app, db, X) {
     if (['declined', 'expired', 'cancelled'].includes(e.status)) throw bad(`This estimate is ${e.status}`);
     if (req.body.status) throw bad('Only the customer or the office can approve or decline', 403);
     update('estimates', e.id, { ...pick(req.body, ['title', 'notes']), ...(req.body.discount != null ? { discount: Number(req.body.discount) || 0 } : {}) });
-    if (req.body.items) saveItems('estimate_items', 'estimate_id', e.id, cleanItems(req.body.items), saveOptions(e.id, req.body.options) || (req.body.options ? [] : undefined));
+    if (req.body.items) saveItems('estimate_items', 'estimate_id', e.id, cleanItems(req.body.items, req), saveOptions(e.id, req.body.options) || (req.body.options ? [] : undefined));
     // any change by the tech after office approval is re-checked from scratch
     if (e.review_status === 'approved' && (req.body.items || req.body.discount != null)) run(db, 'UPDATE estimates SET review_status = NULL WHERE id = ?', e.id);
     const ev = applyReview(e.id, req.user.id);

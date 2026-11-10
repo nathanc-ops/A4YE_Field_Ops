@@ -604,6 +604,38 @@ const MIGRATIONS = [
     addColumn(db, 'locations', 'lng', 'REAL');
     addColumn(db, 'locations', 'verified_at', 'TEXT');
   },
+  // 13: per-employee permissions; commercial projects (project fields, % complete by cost code, daily logs)
+  db => {
+    addColumn(db, 'users', 'permissions', 'TEXT');               // JSON of switches that differ from the role's defaults
+    addColumn(db, 'jobs', 'is_project', 'INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'jobs', 'project_manager_id', 'INTEGER REFERENCES users(id)');
+    addColumn(db, 'jobs', 'foreman_id', 'INTEGER REFERENCES users(id)');
+    addColumn(db, 'jobs', 'start_date', 'TEXT');
+    addColumn(db, 'jobs', 'end_date', 'TEXT');                    // target substantial completion
+    addColumn(db, 'jobs', 'gc_contact', 'TEXT');                  // GC / owner's site contact
+    addColumn(db, 'jobs', 'gc_phone', 'TEXT');
+    addColumn(db, 'jobs', 'gc_email', 'TEXT');
+    addColumn(db, 'job_budgets', 'percent_complete', 'REAL');     // entered by the PM/foreman per cost code
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_logs (
+      id INTEGER PRIMARY KEY,
+      job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      log_date TEXT NOT NULL,
+      user_id INTEGER REFERENCES users(id),
+      weather TEXT,
+      crew_count INTEGER,
+      work_performed TEXT,
+      delays TEXT,
+      safety TEXT,
+      visitors TEXT,
+      deliveries TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_dlog_job ON daily_logs(job_id, log_date);`);
+    db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('project_require_cost_code', '1')").run();
+    db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('project_clock_any', '1')").run();
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

@@ -219,6 +219,16 @@ const TYPES = {
       f('billed', 'Already billed (yes/no)', ['billed', 'invoiced']),
     ],
   },
+  cost_codes: {
+    label: 'Cost codes', note: 'Your cost code list (for example from your time clock or estimating system). Codes that already exist are renamed to match the file.',
+    options: [{ key: 'deactivate_missing', label: 'Turn off codes that are not in this file (they stay on past time entries)', default: false }],
+    fields: [
+      f('code', 'Code', ['code', 'cost code', 'number', 'cost code #', 'code #', 'phase', 'phase code', 'id'], { required: true }),
+      f('name', 'Name', ['name', 'description', 'cost code name', 'title', 'phase name'], { required: true }),
+      f('kind', 'Used for (labor / material / both / other)', ['kind', 'type', 'category', 'used for', 'cost type']),
+      f('active', 'Active', ['active', 'enabled', 'status']),
+    ],
+  },
   vendors: {
     label: 'Vendors', note: 'Supply houses and subcontractors. Matches existing vendors by name.',
     fields: [
@@ -543,6 +553,28 @@ const IMPORTERS = {
     });
   },
 
+  cost_codes(ctx, recs) {
+    const { db } = ctx;
+    const KIND = v => { v = String(v || '').toLowerCase(); return /both|all|labor.*mat|mat.*labor/.test(v) ? 'both' : /labou?r|hour|time/.test(v) ? 'labor' : /mat|part|suppl/.test(v) ? 'material' : v ? 'other' : 'both'; };
+    const seen = new Set();
+    eachRow(ctx, recs, r => {
+      const code = clip(String(r.code || '').trim(), 40), name = clip(String(r.name || '').trim(), 120);
+      if (!code) throw err('No code');
+      if (!name) throw err(`Code ${code} has no name`);
+      seen.add(code.toLowerCase());
+      const active = r.active == null || r.active === '' ? 1 : /^(n|no|0|false|inactive|off|disabled)$/i.test(String(r.active).trim()) ? 0 : 1;
+      const data = { name, kind: r.kind ? KIND(r.kind) : undefined, active };
+      const existing = get(db, 'SELECT * FROM cost_codes WHERE lower(code) = ?', code.toLowerCase());
+      if (existing) { if (update(db, 'cost_codes', existing.id, Object.fromEntries(Object.entries(data).filter(([k, v]) => v !== undefined && existing[k] !== v)))) ctx.updated++; }
+      else ctx.made('cost_code', insert(db, 'cost_codes', { code, name, kind: data.kind || 'both', active }));
+    });
+    if (ctx.options.deactivate_missing && seen.size) {
+      const off = all(db, 'SELECT id, code FROM cost_codes WHERE active = 1').filter(c => !seen.has(String(c.code).toLowerCase()));
+      for (const c of off) run(db, 'UPDATE cost_codes SET active = 0 WHERE id = ?', c.id);
+      if (off.length) ctx.warn(0, `Turned off ${off.length} code(s) not in the file: ${off.slice(0, 12).map(c => c.code).join(', ')}${off.length > 12 ? '…' : ''}`);
+    }
+  },
+
   vendors(ctx, recs) {
     const { db } = ctx;
     eachRow(ctx, recs, r => {
@@ -716,7 +748,7 @@ function listBatches(db) {
     .map(b => ({ ...b, warnings: JSON.parse(b.warnings || '[]'), options: JSON.parse(b.options || '{}') }));
 }
 const ENTITY_TABLE = { customer: 'customers', location: 'locations', job: 'jobs', estimate: 'estimates', invoice: 'invoices', payment: 'payments', job_note: 'job_notes',
-  pricebook: 'pricebook', job_material: 'job_materials', vendor: 'vendors', account: 'accounts', journal_entry: 'journal_entries', attachment: 'attachments' };
+  pricebook: 'pricebook', job_material: 'job_materials', vendor: 'vendors', cost_code: 'cost_codes', account: 'accounts', journal_entry: 'journal_entries', attachment: 'attachments' };
 function undoBatch(db, id, { removeFile } = {}) {
   const b = get(db, 'SELECT * FROM import_batches WHERE id = ?', id);
   if (!b) throw err('Import not found', 404);

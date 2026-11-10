@@ -137,6 +137,8 @@ module.exports = function routesExt(app, db, X) {
   app.put('/api/cost-codes/:id', office, wrap((req, res) => { update('cost_codes', req.params.id, pick(req.body, ['code', 'name', 'kind', 'active', 'ply_code'])); res.json({ ok: true }); }));
 
   function setBudgets(jobId, rows) {
+    // keep the % complete already reported on each code when the budget numbers change
+    const progress = all(db, 'SELECT cost_code_id, percent_complete FROM job_budgets WHERE job_id = ? AND percent_complete IS NOT NULL', jobId);
     run(db, 'DELETE FROM job_budgets WHERE job_id = ?', jobId);
     for (const b of rows) {
       if (!b.cost_code_id) continue;
@@ -145,6 +147,7 @@ module.exports = function routesExt(app, db, X) {
         ON CONFLICT(job_id, cost_code_id) DO UPDATE SET budget_hours = budget_hours + excluded.budget_hours, budget_material = budget_material + excluded.budget_material, budget_other = budget_other + excluded.budget_other`,
       jobId, b.cost_code_id, Number(b.budget_hours) || 0, Number(b.budget_material) || 0, Number(b.budget_other) || 0);
     }
+    for (const p of progress) run(db, 'UPDATE job_budgets SET percent_complete = ? WHERE job_id = ? AND cost_code_id = ?', p.percent_complete, jobId, p.cost_code_id);
     const t = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m FROM job_budgets WHERE job_id = ?', jobId);
     if (t.h != null) run(db, 'UPDATE jobs SET budget_hours = ?, budget_materials = ? WHERE id = ?', r2(t.h), r2(t.m), jobId);
   }

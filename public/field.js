@@ -248,6 +248,15 @@ settingsExtras = async function (el) { // eslint-disable-line no-func-assign
     $('#fef').onsubmit = async e => { e.preventDefault(); const f = e.target;
       S.settings = await act(() => PUT('/settings', { tech_estimates: f.tech_estimates.checked ? '1' : '0', tech_see_costs: f.tech_see_costs.checked ? '1' : '0',
         tech_max_discount_pct: f.tech_max_discount_pct.value, tech_min_margin_pct: f.tech_min_margin_pct.value, tech_custom_lines: f.tech_custom_lines.value }), 'Field estimating saved'); };
+    el.insertAdjacentHTML('beforeend', `<div class="card"><h2>Commercial projects</h2>
+      <p class="small muted">How the time clock works on jobs marked “Commercial project”. These are company defaults; you can change them per person under Team.</p>
+      <form id="pjf"><div class="form-grid">
+        ${fieldHtml({ name: 'project_require_cost_code', label: 'Require a cost code when clocking in on a project', type: 'checkbox', full: true }, s.project_require_cost_code !== '0')}
+        ${fieldHtml({ name: 'project_clock_any', label: 'Techs can clock in on any open project (not only ones they are assigned to)', type: 'checkbox', full: true }, s.project_clock_any !== '0')}
+      </div><p class="small">Cost codes are under <b>Cost codes</b> on this page. To bring in the list from another system, use <a href="#/import">Import Data → Cost codes</a>.</p>
+      <button class="btn primary" style="margin-top:6px">Save</button></form></div>`);
+    $('#pjf').onsubmit = async e => { e.preventDefault(); const f = e.target;
+      S.settings = await act(() => PUT('/settings', { project_require_cost_code: f.project_require_cost_code.checked ? '1' : '0', project_clock_any: f.project_clock_any.checked ? '1' : '0' }), 'Project settings saved'); };
   }
   const ts = await GET('/form-templates?all=1');
   el.insertAdjacentHTML('beforeend', `<div class="card"><div class="row spread"><h2>Checklist templates</h2><button class="btn" id="newtpl">+ Checklist</button></div>
