@@ -22,7 +22,7 @@ function fromSettings(s, o) {
   const host = String(v('host') || '').trim(), port = Number(v('port')) || 587;
   const fromEmail = String(v('from_email') || v('user') || '').trim(), fromName = String(v('from_name') || s.company_name || '').replace(/["<>\r\n]/g, '').trim();
   return { source: 'settings', host, port, security: ['ssl', 'starttls', 'none'].includes(v('security')) ? v('security') : port === 465 ? 'ssl' : 'starttls',
-    user: String(v('user') || '').trim(), pass: o.pass ? String(o.pass) : (s.smtp_pass || ''), from: fromEmail ? (fromName ? `"${fromName}" <${fromEmail}>` : fromEmail) : '' };
+    user: String(v('user') || '').trim(), pass: (o.pass ? String(o.pass) : (s.smtp_pass || '')).replace(/\s+/g, ''), from: fromEmail ? (fromName ? `"${fromName}" <${fromEmail}>` : fromEmail) : '' };
 }
 function transportFor(c) {
   const nodemailer = require('nodemailer');
@@ -72,7 +72,14 @@ function explain(e, c) {
   if (code === 'EAUTH' || /\b535\b|authentication|username and password|invalid login/i.test(msg)) {
     if (host.includes('gmail') || host.includes('google')) return `Google rejected the sign-in. Use an App Password (Google Account → Security → 2-Step Verification → App passwords), not the normal password. (${msg})`;
     if (host.includes('office365') || host.includes('outlook')) return `Microsoft rejected the sign-in. Microsoft 365 has been turning off password sign-in for SMTP — use a sending service (Postmark, SendGrid, Brevo, Amazon SES) instead, or have your Microsoft admin set up a relay. (${msg})`;
-    if (host.includes('sendgrid')) return `SendGrid rejected the sign-in. The username must be the word "apikey" and the password is the API key. (${msg})`;
+    if (host.includes('sendgrid')) {
+      const key = String(c.pass || ''), user = String(c.user || '');
+      if (user !== 'apikey') return `The username must be exactly apikey (lowercase, no spaces) — it is "${user}". (${msg})`;
+      if (/^SK[0-9a-f]{32}$/i.test(key)) return `That is a Twilio account API key (starts with SK). Email needs an email API key, which starts with "SG." — create one in the Twilio console's Email section → API Keys, with Mail Send access. (${msg})`;
+      if (!key.startsWith('SG.')) return `That doesn't look like an email API key — those start with "SG." and are about 69 characters. The key's secret is shown only once when it's created; if you didn't copy it then, create a new key. (${msg})`;
+      if (key.length < 60) return `The key looks cut off (${key.length} characters; email API keys are about 69). Copy the whole key, or create a new one. (${msg})`;
+      return `Twilio Email rejected that API key: it was mistyped, deleted, or doesn't have Mail Send access. Create a new email API key with Mail Send access and paste it again. (${msg})`;
+    }
     return `The mail server rejected the username or password. (${msg})`;
   }
   if (code === 'ENOTFOUND' || /getaddrinfo/i.test(msg)) return `Couldn't find the mail server "${c.host}". Check the server name.`;

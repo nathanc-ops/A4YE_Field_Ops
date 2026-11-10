@@ -215,6 +215,7 @@ function createApp(db) {
       if (k.endsWith('_set')) continue;
       if (k.endsWith('_clear')) { const base = k.slice(0, -6); if (SECRET_KEYS.includes(base) && v) up.run(base, ''); continue; }
       if (SECRET_KEYS.includes(k) && !v) continue; // blank = keep existing secret
+      if (k === 'smtp_pass') { up.run(k, String(v).replace(/\s+/g, '')); continue; } // pasted keys pick up stray spaces/newlines
       up.run(k, String(v ?? ''));
     }
     res.json(publicSettings(req.user));

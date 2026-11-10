@@ -158,3 +158,14 @@ test('sending from a no-reply address: invoices, estimates and confirmations car
   assert.equal((await call('admin', 'GET', '/settings/email')).data.reply_to, null);
   await call('admin', 'PUT', '/settings', { company_email: 'office@a4ye.example' });
 });
+
+test('Twilio Email sign-in errors say which key problem it is', () => {
+  const { explain } = require('../server/mailer');
+  const e = { code: 'EAUTH', response: '535 Authentication failed: The provided authorization grant is invalid, expired, or revoked' };
+  const c = pass => ({ host: 'smtp.sendgrid.net', port: 2525, user: 'apikey', pass });
+  assert.match(explain(e, c('SK' + 'a'.repeat(32))), /Twilio account API key \(starts with SK\)/);
+  assert.match(explain(e, c('abc123secret')), /start with "SG\."/);
+  assert.match(explain(e, c('SG.short')), /cut off/);
+  assert.match(explain(e, c('SG.' + 'x'.repeat(66))), /mistyped, deleted, or doesn't have Mail Send/);
+  assert.match(explain(e, { ...c('SG.' + 'x'.repeat(66)), user: 'Apikey' }), /must be exactly apikey/);
+});
