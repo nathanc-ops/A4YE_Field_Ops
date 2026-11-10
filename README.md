@@ -235,6 +235,16 @@ The cost code list is the A4YE list (0110 Estimating & Takeoff … 9060 Overtime
 
 Time entries sync from the A4Y Time Clock Google Sheet, either hourly through a small read-only export script or by CSV upload. They're matched by Entry ID, employee, **Time clock job #** and cost code. See [docs/TIMECLOCK.md](docs/TIMECLOCK.md).
 
+## Estimate visits
+
+A visit on the schedule can be for a job **or for an estimate**: a walkthrough to see the work and price it, before any job exists.
+
+- **Book one from the schedule:** **+ Estimate visit** on the tech board (or click an empty slot and pick "An estimate walkthrough"). Choose the customer, address, what they want priced, the time and the tech. A draft estimate is created with the visit.
+- **Or from the estimate:** **+ Schedule visit** in the estimate's *Site visits* card. An estimate can have several visits.
+- **On the schedule:** estimate visits show on the tech board, week view, dispatch list and dashboard with a dashed outline and an **EST** tag, and open the estimate when clicked. They count toward a tech's booked hours and in double-booking warnings, but don't change any job's schedule or crew.
+- **For the tech:** the tech booked on the visit sees it in their day, can open that estimate and build the price on site (the usual field-estimating guardrails apply), and En route / On site / Done clock their travel and site time against the visit.
+- **Cancelling** an estimate cancels its upcoming visits; finished visits stay as they were.
+
 ## Schedule blocks
 
 The tech board, week view and dispatch list group people by the **Title** on their Team profile:

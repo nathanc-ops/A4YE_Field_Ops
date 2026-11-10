@@ -298,7 +298,7 @@ async function viewDashboard() {
     <div class="grid g2" style="margin-top:14px">
       <div class="card"><div class="row spread"><h2>Today's visits</h2><a href="#/schedule">Tech board →</a></div>
         ${table([{ label: 'Time', get: a => `${fmtTime(a.start)}–${fmtTime(a.end)}` }, { label: 'Job', html: a => `<b>${esc(a.job_number)}</b> ${esc(a.job_title)}<div class="muted small">${esc(a.customer_name)} · ${esc(a.address || '')}</div>` },
-          { label: 'Tech', get: a => a.tech_names || 'Unassigned' }, { label: 'Status', html: a => pill(a.status) }], d.today_jobs, { onClick: a => go('#/jobs/' + a.job_id), empty: 'No visits scheduled today' })}
+          { label: 'Tech', get: a => a.tech_names || 'Unassigned' }, { label: 'Status', html: a => pill(a.status) }], d.today_jobs, { onClick: a => go(a.href), empty: 'No visits scheduled today' })}
         ${d.unscheduled ? `<div class="alert" style="margin-top:10px">${d.unscheduled} job(s) waiting to be scheduled. <a href="#/schedule">Schedule them</a></div>` : ''}
       </div>
       ${money ? `<div class="card"><h2>Revenue — last 6 months</h2>${bars(d.trend, 'revenue', 'month')}
@@ -894,10 +894,13 @@ async function viewDoc(kind, id) {
     </form>
     ${!isEst && id !== 'new' ? `<div class="card" style="margin-top:14px"><h2>Payments</h2>${table([{ label: 'Date', get: p => fmtDate(p.paid_at) }, { label: 'Method', get: p => label(p.method) }, { label: 'Reference', key: 'reference' }, { label: 'Amount', num: 1, get: p => money(p.amount) },
       ...(isAdmin() ? [{ label: '', html: p => `<button class="btn sm danger" data-delpay="${p.id}">✕</button>` }] : [])], doc.payments, { empty: 'No payments recorded' })}</div>` : ''}
+    ${isEst && id !== 'new' && !doc.change_order ? `<div class="card no-print" style="margin-top:14px" id="estvisits"><div class="row spread"><h2>Site visits (${(doc.visits || []).length})</h2>${!techMode && can('jobs') && !['cancelled', 'declined', 'expired'].includes(doc.status) ? '<button type="button" class="btn sm primary" id="addestvisit">+ Schedule visit</button>' : ''}</div><p class="small muted">Walkthroughs to see the work and price it. They show on the schedule board marked EST.</p>${table([{ label: 'When', html: v => `<b>${fmtDT(v.start)}</b> – ${fmtTime(v.end)}` }, { label: 'Techs', get: v => v.tech_names || 'Unassigned' }, { label: 'Status', html: v => pill(v.status) }, { label: 'Notes', get: v => v.notes || '' }], doc.visits || [], { empty: 'No visit booked yet', onClick: !techMode && can('jobs') ? v => apptForm({ ...v, estimate_title: doc.title }) : null })}</div>` : ''}
     ${isEst && (doc.signature_name || doc.approved_option_id) ? `<div class="card" style="margin-top:14px"><h2>Customer approval</h2>${doc.approved_option_id ? `Chose <b>${esc((doc.options.find(o => o.id === doc.approved_option_id) || {}).name || '')}</b> — ${money(doc.total)}. ` : ''}${doc.signature_name ? `Signed by <b>${esc(doc.signature_name)}</b> on ${fmtDT(doc.approved_at)}` : ''}</div>` : ''}`;
 
   const form = $('#docform');
   const tbody = $('#items');
+  if ($('#addestvisit')) $('#addestvisit').onclick = () => apptForm({ estimate_id: doc.id, estimate_number: doc.number, customer_name: (doc.customer || {}).name, estimate_title: doc.title,
+    start: dayISO(todayStr(), 9), end: dayISO(todayStr(), 10), tech_ids: [] });
   const draw = () => {
     const rows = doc.items.map((it, i) => ({ it, i })).filter(x => !doc.opts.length || x.it.opt === optTab);
     tbody.innerHTML = rows.map(x => itemRow(x.it, x.i)).join('') || `<tr><td colspan="8" class="empty">${doc.opts.length ? (optTab == null ? 'No shared lines. Add things every option includes, like the permit or trip charge.' : 'No lines in this option yet') : 'No line items — add one below'}</td></tr>`;

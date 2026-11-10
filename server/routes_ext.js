@@ -13,23 +13,31 @@ module.exports = function routesExt(app, db, X) {
   const { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, H } = X;
 
   // ================================================================ appointments
-  H.appointments = (where, params = []) => all(db, `SELECT a.*, j.number job_number, j.title job_title, j.status job_status, j.priority, j.job_type, j.customer_id,
+  // A visit belongs to a job or to an estimate (a walkthrough to price the work). Estimate visits come back with the same
+  // fields as job visits — job_number / job_title carry the estimate's — plus kind and href, so every schedule view shows both.
+  H.appointments = (where, params = []) => all(db, `SELECT a.*, COALESCE(j.number, e.number) job_number,
+      CASE WHEN a.estimate_id IS NOT NULL THEN 'Estimate visit: ' || COALESCE(NULLIF(e.title, ''), 'walkthrough') ELSE j.title END job_title,
+      j.status job_status, COALESCE(j.priority, 'normal') priority, CASE WHEN a.estimate_id IS NOT NULL THEN 'estimate' ELSE j.job_type END job_type,
+      COALESCE(j.customer_id, e.customer_id) customer_id, e.number estimate_number, e.status estimate_status,
       c.name customer_name, c.type customer_type, c.phone customer_phone, l.address, l.city, l.state, l.zip,
       (SELECT GROUP_CONCAT(at.user_id) FROM appointment_techs at WHERE at.appointment_id = a.id) tech_ids,
       (SELECT GROUP_CONCAT(u.name, ', ') FROM appointment_techs at JOIN users u ON u.id = at.user_id WHERE at.appointment_id = a.id) tech_names
-    FROM appointments a JOIN jobs j ON j.id = a.job_id JOIN customers c ON c.id = j.customer_id LEFT JOIN locations l ON l.id = j.location_id
-    WHERE ${where} ORDER BY a.start`, ...params).map(a => ({ ...a, tech_ids: a.tech_ids ? String(a.tech_ids).split(',').map(Number) : [] }));
+    FROM appointments a LEFT JOIN jobs j ON j.id = a.job_id LEFT JOIN estimates e ON e.id = a.estimate_id
+    JOIN customers c ON c.id = COALESCE(j.customer_id, e.customer_id) LEFT JOIN locations l ON l.id = COALESCE(j.location_id, e.location_id)
+    WHERE ${where} ORDER BY a.start`, ...params).map(a => ({ ...a, tech_ids: a.tech_ids ? String(a.tech_ids).split(',').map(Number) : [],
+      kind: a.estimate_id ? 'estimate' : 'job', href: a.estimate_id ? `#/estimates/${a.estimate_id}` : `#/jobs/${a.job_id}` }));
 
   function setApptTechs(apptId, jobId, ids) {
     if (!Array.isArray(ids)) return;
     run(db, 'DELETE FROM appointment_techs WHERE appointment_id = ?', apptId);
     for (const uid of ids) {
       run(db, 'INSERT OR IGNORE INTO appointment_techs (appointment_id, user_id) VALUES (?,?)', apptId, uid);
-      run(db, 'INSERT OR IGNORE INTO job_techs (job_id, user_id) VALUES (?,?)', jobId, uid); // crew on the job
+      if (jobId) run(db, 'INSERT OR IGNORE INTO job_techs (job_id, user_id) VALUES (?,?)', jobId, uid); // crew on the job
     }
   }
   // Keep the job's summary window (first start / last end) in line with its appointments.
   function syncJobSchedule(jobId) {
+    if (!jobId) return;   // estimate visits don't move a job's schedule
     const w = get(db, "SELECT MIN(start) s, MAX(end) e, COUNT(*) n FROM appointments WHERE job_id = ? AND status != 'cancelled'", jobId);
     const job = get(db, 'SELECT status FROM jobs WHERE id = ?', jobId);
     run(db, 'UPDATE jobs SET scheduled_start = ?, scheduled_end = ? WHERE id = ?', w.s, w.e, jobId);
@@ -60,13 +68,38 @@ module.exports = function routesExt(app, db, X) {
     if (req.user.role === 'tech') { w += ' AND EXISTS (SELECT 1 FROM appointment_techs at WHERE at.appointment_id = a.id AND at.user_id = ?)'; p.push(req.user.id); }
     res.json(H.appointments(w, p));
   }));
+  // a visit for a job, or for an estimate (pricing walkthrough); one or the other
+  function visitTarget(b) {
+    if (b.job_id && b.estimate_id) throw bad('A visit is for a job or for an estimate, not both');
+    if (b.job_id) return { job_id: mustGet('jobs', b.job_id).id, estimate_id: null };
+    if (b.estimate_id) {
+      const e = mustGet('estimates', b.estimate_id);
+      if (['cancelled', 'declined', 'expired'].includes(e.status)) throw bad(`That estimate is ${e.status}`);
+      return { job_id: null, estimate_id: e.id };
+    }
+    throw bad('Pick the job or estimate this visit is for');
+  }
   app.post('/api/appointments', office, wrap((req, res) => {
-    const b = req.body; const job = mustGet('jobs', b.job_id);
+    const b = req.body, t = visitTarget(b);
     checkTimes(b.start, b.end);
-    const id = insert('appointments', { job_id: job.id, start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString(), notes: b.notes || null, status: b.status || 'scheduled' });
-    setApptTechs(id, job.id, b.tech_ids || []);
-    syncJobSchedule(job.id);
+    const id = insert('appointments', { ...t, start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString(), notes: b.notes || null, status: b.status || 'scheduled' });
+    setApptTechs(id, t.job_id, b.tech_ids || []);
+    syncJobSchedule(t.job_id);
     res.json({ id, conflicts: conflicts(id) });
+  }));
+  // a customer wants a price: book the walkthrough and start the (draft) estimate in one step
+  app.post('/api/estimate-visits', office, wrap((req, res) => {
+    const b = req.body || {}, s = D.settings(db);
+    if (!b.customer_id) throw bad('Customer is required');
+    const cust = mustGet('customers', b.customer_id);
+    if (b.location_id && !get(db, 'SELECT 1 x FROM locations WHERE id = ? AND customer_id = ?', b.location_id, cust.id)) throw bad('That address belongs to another customer');
+    checkTimes(b.start, b.end);
+    const eid = insert('estimates', { customer_id: cust.id, location_id: b.location_id || null, title: String(b.title || '').trim() || 'Estimate', notes: b.estimate_notes || null,
+      number: D.nextNumber(db, 'estimates', 'EST'), public_token: D.token(), created_by: req.user.id, status: 'draft',
+      tax_rate: cust.tax_exempt ? 0 : Number(s.default_tax_rate) || 0, terms: s.estimate_terms || null, valid_until: addDays(today(), Number(s.estimate_valid_days) || 30) });
+    const id = insert('appointments', { job_id: null, estimate_id: eid, start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString(), notes: b.notes || null, status: 'scheduled' });
+    setApptTechs(id, null, b.tech_ids || []);
+    res.json({ id, estimate_id: eid, conflicts: conflicts(id) });
   }));
   app.put('/api/appointments/:id', wrap((req, res) => {
     const a = mustGet('appointments', req.params.id);
@@ -80,7 +113,7 @@ module.exports = function routesExt(app, db, X) {
     checkTimes(data.start || a.start, data.end || a.end);
     update('appointments', a.id, data);
     setApptTechs(a.id, a.job_id, req.body.tech_ids);
-    if (data.status === 'dispatched') run(db, "UPDATE jobs SET status = 'dispatched' WHERE id = ? AND status IN ('scheduled','unscheduled')", a.job_id);
+    if (data.status === 'dispatched' && a.job_id) run(db, "UPDATE jobs SET status = 'dispatched' WHERE id = ? AND status IN ('scheduled','unscheduled')", a.job_id);
     syncJobSchedule(a.job_id);
     res.json({ ok: true, conflicts: conflicts(a.id) });
   }));
@@ -91,9 +124,10 @@ module.exports = function routesExt(app, db, X) {
   // Overlaps for any tech on this appointment (double-booking warning, not a hard stop).
   function conflicts(apptId) {
     const a = get(db, 'SELECT * FROM appointments WHERE id = ?', apptId);
-    return all(db, `SELECT DISTINCT u.name, a2.id appointment_id, j.number job_number, a2.start, a2.end FROM appointment_techs t1
+    return all(db, `SELECT DISTINCT u.name, a2.id appointment_id, COALESCE(j.number, e.number) job_number, a2.start, a2.end FROM appointment_techs t1
       JOIN appointment_techs t2 ON t2.user_id = t1.user_id AND t2.appointment_id != t1.appointment_id
-      JOIN appointments a2 ON a2.id = t2.appointment_id AND a2.status != 'cancelled' JOIN users u ON u.id = t1.user_id JOIN jobs j ON j.id = a2.job_id
+      JOIN appointments a2 ON a2.id = t2.appointment_id AND a2.status != 'cancelled' JOIN users u ON u.id = t1.user_id
+      LEFT JOIN jobs j ON j.id = a2.job_id LEFT JOIN estimates e ON e.id = a2.estimate_id
       WHERE t1.appointment_id = ? AND a2.start < ? AND a2.end > ?`, apptId, a.end, a.start);
   }
   // En route / on site / done from the field. On site clocks the tech in; done clocks them out.
@@ -106,10 +140,10 @@ module.exports = function routesExt(app, db, X) {
     if (status === 'en_route' || status === 'on_site') {
       run(db, 'UPDATE time_entries SET clock_out = ?, out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL', now, g.lat, g.lng, g.acc, u.id);
       insert('time_entries', { user_id: u.id, job_id: a.job_id, appointment_id: a.id, kind: status === 'en_route' ? 'travel' : 'job', clock_in: now, hourly_cost: rate, hourly_wage: u.hourly_wage,
-        in_lat: g.lat, in_lng: g.lng, in_acc: g.acc });
+        in_lat: g.lat, in_lng: g.lng, in_acc: g.acc, notes: a.estimate_id ? `Estimate visit ${(get(db, 'SELECT number FROM estimates WHERE id = ?', a.estimate_id) || {}).number || ''}`.trim() : null });
       if (status === 'on_site') run(db, "UPDATE jobs SET status = 'in_progress' WHERE id = ? AND status IN ('scheduled','dispatched','unscheduled')", a.job_id);
     }
-    if (status === 'done') run(db, 'UPDATE time_entries SET clock_out = ?, out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL AND job_id = ?', now, g.lat, g.lng, g.acc, u.id, a.job_id);
+    if (status === 'done') run(db, 'UPDATE time_entries SET clock_out = ?, out_lat = ?, out_lng = ?, out_acc = ? WHERE user_id = ? AND clock_out IS NULL AND (appointment_id = ? OR job_id IS ?)', now, g.lat, g.lng, g.acc, u.id, a.id, a.job_id);
     return { ok: true };
   }
 

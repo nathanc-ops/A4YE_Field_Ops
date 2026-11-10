@@ -17,7 +17,7 @@ const { all, get, run, settings } = D;
 const r2 = C.r2;
 
 module.exports = function techEstimates(app, db, X) {
-  const { wrap, bad, mustGet, pick, insert, update, saveItems, saveOptions, baseUrl, today, addDays, office } = X;
+  const { wrap, bad, mustGet, pick, insert, update, saveItems, saveOptions, baseUrl, today, addDays, office, H } = X;
   const techOnly = (req, res, next) => (req.user.role === 'tech' ? next() : next('route'));
   // req given → this person's own switches (Team → permissions); the company settings are only the defaults
   const cfg = req => {
@@ -26,9 +26,11 @@ module.exports = function techEstimates(app, db, X) {
       minMargin: Number(s.tech_min_margin_pct) || 0, custom: s.tech_custom_lines || 'review', s };
   };
   const assigned = (user, jobId) => jobId && !!get(db, 'SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?', jobId, user.id);
+  // the tech booked on an estimate visit can open and build that estimate on site
+  const onVisit = (user, estimateId) => !!get(db, 'SELECT 1 x FROM appointments a JOIN appointment_techs t ON t.appointment_id = a.id WHERE a.estimate_id = ? AND t.user_id = ?', estimateId, user.id);
   function techEstimate(user, id) {
     const e = mustGet('estimates', id);
-    if (!assigned(user, e.job_id)) throw bad('This estimate is not on one of your jobs', 403);
+    if (!assigned(user, e.job_id) && !onVisit(user, e.id)) throw bad('This estimate is not on one of your jobs or visits', 403);
     return e;
   }
 
@@ -101,11 +103,12 @@ module.exports = function techEstimates(app, db, X) {
   // ---------------------------------------------------------------- tech routes
   app.get('/api/estimates', techOnly, wrap((req, res) => {
     const c = cfg(req);
-    const rows = all(db, `SELECT e.*, c.name customer_name, j.number job_number FROM estimates e JOIN customers c ON c.id = e.customer_id JOIN jobs j ON j.id = e.job_id
-      WHERE EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = e.job_id AND jt.user_id = ?) ORDER BY e.id DESC LIMIT 200`, req.user.id);
+    const rows = all(db, `SELECT e.*, c.name customer_name, j.number job_number FROM estimates e JOIN customers c ON c.id = e.customer_id LEFT JOIN jobs j ON j.id = e.job_id
+      WHERE EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = e.job_id AND jt.user_id = ?1)
+         OR EXISTS (SELECT 1 FROM appointments a JOIN appointment_techs t ON t.appointment_id = a.id WHERE a.estimate_id = e.id AND t.user_id = ?1) ORDER BY e.id DESC LIMIT 200`, req.user.id);
     res.json(rows.map(e => { const f = C.estimateWithTotals(db, e); if (!c.seeCosts) { delete f.est_cost; delete f.est_margin_pct; for (const o of f.options) { delete o.est_cost; delete o.est_margin_pct; } for (const it of [...f.items, ...f.chosen_items]) delete it.unit_cost; } return f; }));
   }));
-  app.get('/api/estimates/:id', techOnly, wrap((req, res) => res.json(forTech(req, techEstimate(req.user, req.params.id)))));
+  app.get('/api/estimates/:id', techOnly, wrap((req, res) => { const e = techEstimate(req.user, req.params.id); res.json({ ...forTech(req, e), visits: H.appointments('a.estimate_id = ?', [e.id]) }); }));
   app.post('/api/estimates', techOnly, wrap((req, res) => {
     const c = cfg(req);
     if (!c.enabled) throw bad('Field estimating is turned off — ask the office', 403);

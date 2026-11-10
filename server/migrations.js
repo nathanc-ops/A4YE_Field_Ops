@@ -834,6 +834,12 @@ const MIGRATIONS = [
   db => {
     addColumn(db, 'expenses', 'ledger_skip', 'INTEGER NOT NULL DEFAULT 0');
   },
+  // 24: estimate visits — a scheduled visit belongs to a job or to an estimate (a walkthrough to price the work)
+  Object.assign(function (db) {
+    rebuildTable(db, 'appointments', sql => sql.replace(/job_id INTEGER NOT NULL REFERENCES jobs\(id\) ON DELETE CASCADE,/,
+      'job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,\n      estimate_id INTEGER REFERENCES estimates(id) ON DELETE CASCADE,'));
+    db.exec('CREATE INDEX IF NOT EXISTS idx_appt_estimate ON appointments(estimate_id)');
+  }, { foreignKeysOff: true }),
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

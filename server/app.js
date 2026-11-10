@@ -645,7 +645,7 @@ function createApp(db) {
 
   // ------------------------------------------------------------ estimates
   // techs' estimate routes come first; office users fall through to the routes below
-  require('./tech_estimates')(app, db, { wrap, bad, mustGet, pick, insert, update, saveItems, saveOptions, baseUrl, today, addDays, office });
+  require('./tech_estimates')(app, db, { wrap, bad, mustGet, pick, insert, update, saveItems, saveOptions, baseUrl, today, addDays, office, H });
   const DOC_FIELDS = ['customer_id', 'title', 'tax_rate', 'discount', 'notes', 'terms'];
   function saveItems(table, fk, id, items, optionIds) {
     if (!Array.isArray(items)) return;
@@ -682,6 +682,7 @@ function createApp(db) {
     const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id));
     e.customer = get(db, 'SELECT * FROM customers WHERE id = ?', e.customer_id);
     e.public_url = `${baseUrl(req)}/p/estimate/${e.public_token}`;
+    e.visits = H.appointments('a.estimate_id = ?', [e.id]);
     res.json(e);
   }));
   app.post('/api/estimates', office, wrap((req, res) => {
@@ -745,6 +746,7 @@ function createApp(db) {
     const reason = String(req.body.reason || '').trim().slice(0, 500) || null;
     tx(db, () => {
       run(db, "UPDATE estimates SET status = 'cancelled', cancelled_at = datetime('now'), cancel_reason = ?, review_status = CASE WHEN review_status = 'pending' THEN NULL ELSE review_status END WHERE id = ?", reason, e.id);
+      run(db, "UPDATE appointments SET status = 'cancelled' WHERE estimate_id = ? AND status NOT IN ('done','cancelled')", e.id);
       if (e.job_id) insert('job_notes', { job_id: e.job_id, user_id: req.user.id, body: `${e.change_order ? 'Change order' : 'Estimate'} ${e.number} cancelled${e.status === 'approved' ? ' (it had been approved)' : ''}${reason ? `: ${reason}` : ''}` });
     });
     res.json({ ok: true, was_approved: e.status === 'approved' });

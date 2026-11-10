@@ -73,6 +73,7 @@ const RULES = [
   R('POST', /^\/api\/jobs\/\d+\/pick-lists$/, 'purchasing'),
   R('POST,PUT,DELETE', /^\/api\/jobs(\/\d+)?(\/(cancel|reopen))?$/, 'jobs'),
   R('POST,PUT,DELETE', /^\/api\/(appointments|agreements|permits|form-templates)(\/|$)/, 'jobs'),
+  R('POST', /^\/api\/estimate-visits$/, 'jobs'),
   R('GET', /^\/api\/dispatch$/, 'jobs'),
   R('*', /^\/api\/estimates-review/, 'estimates'),
   R('*', /^\/api\/estimates(\/|$)/, 'estimates'),

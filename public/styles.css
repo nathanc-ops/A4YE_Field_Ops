@@ -454,3 +454,7 @@ select.need { border-color: var(--bad); box-shadow: 0 0 0 2px var(--bad-soft); }
   html, body, .app, .main { background: #fff !important; }
   .app { display: block !important; } .main { padding: 0 !important; }
 }
+
+/* estimate visits (walkthroughs to price work) */
+.hb-appt.est, .chip.est { border-style: dashed !important; background-image: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--text) 5%, transparent) 8px 10px); }
+.est-tag { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 0 4px; border-radius: 3px; background: var(--info-soft); color: var(--info); vertical-align: 1px; }

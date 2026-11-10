@@ -55,30 +55,74 @@ function warnConflicts(r) {
     toast('⚠ Double-booked: ' + r.conflicts.map(c => `${c.name} on ${c.job_number} ${fmtTime(c.start)}–${fmtTime(c.end)}`).join('; '), true);
 }
 
-async function apptForm(a = {}, { onSaved } = {}) {
+// A visit is for a job, or for an estimate (a walkthrough to price the work). A new visit with nothing picked yet can be
+// either; "estimate walkthrough" books the visit and starts a draft estimate for the customer in one step.
+async function apptForm(a = {}, { onSaved, mode } = {}) {
   await loadUsers();
-  const jobs = a.id ? [[a.job_id, `${a.job_number} · ${a.customer_name} · ${a.job_title}`]] : await jobPicker();
+  const isNew = !a.id, fixedEst = !!a.estimate_id, fixedJob = !!a.job_id || (!isNew && !a.estimate_id);
+  const choose = isNew && !fixedEst && !fixedJob;
+  const jobs = fixedEst ? [] : !isNew ? [[a.job_id, `${a.job_number} · ${a.customer_name} · ${a.job_title}`]] : await jobPicker();
   if (a.job_id && !jobs.some(([id]) => id === Number(a.job_id))) jobs.unshift([Number(a.job_id), a.job_number || `Job #${a.job_id}`]);
+  const link = a.estimate_id ? `<a class="btn" href="#/estimates/${a.estimate_id}">Open estimate</a>` : `<a class="btn" href="#/jobs/${a.job_id}">Open job</a>`;
   const techBoxes = `<div style="margin-top:10px"><label class="f"><span>Techs on this visit</span></label><div class="row">${S.users.filter(u => u.active).map(u =>
     `<label class="check"><input type="checkbox" name="tech" value="${u.id}" ${(a.tech_ids || []).includes(u.id) ? 'checked' : ''}> <span class="dot" style="background:${esc(u.color)}"></span>${esc(u.name)}</label>`).join('')}</div></div>
-    ${a.id ? `<div class="row" style="margin-top:12px"><a class="btn" href="#/jobs/${a.job_id}">Open job</a><button type="button" class="btn danger" id="delappt">Delete visit</button></div>` : ''}`;
+    ${a.id ? `<div class="row" style="margin-top:12px">${link}<button type="button" class="btn danger" id="delappt">Delete visit</button></div>` : ''}`;
+  const estLabel = a.estimate_id ? [a.estimate_number || a.job_number, a.customer_name, a.estimate_title].filter(Boolean).join(' · ') : '';
+  const fields = [
+    ...(choose ? [{ name: 'visit_for', label: 'This visit is for', type: 'select', blank: false, full: true, options: [['job', 'A job'], ['estimate', 'An estimate walkthrough — starts a draft estimate']] }] : []),
+    ...(fixedEst ? [{ name: 'estimate_label', label: 'Estimate', full: true, disabled: true }] : [{ name: 'job_id', label: 'Job', type: 'select', options: jobs, full: true }]),
+    ...(choose ? [{ name: 'customer_id', label: 'Customer', type: 'customer', full: true }, { name: 'location_id', label: 'Address', type: 'select', options: [], full: true },
+      { name: 'title', label: 'What do they want priced?', full: true, placeholder: 'e.g. Panel upgrade to 200A, EV charger in garage' }] : []),
+    { name: 'start', label: 'Start', type: 'datetime', required: true }, { name: 'end', label: 'End', type: 'datetime', required: true },
+    { name: 'status', label: 'Status', type: 'select', options: APPT_STATUSES, blank: false },
+    { name: 'notes', label: 'Dispatch notes', full: true },
+  ];
+  const kindWord = fixedEst || mode === 'estimate' ? 'Estimate visit' : 'Visit';
   const m = formModal({
-    title: a.id ? `Visit · ${a.job_number}` : 'Schedule a visit', values: { ...a, status: a.status || 'scheduled' }, wide: true, extra: techBoxes,
-    fields: [
-      { name: 'job_id', label: 'Job', type: 'select', options: jobs, required: true, full: true },
-      { name: 'start', label: 'Start', type: 'datetime', required: true }, { name: 'end', label: 'End', type: 'datetime', required: true },
-      { name: 'status', label: 'Status', type: 'select', options: APPT_STATUSES, blank: false },
-      { name: 'notes', label: 'Dispatch notes', full: true },
-    ],
+    title: a.id ? `${kindWord} · ${a.job_number}` : fixedEst ? 'Schedule an estimate visit' : mode === 'estimate' ? 'Book an estimate walkthrough' : 'Schedule a visit',
+    values: { ...a, status: a.status || 'scheduled', visit_for: mode === 'estimate' ? 'estimate' : 'job', estimate_label: estLabel }, wide: true, extra: techBoxes,
+    fields,
     submit: async (d, form) => {
       d.tech_ids = $$('input[name=tech]:checked', form).map(i => Number(i.value));
-      const r = a.id ? await PUT('/appointments/' + a.id, d) : await POST('/appointments', d);
+      const base = { start: d.start, end: d.end, status: d.status, notes: d.notes, tech_ids: d.tech_ids };
+      let r;
+      if (a.id) r = await PUT('/appointments/' + a.id, base);
+      else if (fixedEst) r = await POST('/appointments', { ...base, estimate_id: a.estimate_id });
+      else if (choose && d.visit_for === 'estimate') {
+        if (!d.customer_id) throw new Error('Pick the customer');
+        r = await POST('/estimate-visits', { ...base, customer_id: d.customer_id, location_id: d.location_id || null, title: d.title });
+        toast('Walkthrough booked — a draft estimate is waiting for its line items'); warnConflicts(r);
+        return onSaved ? onSaved(r) : route();
+      } else {
+        if (!d.job_id) throw new Error('Pick the job');
+        r = await POST('/appointments', { ...base, job_id: d.job_id });
+      }
       toast(a.id ? 'Visit updated' : 'Visit scheduled'); warnConflicts(r);
-      onSaved ? onSaved() : route();
+      onSaved ? onSaved(r) : route();
     },
   });
+  const form = $('form', m.el), row = n => form[n] && form[n].closest('label');
+  if (choose) {
+    const custRow = () => { const lk = $('.lk[data-lk=customer]', m.el); return lk && lk.closest('label'); };
+    const show = () => {
+      const est = form.visit_for.value === 'estimate';
+      for (const el of [custRow(), row('location_id'), row('title')]) if (el) el.style.display = est ? '' : 'none';
+      if (row('job_id')) row('job_id').style.display = est ? 'none' : '';
+    };
+    form.visit_for.onchange = show; show();
+    form.customer_id.addEventListener('change', async () => {
+      const sel = form.location_id, cid = form.customer_id.value;
+      if (!cid) { sel.innerHTML = '<option value="">—</option>'; return; }
+      const c = await GET('/customers/' + cid);
+      sel.innerHTML = '<option value="">—</option>' + c.locations.map(l => `<option value="${l.id}">${esc([l.label, l.address, l.city].filter(Boolean).join(' · '))}</option>`).join('');
+      if (c.locations.length === 1) sel.value = c.locations[0].id;
+    });
+  }
   if (a.id) $('#delappt', m.el).onclick = async () => { if (confirm('Delete this visit?')) { await act(() => DEL('/appointments/' + a.id), 'Visit deleted'); m.close(); onSaved ? onSaved() : route(); } };
-  if (a.id) $('select[name=job_id]', m.el).disabled = true;
+  if (a.id && form.job_id) form.job_id.disabled = true;
+  if (form.estimate_label) form.estimate_label.readOnly = true;
+  // "Open job" / "Open estimate" navigate away: close the form with them
+  $$('a.btn[href^="#/"]', m.el).forEach(x => x.addEventListener('click', () => m.close()));
   return m;
 }
 
@@ -155,9 +199,9 @@ async function viewBoard(date, seg) {
   const block = (r, { a, lane }) => {
     const left = x(a.start), width = Math.max(28, x(a.end) - left);
     placed.set(`${r.id}:${a.id}`, a);
-    return `<div class="hb-appt st-${a.status} ${a.priority === 'emergency' ? 'emergency' : ''}" data-appt="${a.id}" data-row="${r.id}" style="left:${left}px;width:${width}px;top:${5 + lane * 58}px"
+    return `<div class="hb-appt st-${a.status} ${a.priority === 'emergency' ? 'emergency' : ''} ${a.kind === 'estimate' ? 'est' : ''}" data-appt="${a.id}" data-row="${r.id}" style="left:${left}px;width:${width}px;top:${5 + lane * 58}px"
       title="${esc(`${fmtTime(a.start)}–${fmtTime(a.end)} ${a.job_number} ${a.customer_name} — ${a.job_title}${a.tech_names ? ' · ' + a.tech_names : ''}`)}">
-      <div class="t">${fmtTime(a.start)}–${fmtTime(a.end)} · ${esc(a.job_number)}</div>
+      <div class="t">${fmtTime(a.start)}–${fmtTime(a.end)} · ${a.kind === 'estimate' ? '<span class="est-tag">EST</span> ' : ''}${esc(a.job_number)}</div>
       <div class="d"><b>${esc(a.customer_name)}</b> · ${esc(a.job_title)}</div>
       <div class="d small">${esc([a.address, a.city].filter(Boolean).join(', '))}${a.tech_ids.length > 1 ? ` · 👥 ${a.tech_ids.length}` : ''}</div>
       ${isOffice() ? '<span class="rs"></span>' : ''}</div>`;
@@ -168,7 +212,7 @@ async function viewBoard(date, seg) {
 
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('board', date, 1)}
       <span class="seg"><button id="zout" title="Zoom out">−</button><button id="zin" title="Zoom in">+</button></span>
-      ${isOffice() ? '<button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
+      ${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `${new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${appts.length} visit(s)${isOffice() ? ' · drag to move or reassign, drag the right edge to resize, click an empty slot to add' : ''}`) + `
     <div class="hb-layout" style="${isOffice() ? '' : 'grid-template-columns:1fr'}">
       ${isOffice() ? `<div class="card hb-queue"><h2>Needs scheduling (${disp.unscheduled.length})</h2><p class="small muted">Drag onto a tech's row.</p>
@@ -186,8 +230,9 @@ async function viewBoard(date, seg) {
   $('#zin').onclick = () => { localStorage.setItem('fo_hw', Math.min(200, hw + 24)); route(); };
   $('#zout').onclick = () => { localStorage.setItem('fo_hw', Math.max(48, hw - 24)); route(); };
   $('#zout').ondblclick = $('#zin').ondblclick = () => { localStorage.removeItem('fo_hw'); route(); };
-  if (!isOffice()) { $$('.hb-appt').forEach(el => el.onclick = () => { const a = appts.find(x => x.id === Number(el.dataset.appt)); go('#/jobs/' + a.job_id); }); return; }
+  if (!isOffice()) { $$('.hb-appt').forEach(el => el.onclick = () => { const a = appts.find(x => x.id === Number(el.dataset.appt)); go(a.href); }); return; }
   $('#newjob').onclick = () => jobForm({});
+  $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   if (date === todayStr()) S.timer = setInterval(() => { if (!document.querySelector('.hb-appt.dragging') && !document.querySelector('.modal-bg')) route(); }, 120000);
 
   const lanes = $$('.hb-lane');
@@ -270,18 +315,19 @@ async function viewWeek(date, seg) {
   const cellAppts = (r, d) => appts.filter(a => localDate(new Date(a.start)) === d && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length));
   const cap = (list, d) => { const h = list.reduce((s, a) => s + visitHoursOnDay(a, d), 0); return { h, pct: Math.min(100, h / 8 * 100), cls: h > 10 ? 'over' : h >= 8 ? 'full' : '' }; };
   const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
-  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
+  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
     <div class="wk"><div class="h">Tech</div>${days.map(d => `<div class="h ${d === todayStr() ? 'today' : ''}"><a href="#/schedule${qs({ view: 'board', date: d })}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</a></div>`).join('')}
     ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}" style="grid-column:1/-1"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? '' : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + totals.get(r), 0), 1)}h booked this week`}</span></div>` : ''}
     ${g.rows.map(r => `<div class="tech"><span class="dot" style="background:${esc(r.color)}"></span> ${esc(r.name)}<div class="small muted">${num(totals.get(r), 1)} h booked</div></div>
       ${days.map(d => { const list = cellAppts(r, d); const c = cap(list, d); return `<div class="cell" data-tech="${r.id}" data-day="${d}">
         ${r.id && list.length ? `<div class="cap ${c.cls}" title="${num(c.h, 1)} of 8 h"><i style="width:${c.pct}%"></i></div>` : ''}
-        ${list.map(a => `<a class="chip st-${a.status}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" href="#/jobs/${a.job_id}"><b>${fmtTime(a.start)}–${fmtTime(a.end)}</b> ${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
+        ${list.map(a => `<a class="chip st-${a.status} ${a.kind === 'estimate' ? 'est' : ''}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" href="${a.href}"><b>${fmtTime(a.start)}–${fmtTime(a.end)}</b> ${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
     <div style="margin-top:8px">${legend()}</div>`;
   bindDatePick('week');
   if (!isOffice()) return;
   $('#newjob').onclick = () => jobForm({});
+  $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
   $$('.wk .chip').forEach(c => {
     c.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', `${c.dataset.appt}:${c.dataset.row}`));
@@ -319,7 +365,7 @@ async function viewDispatch(date, seg) {
           <div class="row" style="margin-top:6px"><button class="btn sm primary" data-sched="${j.id}">Schedule</button><a class="btn sm" href="#/jobs/${j.id}">Open</a></div></div>`).join('') || '<div class="empty">Nothing waiting</div>'}</div>
       <div class="card"><h2>Today's visits (${appts.length})</h2>
         ${table([{ label: 'Time', get: a => `${fmtTime(a.start)}–${fmtTime(a.end)}` },
-          { label: 'Job', html: a => `<a href="#/jobs/${a.job_id}"><b>${esc(a.job_number)}</b></a> ${a.priority === 'emergency' ? pill('emergency') : ''}<div>${esc(a.customer_name)}</div><div class="small muted">${esc(a.job_title)} · ${esc(a.address || '')}</div>` },
+          { label: 'Job', html: a => `<a href="${a.href}"><b>${esc(a.job_number)}</b></a> ${a.priority === 'emergency' ? pill('emergency') : ''}<div>${esc(a.customer_name)}</div><div class="small muted">${esc(a.job_title)} · ${esc(a.address || '')}</div>` },
           { label: 'Techs', html: a => a.tech_names ? esc(a.tech_names) : '<span class="pill bad">Unassigned</span>' },
           { label: 'Status', html: a => pill(a.status) },
           { label: '', html: a => `<div class="status-btns">${next[a.status] ? `<button class="btn sm ${a.status === 'scheduled' ? 'primary' : ''}" data-st="${a.id}:${next[a.status][0]}">${next[a.status][1]}</button>` : ''}<button class="btn sm" data-edit="${a.id}">Edit</button></div>` }],
@@ -331,6 +377,7 @@ async function viewDispatch(date, seg) {
     </div>`;
   bindDatePick('dispatch');
   $('#newjob').onclick = () => jobForm({});
+  $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
   $$('[data-sched]').forEach(b => b.onclick = () => apptForm({ job_id: Number(b.dataset.sched), start: dayISO(date, 8), end: dayISO(date, 10) }));
   $$('[data-edit]').forEach(b => b.onclick = () => apptForm(byId[b.dataset.edit]));
@@ -352,7 +399,7 @@ async function viewMyDay2() {
   ]);
   const mapUrl = a => `https://maps.google.com/?q=${encodeURIComponent([a.address, a.city, a.state, a.zip].filter(Boolean).join(' '))}`;
   $('#today').innerHTML = today.length ? today.map(a => `<div class="tcard st-${a.status}" style="border-left:5px solid var(--st)">
-      <div class="row spread"><b>${fmtTime(a.start)}–${fmtTime(a.end)} · <a href="#/jobs/${a.job_id}">${esc(a.job_number)}</a></b>${pill(a.status)}</div>
+      <div class="row spread"><b>${fmtTime(a.start)}–${fmtTime(a.end)} · <a href="${a.href}">${esc(a.job_number)}</a></b>${pill(a.status)}</div>
       <div>${esc(a.customer_name)} — ${esc(a.job_title)}</div>
       <div class="small muted">${a.address ? `<a target="_blank" rel="noopener" href="${mapUrl(a)}">${esc([a.address, a.city].filter(Boolean).join(', '))}</a>` : ''}${a.customer_phone ? ` · <a href="tel:${esc(a.customer_phone)}">${esc(a.customer_phone)}</a>` : ''}</div>
       ${a.notes ? `<div class="small" style="margin-top:4px">📝 ${esc(a.notes)}</div>` : ''}
@@ -362,7 +409,7 @@ async function viewMyDay2() {
         ${a.status === 'on_site' ? `<button class="btn stop" data-st="${a.id}:done">✓ Done (clock out)</button>` : ''}
       </div></div>`).join('') : '<div class="empty">No visits scheduled today</div>';
   $('#soon').innerHTML = table([{ label: 'When', get: a => fmtDT(a.start) }, { label: 'Job', html: a => `<b>${esc(a.job_number)}</b> ${esc(a.job_title)}<div class="small muted">${esc(a.customer_name)} · ${esc(a.address || '')}</div>` }],
-    soon, { onClick: a => go('#/jobs/' + a.job_id), empty: 'Nothing else this week' });
+    soon, { onClick: a => go(a.href), empty: 'Nothing else this week' });
   if (picks.length) $('#mypicks').innerHTML = `<div class="card" style="margin-top:14px"><h2>Pick lists</h2>${table([{ label: '#', key: 'number' }, { label: 'Job', get: p => `${p.job_number} ${p.job_title}` }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }], picks, { onClick: p => go('#/pick/' + p.id) })}</div>`;
   $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); const loc = await getLoc(); await act(() => PUT('/appointments/' + id, { status: st, ...loc }), label(st)); route(); });
 }
