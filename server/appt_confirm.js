@@ -6,10 +6,10 @@
 //  - Moving a confirmed visit marks it "time changed since the customer was told"; sending again says so in the subject.
 const D = require('./db');
 const mailer = require('./mailer');
+const ET = require('./email_templates');
 const { get, run } = D;
 
 const EMAIL = /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/;
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const tzOf = s => { const tz = s.timezone || 'America/Boise'; try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return tz; } catch { return 'America/Boise'; } };
 
 // "Wednesday, November 11" and "1:00 – 2:30 PM" in the company time zone (multi-day visits show both dates)
@@ -39,47 +39,37 @@ module.exports = function apptConfirm(app, db, X) {
   const { wrap, bad, mustGet, H } = X;
 
   // what the customer is told, built from the visit (H.appointments gives job and estimate visits the same shape)
-  function compose(a, { message, cancelled = false } = {}) {
+  function compose(a, { message, cancelled = false, edit } = {}) {
     const s = D.settings(db), tz = tzOf(s), w = when(a, tz);
     const cust = get(db, 'SELECT * FROM customers WHERE id = ?', a.customer_id);
-    const company = s.company_name || 'All 4 You Electrical', phone = s.company_phone || '', replyTo = s.company_email || '';
-    const first = String(cust.name || '').trim().split(/\s+/)[0] || 'there';
+    const company = s.company_name || 'All 4 You Electrical', replyTo = s.company_email || '';
     const isEst = a.kind === 'estimate';
     const what = isEst ? String(a.job_title || '').replace(/^Estimate visit: /, '') : a.job_title;
     const where = [a.address, [a.city, a.state].filter(Boolean).join(', '), a.zip].filter(Boolean).join(' ').replace(/ ,/g, ',');
     const crew = String(a.tech_names || '').split(', ').filter(Boolean).map(n => n.split(/\s+/)[0]);
     const who = crew.length ? `${crew.slice(0, -1).join(', ')}${crew.length > 1 ? ' and ' : ''}${crew[crew.length - 1]}` : '';
     const changed = !cancelled && !!a.confirmed_at && (a.confirmed_start !== a.start || a.confirmed_end !== a.end);
-    const purpose = isEst ? `to look at the work and put together a price${what ? ` for: ${what}` : ''}` : (what ? `for: ${what}` : 'for your service visit');
-    const subject = cancelled ? `Cancelled: your appointment with ${company} — ${w.short}`
-      : `${changed ? 'Updated time: ' : ''}Your ${isEst ? 'estimate appointment' : 'appointment'} with ${company} — ${w.short}`;
-    const lead = cancelled ? `Your appointment on ${w.date} at ${w.time} has been cancelled.`
-      : changed ? `We've changed the time of your ${isEst ? 'estimate appointment' : 'appointment'}. Here is the new time:`
-        : `This confirms your ${isEst ? 'estimate appointment' : 'appointment'} with ${company}.`;
-    const rows = cancelled ? [] : [['When', `${w.date}, ${w.time} (${w.tz})`], ['Where', where || 'On file'], [isEst ? 'Purpose' : 'Work', purpose.replace(/^for: /, '').replace(/^to /, '')],
-      ...(who ? [['Who\'s coming', who]] : [])];
-    const help = cancelled ? `To book a new time, call ${phone || 'us'}${replyTo ? ' or reply to this email' : ''}.`
-      : `Need to change it? Call ${phone || 'us'}${replyTo ? ' or reply to this email' : ''}. ${isEst ? 'Please have someone 18 or older there to walk us through what you need.' : 'Please make sure we can get to the panel and the work area.'}`;
-    const extra = String(message || '').trim();
-    const text = [`Hi ${first},`, '', lead, ...(rows.length ? ['', ...rows.map(([k, v]) => `${k}: ${v}`)] : []), ...(extra ? ['', extra] : []), '', help, '', company, phone].filter(x => x != null).join('\n').replace(/\n{3,}/g, '\n\n').trim() + '\n';
-    const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#16191f;max-width:560px">
-      <p>Hi ${esc(first)},</p><p>${esc(lead)}</p>
-      ${rows.length ? `<table style="border-collapse:collapse;margin:12px 0;font-size:15px">${rows.map(([k, v]) => `<tr><td style="padding:5px 18px 5px 0;color:#4b5563;vertical-align:top">${esc(k)}</td><td style="padding:5px 0"><b>${esc(v)}</b></td></tr>`).join('')}</table>` : ''}
-      ${extra ? `<p>${esc(extra).replace(/\n/g, '<br>')}</p>` : ''}
-      <p style="color:#4b5563">${esc(help)}</p>
-      ${cancelled ? '' : '<p style="color:#6b7280;font-size:13px">A calendar invite is attached so you can add it to your phone.</p>'}
-      <p>${esc(company)}${phone ? `<br>${esc(phone)}` : ''}</p></div>`;
+    const kindWord = isEst ? 'estimate appointment' : 'appointment';
+    const type = cancelled ? 'appointment_cancelled' : isEst ? 'estimate_appointment' : 'appointment';
+    // wording comes from Settings → Email templates; the Send window can change it once more (edit)
+    const vars = { ...ET.baseVars(db, cust, message), visit_date: w.date, visit_time: w.time, visit_short: w.short, timezone: w.tz, address: where || 'On file',
+      crew: who, work: isEst ? `look at the work and put together a price${what ? ` for: ${what}` : ''}` : (what || 'your service visit'),
+      intro: changed ? `We've changed the time of your ${kindWord}. Here is the new time:` : `This confirms your ${kindWord} with ${company}.` };
+    const m = ET.render(db, type, vars, edit);
+    const subject = changed && !(edit && String(edit.subject || '').trim()) && !/^updated time/i.test(m.subject) ? `Updated time: ${m.subject}` : m.subject;
+    const html = cancelled ? m.html : m.html.replace(/<\/div>$/, '<p style="color:#6b7280;font-size:13px">A calendar invite is attached so you can add it to your phone.</p></div>');
     const ics = buildIcs({ uid: `appt-${a.id}@a4ye-field-ops`, sequence: (a.confirm_count || 0) + (cancelled ? 1 : 0), start: a.start, end: a.end,
-      summary: `${company}: ${isEst ? 'estimate appointment' : (what || 'service visit')}`, location: where, description: `${lead}\n${help}`,
+      summary: `${company}: ${isEst ? 'estimate appointment' : (what || 'service visit')}`, location: where,
+      description: cancelled ? `Cancelled: ${w.date}, ${w.time}` : `${vars.intro}\nNeed to change it? ${vars.call_us}.`,
       organizerName: company, organizerEmail: replyTo || null, cancelled });
-    return { to: cust.email || '', name: cust.name, subject, text, html, ics, changed, replyTo: replyTo || null };
+    return { to: cust.email || '', name: cust.name, subject, text: m.text, html, ics, changed, replyTo: replyTo || null };
   }
   const visit = id => { const a = H.appointments('a.id = ?', [Number(id)])[0]; if (!a) throw bad('Visit not found', 404); return a; };
 
   // preview (also says whether the time changed since the last confirmation)
   app.get('/api/appointments/:id/confirmation', wrap((req, res) => {
     if (req.user.role === 'tech') throw bad('Office only', 403);
-    const a = visit(req.params.id), c = compose(a);
+    const a = visit(req.params.id), c = compose(a, { cancelled: req.query.cancelled === '1' });
     res.json({ to: c.to, customer: c.name, subject: c.subject, text: c.text, changed: c.changed, confirmed_at: a.confirmed_at, confirmed_to: a.confirmed_to, smtp: mailer.configured(db) });
   }));
   app.post('/api/appointments/:id/confirm', wrap(async (req, res) => {
@@ -87,7 +77,7 @@ module.exports = function apptConfirm(app, db, X) {
     const a = visit(req.params.id), b = req.body || {};
     if (a.status === 'cancelled' && !b.cancelled) throw bad('That visit is cancelled');
     if (a.status === 'done') throw bad('That visit already happened');
-    const c = compose(a, { message: b.message, cancelled: !!b.cancelled });
+    const c = compose(a, { message: b.message, cancelled: !!b.cancelled, edit: { subject: b.subject, body: b.body } });
     const to = String(b.to ?? c.to).split(/[,;\s]+/).filter(Boolean);
     if (!to.length) throw bad('The customer has no email address — add one on the customer, or type one in');
     for (const e of to) if (!EMAIL.test(e)) throw bad(`"${e}" is not an email address`);

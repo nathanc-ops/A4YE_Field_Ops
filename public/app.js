@@ -1067,13 +1067,16 @@ async function viewDoc(kind, id) {
   on('#rv-ok', async () => { await act(() => POST(`/estimates/${id}/review`, { decision: 'approve' }), 'Pricing approved — the tech can present it'); route(); });
   on('#rv-back', () => formModal({ title: 'Send back to tech', okLabel: 'Send back', fields: [{ name: 'note', label: 'What should they change?', type: 'textarea', required: true, full: true }],
     submit: async d => { await POST(`/estimates/${id}/review`, { decision: 'reject', note: d.note }); toast('Sent back'); route(); } }));
-  on('#send', () => {
-    const cust = doc.customer || {};
-    formModal({
-      title: `Send ${kind} ${doc.number}`, okLabel: 'Send', values: { to: cust.email },
-      fields: [{ name: 'to', label: 'To', type: 'email', required: true, full: true }, { name: 'message', label: 'Message', type: 'textarea', full: true, default: isEst ? 'Thank you for the opportunity. Your estimate is ready to review and approve online.' : 'Thank you for your business! Your invoice is ready.' }],
-      extra: `<p class="small muted">The customer gets a link to view${isEst ? ', sign and approve' : ''} online: <br><code>${esc(doc.public_url)}</code></p>`,
+  on('#send', async () => {
+    const em = await GET(`${base}/${id}/email`);
+    const m = formModal({
+      title: `Send ${kind} ${doc.number}`, okLabel: em.smtp ? 'Send' : 'Record & copy link', wide: true, values: { to: em.to, subject: em.subject, body: em.body },
+      fields: [{ name: 'to', label: 'To', type: 'email', required: true, full: true }, { name: 'subject', label: 'Subject', required: true, full: true },
+        { name: 'body', label: 'Message — edit anything for this one email', type: 'textarea', required: true, full: true }],
+      extra: `<p class="small muted" style="margin-top:6px">The customer link (to view${isEst ? ', sign and approve' : ''} online) is in the message: <code>${esc(em.url)}</code>. Keep it in.
+        ${isAdmin() ? 'To change the wording for every email, use <a href="#/settings">Settings → Email templates</a>.' : ''}</p>`,
       submit: async d => {
+        if (!String(d.body || '').includes(em.url) && !String(d.body || '').includes('{link}') && !confirm('The customer link isn\'t in the message any more, so they won\'t be able to open it. Send anyway?')) throw new Error('Not sent');
         const r = await POST(`${base}/${id}/send`, d);
         if (r.status === 'sent') toast('Email sent');
         else if (r.status === 'not_configured') { await navigator.clipboard?.writeText(r.url).catch(() => {}); toast('Email is not set up (see Settings). Marked as sent and copied the customer link — paste it into a text or email.', true); }
@@ -1081,6 +1084,7 @@ async function viewDoc(kind, id) {
         route();
       },
     });
+    const ta = $('textarea[name=body]', m.el); if (ta) ta.rows = 14;
   });
   on('#mark-approved', async () => {
     if (!(doc.options || []).length) { await act(() => PUT(`${base}/${id}`, { status: 'approved' }), 'Marked approved'); return route(); }
@@ -1487,12 +1491,14 @@ async function viewSettings() {
       ${isAdmin() ? '<div class="row" style="margin-top:12px"><button class="btn primary">Save settings</button></div>' : '<p class="muted">Only admins can change settings.</p>'}</form></div>
     <div class="stack"><div class="card"><h2>Change my password</h2><form id="pw" class="stack">${fieldHtml({ name: 'current', label: 'Current password', type: 'password', required: true })}${fieldHtml({ name: 'next', label: 'New password (8+)', type: 'password', required: true })}<button class="btn">Change password</button></form></div>
     <div class="card"><h2>Email</h2><div id="emailsetup"><div class="muted small">Loading…</div></div></div>
+    ${isAdmin() ? '<div class="card"><h2>Email templates</h2><div id="mailtpls"><div class="muted small">Loading…</div></div></div>' : ''}
     ${isAdmin() ? '<div class="card"><h2>Job numbers</h2><div id="jobnums"><div class="muted small">Loading…</div></div></div>' : ''}
     <div class="card"><h2>Appearance</h2><p class="small muted">Applies to this device only.</p><div class="seg">${[['dark', 'Dark (default)'], ['light', 'Light'], ['system', 'Match device']].map(([k, l]) => `<button type="button" data-theme="${k}" class="${themePref() === k ? 'on' : ''}">${l}</button>`).join('')}</div></div></div></div>
     <div id="settings-ext" class="stack" style="margin-top:14px"></div>`;
   settingsExtras($('#settings-ext'));
   emailSetup($('#emailsetup'));
   if ($('#jobnums')) jobNumberSetup($('#jobnums'));
+  if ($('#mailtpls')) emailTemplates($('#mailtpls'));
   if (isAdmin()) $('#sf').onsubmit = async e => { e.preventDefault(); S.settings = await act(() => PUT('/settings', readForm(e.target, fields)), 'Settings saved'); renderShell(); route(); };
   else $$('#sf input, #sf textarea').forEach(i => i.disabled = true);
   $('#pw').onsubmit = async e => { e.preventDefault(); await act(() => POST('/me/password', { current: e.target.current.value, next: e.target.next.value }), 'Password changed'); e.target.reset(); };
@@ -1585,6 +1591,47 @@ async function emailSetup(el) {
     emailSetup(el); };
   if ($('#mailoff', el)) $('#mailoff', el).onclick = async () => { if (!confirm('Turn off email sending? Sends will be recorded and copied for you instead.')) return;
     await act(() => PUT('/settings', { smtp_host: '', smtp_pass_clear: '1' }), 'Email turned off').catch(() => null); emailSetup(el); };
+}
+// Settings → Email templates: the wording of customer emails. Plain text with {placeholders}; the HTML version is drawn
+// from it (Label: value lines become a list, a line ending in the link becomes a button). Preview uses sample data.
+async function emailTemplates(el) {
+  const list = await GET('/email-templates');
+  el.innerHTML = `<p class="small muted">The wording customers get. Each email can still be changed in the Send window before it goes.</p>
+    ${table([{ label: 'Email', html: t => `<b>${esc(t.label)}</b><div class="small muted">${esc(t.when)}</div>` }, { label: 'Subject', key: 'subject' },
+      { label: '', html: t => t.customized ? pill('customized') : '<span class="small muted">default</span>' }], list, { onClick: t => editEmailTemplate(t, () => emailTemplates(el)) })}`;
+}
+function editEmailTemplate(t, done) {
+  const chips = t.placeholders.map(p => `<button type="button" class="btn sm" data-ph="${esc(p.key)}" title="${esc(p.desc)}">{${esc(p.key)}}</button>`).join(' ');
+  const m = modal(`<form><h2>${esc(t.label)} email</h2>
+    <div class="form-grid">${fieldHtml({ name: 'subject', label: 'Subject', full: true, required: true }, t.subject)}${fieldHtml({ name: 'body', label: 'Message', type: 'textarea', full: true, required: true }, t.body)}</div>
+    <p class="small muted" style="margin:6px 0">Click a placeholder to insert it at the cursor (hover for what it is). A line whose placeholder has nothing to fill it is left out.
+      Blank line = new paragraph. "Label: value" lines show as a list; a line ending in {link} becomes a button.${t.note ? ` ${esc(t.note)}` : ''}</p>
+    <div class="row" style="flex-wrap:wrap;gap:4px">${chips}</div>
+    <h3 style="margin-top:14px">Preview <span class="small muted">(sample customer)</span></h3>
+    <div class="small" id="tp-subj" style="margin-bottom:6px"></div><div class="small" id="tp-warn" style="color:var(--bad)"></div>
+    <iframe id="tp-frame" sandbox="" title="Email preview" style="width:100%;height:340px;border:1px solid var(--border);border-radius:8px;background:#fff"></iframe>
+    <div class="actions"><button type="button" class="btn" data-x>Cancel</button>${t.customized ? '<button type="button" class="btn" id="tp-reset">Back to default</button>' : ''}<button class="btn primary">Save</button></div></form>`, { wide: true });
+  const f = $('form', m.el), ta = f.body; ta.rows = 14;
+  let last = ta;
+  f.subject.onfocus = () => { last = f.subject; }; ta.onfocus = () => { last = ta; };
+  let timer = null;
+  const preview = () => { clearTimeout(timer); timer = setTimeout(async () => {
+    try { const r = await POST(`/email-templates/${t.type}/preview`, { subject: f.subject.value, body: ta.value });
+      $('#tp-subj', f).innerHTML = `<b>Subject:</b> ${esc(r.subject)}`;
+      $('#tp-warn', f).textContent = r.unknown.length ? `Not a placeholder for this email: ${r.unknown.map(k => `{${k}}`).join(', ')}` : '';
+      $('#tp-frame', f).srcdoc = `<!doctype html><meta charset="utf-8"><body style="margin:14px">${r.html}</body>`;
+    } catch (e) { $('#tp-warn', f).textContent = e.message; } }, 250); };
+  $$('[data-ph]', f).forEach(b => b.onclick = () => {
+    const el = last, ins = `{${b.dataset.ph}}`, a = el.selectionStart ?? el.value.length, z = el.selectionEnd ?? a;
+    el.value = el.value.slice(0, a) + ins + el.value.slice(z); el.focus(); el.selectionStart = el.selectionEnd = a + ins.length; preview(); });
+  f.subject.oninput = preview; ta.oninput = preview; preview();
+  $('[data-x]', f).onclick = m.close;
+  if ($('#tp-reset', f)) $('#tp-reset', f).onclick = async () => {
+    if (!confirm('Go back to the built-in wording for this email?')) return;
+    await act(() => PUT(`/email-templates/${t.type}`, { subject: '', body: '' }), 'Back to the default wording').catch(() => null); m.close(); done(); };
+  f.onsubmit = async e => { e.preventDefault();
+    const r = await act(() => PUT(`/email-templates/${t.type}`, { subject: f.subject.value, body: ta.value }), 'Email template saved').catch(() => null);
+    if (r) { m.close(); done(); } };
 }
 // Dark is the company default (matches the black brand). Each person can pick Light or Match device.
 const themePref = () => { try { return localStorage.getItem('fo_theme') || 'dark'; } catch { return 'dark'; } };

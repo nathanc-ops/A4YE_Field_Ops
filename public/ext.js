@@ -58,21 +58,22 @@ function warnConflicts(r) {
 // Appointment confirmation email: preview the exact email, edit the address, add a line, send. Without SMTP set up on the
 // server the send is recorded and the text copied, so it can be pasted into a text message or the office email.
 async function confirmVisit(apptId, { cancelled = false, after } = {}) {
-  const c = await GET(`/appointments/${apptId}/confirmation`);
+  const c = await GET(`/appointments/${apptId}/confirmation${cancelled ? '?cancelled=1' : ''}`);
   const title = cancelled ? 'Tell the customer it\'s cancelled' : c.changed ? 'Email the customer the new time' : c.confirmed_at ? 'Resend the confirmation' : 'Email the customer a confirmation';
-  formModal({ title, okLabel: c.smtp ? 'Send' : 'Record & copy text', wide: true, values: { to: c.to, message: '' },
+  const m = formModal({ title, okLabel: c.smtp ? 'Send' : 'Record & copy text', wide: true, values: { to: c.to, subject: c.subject, body: c.text },
     fields: [{ name: 'to', label: `To${c.customer ? ` — ${c.customer}` : ''}`, full: true, required: true, placeholder: 'No email on file — type one' },
-      { name: 'message', label: 'Add a line (optional)', type: 'textarea', full: true, placeholder: 'e.g. Please park in the driveway — the street is posted' }],
-    extra: `<p class="small muted" style="margin:10px 0 4px">${cancelled ? 'A cancellation notice' : 'The email'} goes out like this${cancelled ? '' : ', with a calendar invite attached'}. Dispatch notes are never included.${c.smtp ? '' : ' <b>Email isn\'t set up on this server</b>, so the text is copied for you to paste.'}</p>
-      <pre class="mail-preview">${esc(cancelled ? '' : c.text)}</pre>`,
+      { name: 'subject', label: 'Subject', full: true, required: true },
+      { name: 'body', label: 'Message — edit anything for this one email', type: 'textarea', full: true, required: true }],
+    extra: `<p class="small muted" style="margin:8px 0 0">${cancelled ? '' : 'A calendar invite is attached. '}Dispatch notes are never included.${c.smtp ? '' : ' <b>Email isn\'t set up on this server</b>, so the text is copied for you to paste.'}
+      ${isAdmin() ? ' To change the wording for every email: <a href="#/settings">Settings → Email templates</a>.' : ''}</p>`,
     submit: async v => {
-      const r = await POST(`/appointments/${apptId}/confirm`, { to: v.to, message: v.message, cancelled });
+      const r = await POST(`/appointments/${apptId}/confirm`, { to: v.to, subject: v.subject, body: v.body, cancelled });
       if (r.status === 'sent') toast(`${cancelled ? 'Cancellation' : 'Confirmation'} sent to ${v.to}`);
       else if (r.status === 'failed') throw new Error(`Email failed: ${r.error || 'unknown error'}`);
       else { try { await navigator.clipboard.writeText(r.text); toast('Email isn\'t set up — the text is copied, paste it into a text or email'); } catch { prompt('Email isn\'t set up. Copy this text:', r.text); } }
       if (after) after(); else route();
     } });
-  if (cancelled) { const pre = $('.mail-preview'); if (pre) pre.remove(); }
+  const ta = $('textarea[name=body]', m.el); if (ta) ta.rows = 13;
 }
 const confirmBadge = a => a.needs_reconfirm ? '<span class="cf-tag warn" title="Moved after the customer was emailed — they have the old time">⚠✉</span> '
   : a.confirmed_at ? '<span class="cf-tag" title="Customer emailed a confirmation">✉</span> ' : '';

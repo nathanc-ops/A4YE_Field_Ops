@@ -37,7 +37,6 @@ function createApp(db) {
   const pick = (obj, keys) => Object.fromEntries(keys.filter(k => obj[k] !== undefined).map(k => [k, obj[k] === '' ? null : obj[k]]));
   const baseUrl = req => process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
   // the line under customer emails: replying reaches the office (Reply-To is the company email) even from a no-reply sender
-  const questions = s => (s.company_email || s.company_phone ? `Questions? ${s.company_email ? 'Reply to this email' : ''}${s.company_email && s.company_phone ? ' or call ' : s.company_phone ? 'Call ' : ''}${s.company_phone || ''}.\n\n` : '');
 
   function insert(table, data) {
     const keys = Object.keys(data);
@@ -839,20 +838,29 @@ function createApp(db) {
     run(db, "UPDATE estimates SET status = 'draft', cancelled_at = NULL, cancel_reason = NULL, approved_at = NULL, approved_option_id = NULL, signature_name = NULL WHERE id = ?", e.id);
     res.json({ ok: true });
   }));
+  // the email as it will go out (Send window shows it, editable)
+  const ET = require('./email_templates');
+  function estimateEmail(req, e, cust, edit) {
+    const vars = { ...ET.baseVars(db, cust, req.body && req.body.message), estimate_number: e.number, estimate_title: e.title || '', estimate_total: ET.usd(e.total),
+      valid_until: ET.fmtDate(e.valid_until), link: `${baseUrl(req)}/p/estimate/${e.public_token}` };
+    return { ...ET.render(db, 'estimate', vars, edit), url: vars.link };
+  }
+  app.get('/api/estimates/:id/email', office, wrap((req, res) => {
+    const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id)), cust = mustGet('customers', e.customer_id);
+    const m = estimateEmail(req, e, cust);
+    res.json({ to: cust.email || '', subject: m.subject, body: m.text, url: m.url, smtp: mailer.configured(db) });
+  }));
   app.post('/api/estimates/:id/send', office, wrap(async (req, res) => {
     const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id));
     if (e.status === 'cancelled') throw bad('Estimate is cancelled — reopen it first');
     const cust = mustGet('customers', e.customer_id);
     const to = req.body.to || cust.email;
     if (!to) throw bad('Customer has no email address');
-    const s = D.settings(db);
-    const url = `${baseUrl(req)}/p/estimate/${e.public_token}`;
-    const r = await mailer.send(db, { to, related: `estimate:${e.id}`,
-      subject: `Estimate ${e.number} from ${s.company_name}`,
-      text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for the opportunity. Your estimate is ready to review.'}\n\nEstimate ${e.number}: $${e.total.toFixed(2)}\nView and approve online: ${url}\n\n${questions(s)}${s.company_name}\n${s.company_phone || ''}` });
+    const m = estimateEmail(req, e, cust, { subject: req.body.subject, body: req.body.body }), url = m.url;
+    const r = await mailer.send(db, { to, related: `estimate:${e.id}`, subject: m.subject, text: m.text, html: m.html });
     if (e.status === 'draft') run(db, "UPDATE estimates SET status = 'sent', sent_at = datetime('now') WHERE id = ?", e.id);
     if (e.review_status === 'pending') run(db, "UPDATE estimates SET review_status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?", req.user.id, e.id);
-    res.json({ ...r, url });
+    res.json({ ...r, url, subject: m.subject, text: m.text });
   }));
   // approved estimate -> job (book the work)
   app.post('/api/estimates/:id/convert-to-job', office, wrap((req, res) => {
@@ -941,23 +949,31 @@ function createApp(db) {
     Bill.releaseInvoice(db, inv.id);
     run(db, 'DELETE FROM invoices WHERE id = ?', inv.id); res.json({ ok: true });
   }));
+  function invoiceEmail(req, inv, cust, edit) {
+    const job = inv.job_id ? get(db, 'SELECT title FROM jobs WHERE id = ?', inv.job_id) : null;
+    const vars = { ...ET.baseVars(db, cust, req.body && req.body.message), invoice_number: inv.number, invoice_total: ET.usd(inv.total), amount_due: ET.usd(inv.balance),
+      due_date: ET.fmtDate(inv.due_date) || 'on receipt', job_title: (job && job.title) || '', link: `${baseUrl(req)}/p/invoice/${inv.public_token}` };
+    return { ...ET.render(db, 'invoice', vars, edit), url: vars.link };
+  }
+  app.get('/api/invoices/:id/email', office, wrap((req, res) => {
+    const inv = C.invoiceWithTotals(db, mustGet('invoices', req.params.id)), cust = mustGet('customers', inv.customer_id);
+    const m = invoiceEmail(req, inv, cust);
+    res.json({ to: cust.email || '', subject: m.subject, body: m.text, url: m.url, smtp: mailer.configured(db) });
+  }));
   app.post('/api/invoices/:id/send', office, wrap(async (req, res) => {
     const inv = C.invoiceWithTotals(db, mustGet('invoices', req.params.id));
     if (inv.status === 'void') throw bad('Invoice is void');
     const cust = mustGet('customers', inv.customer_id);
     const to = req.body.to || cust.email;
     if (!to) throw bad('Customer has no email address');
-    const s = D.settings(db);
     tx(db, () => {
       if (inv.status === 'draft') run(db, "UPDATE invoices SET status = 'sent', sent_at = datetime('now') WHERE id = ?", inv.id);
       C.refreshInvoiceStatus(db, inv.id);
       A.postInvoice(db, inv.id);
     });
-    const url = `${baseUrl(req)}/p/invoice/${inv.public_token}`;
-    const r = await mailer.send(db, { to, related: `invoice:${inv.id}`,
-      subject: `Invoice ${inv.number} from ${s.company_name}`,
-      text: `Hi ${cust.name},\n\n${req.body.message || 'Thank you for your business. Your invoice is ready to view online.'}\n\nInvoice ${inv.number}\nAmount due: $${inv.balance.toFixed(2)}\nDue: ${inv.due_date || 'on receipt'}\nView online: ${url}\n\n${questions(s)}${s.company_name}\n${s.company_phone || ''}` });
-    res.json({ ...r, url });
+    const m = invoiceEmail(req, C.invoiceWithTotals(db, mustGet('invoices', inv.id)), cust, { subject: req.body.subject, body: req.body.body }), url = m.url;
+    const r = await mailer.send(db, { to, related: `invoice:${inv.id}`, subject: m.subject, text: m.text, html: m.html });
+    res.json({ ...r, url, subject: m.subject, text: m.text });
   }));
   app.post('/api/invoices/:id/payments', office, wrap((req, res) => {
     const inv = mustGet('invoices', req.params.id);
@@ -1147,6 +1163,7 @@ function createApp(db) {
   require('./job_import')(app, db, { wrap, bad, insert, update, WB });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
   require('./appt_confirm')(app, db, { wrap, bad, mustGet, H });
+  require('./email_templates').routes(app, db, { wrap, bad, admin });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');
