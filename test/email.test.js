@@ -163,9 +163,63 @@ test('Twilio Email sign-in errors say which key problem it is', () => {
   const { explain } = require('../server/mailer');
   const e = { code: 'EAUTH', response: '535 Authentication failed: The provided authorization grant is invalid, expired, or revoked' };
   const c = pass => ({ host: 'smtp.sendgrid.net', port: 2525, user: 'apikey', pass });
-  assert.match(explain(e, c('SK' + 'a'.repeat(32))), /Twilio account API key \(starts with SK\)/);
+  assert.match(explain(e, c('SK' + 'a'.repeat(32))), /Twilio API key \(starts with SK\)/);
   assert.match(explain(e, c('abc123secret')), /start with "SG\."/);
   assert.match(explain(e, c('SG.short')), /cut off/);
   assert.match(explain(e, c('SG.' + 'x'.repeat(66))), /mistyped, deleted, or doesn't have Mail Send/);
   assert.match(explain(e, { ...c('SG.' + 'x'.repeat(66)), user: 'Apikey' }), /must be exactly apikey/);
+});
+
+// ---- Twilio Email API (comms.twilio.com): HTTPS + Basic auth with an SK key SID and its secret
+test('Twilio Email API: SK key signs in, message/attachment/CC go as JSON, errors explained', async () => {
+  const http = require('node:http');
+  const SID = 'SK' + '0123456789abcdef'.repeat(2), SECRET = 'the-secret';
+  const got = [];
+  const api = http.createServer((req, res) => {
+    let b = ''; req.on('data', d => { b += d; }); req.on('end', () => {
+      const [u, p] = Buffer.from(String(req.headers.authorization || '').replace(/^Basic /, ''), 'base64').toString().split(':');
+      const reply = (code, o) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+      if (u !== SID || p !== SECRET) return reply(401, { message: 'Authentication Error - invalid username' });
+      if (req.method === 'GET') return reply(200, { emails: [{ to: [{ address: 'owner@a4ye.example' }], status: got.at(-1).from.address.endsWith('unverified.example') ? 'FAILED' : 'DELIVERED' }] });
+      const j = JSON.parse(b); got.push(j);
+      if (j.from.address.startsWith('bad@')) return reply(400, { errors: [{ field: 'from', message: 'sender domain is not verified' }] });
+      reply(202, { operationId: 'comms_operation_x' + got.length, operationLocation: 'x' });
+    });
+  });
+  await new Promise(r => api.listen(0, '127.0.0.1', r));
+  process.env.TWILIO_EMAIL_API_BASE = `http://127.0.0.1:${api.address().port}/v1`; process.env.TWILIO_EMAIL_POLL_MS = '5';
+  try {
+    const form = { host: 'comms.twilio.com', port: 443, security: 'ssl', user: SID, from_email: 'noreply@a4ye.example', from_name: 'All 4 You Electrical' };
+    const t = o => call('admin', 'POST', '/settings/email-test', { to: 'owner@a4ye.example', ...form, ...o }).then(r => r.data);
+    assert.match((await t({ pass: 'wrong' })).error, /secret doesn't match that SID/);
+    assert.match((await t({ pass: SID })).error, /password is the key SID again/);
+    assert.match((await t({ user: 'apikey', pass: SECRET })).error, /must be the API key's SID/);
+    assert.match((await t({ pass: SECRET, from_email: 'bad@a4ye.example' })).error, /refused the From address bad@a4ye\.example.*Email → Domains/);
+    assert.match((await t({ pass: SECRET, from_email: 'x@unverified.example' })).error, /accepted the message but it failed/);
+    const ok = await t({ pass: SECRET });
+    assert.equal(ok.ok, true, JSON.stringify(ok)); assert.equal(ok.api, true);
+    const m = got.at(-1);
+    assert.deepEqual(m.from, { address: 'noreply@a4ye.example', name: 'All 4 You Electrical' });
+    assert.deepEqual(m.to, [{ address: 'owner@a4ye.example' }]);
+    assert.match(m.content.subject, /Test email/); assert.match(m.content.html, /<br>/); assert.match(m.content.text, /office@a4ye\.example/);
+
+    // saved → real sends go through the API; CC becomes another recipient; reply address written in; attachments base64
+    await call('admin', 'PUT', '/settings', { smtp_host: 'comms.twilio.com', smtp_port: 443, smtp_security: 'ssl', smtp_user: SID, smtp_pass: SECRET, smtp_from_email: 'noreply@a4ye.example', smtp_from_name: 'All 4 You Electrical' });
+    const mailer = require('../server/mailer');
+    const r = await mailer.send(db, { to: '"Pat GC" <pat@gc.example>', cc: 'pm@gc.example, pat@gc.example', subject: 'Report', text: 'See https://x.example/r/1 now',
+      attachments: [{ filename: 'a.ics', content: 'BEGIN:VCALENDAR', contentType: 'text/calendar' }] });
+    assert.equal(r.status, 'sent', JSON.stringify(r));
+    const s = got.at(-1);
+    assert.deepEqual(s.to, [{ address: 'pat@gc.example', name: 'Pat GC' }, { address: 'pm@gc.example' }]);
+    assert.match(s.content.text, /To reply, email office@a4ye\.example$/);
+    assert.match(s.content.html, /<a href="https:\/\/x\.example\/r\/1">/); assert.match(s.content.html, /mailto:office@a4ye\.example/);
+    assert.deepEqual(s.content.attachments, [{ filename: 'a.ics', contentType: 'text/calendar', content: Buffer.from('BEGIN:VCALENDAR').toString('base64') }]);
+    const e = (await call('admin', 'GET', '/settings/email')).data;
+    assert.equal(e.configured, true); assert.equal(e.pass_set, true); assert.equal(e.from, '"All 4 You Electrical" <noreply@a4ye.example>');
+    // the old SendGrid preset with an SK key points to the new one
+    assert.match(mailer.explain({ code: 'EAUTH', response: '535 nope' }, { host: 'smtp.sendgrid.net', user: 'apikey', pass: SID }), /Twilio Email \(API key SK…\)/);
+  } finally {
+    delete process.env.TWILIO_EMAIL_API_BASE; delete process.env.TWILIO_EMAIL_POLL_MS; api.close();
+    await call('admin', 'PUT', '/settings', { smtp_host: '', smtp_pass_clear: '1' });
+  }
 });

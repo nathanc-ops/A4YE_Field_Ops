@@ -1524,7 +1524,8 @@ async function jobNumberSetup(el) {
 // and never sent back to the browser. A server with SMTP_* environment variables uses those instead (shown, not editable).
 const MAIL_PRESETS = [
   ['postmark', 'Postmark (recommended)', 'smtp.postmarkapp.com', 2525, 'starttls', 'Username and password are both your Postmark Server API Token. Verify your domain (or the From address) in Postmark first.'],
-  ['sendgrid', 'Twilio Email (formerly SendGrid)', 'smtp.sendgrid.net', 2525, 'starttls', 'Managed in the Twilio console now (sendgrid.com moved into twilio.com in 2026). Username is the word apikey (literally); password is an email API key starting with SG., made at app.sendgrid.com → Settings → API Keys with Mail Send access (the main Twilio console\'s API Keys page makes SK keys, which do not work here). Authenticate your domain first (Sender Authentication) or mail will be refused or land in spam. If Twilio shows a different SMTP server in your account, use that one.'],
+  ['twilio', 'Twilio Email (API key SK…)', 'comms.twilio.com', 443, 'ssl', 'For the Email product in the new Twilio Console. Sends over normal HTTPS, so hosting mail-port blocks don\'t matter. Twilio Console → API keys & tokens → Create API key (Standard, or Restricted with Email send permission). Username = the key\'s SID (starts with SK); Password = the key\'s Secret (shown only once, when the key is made — not the Auth Token). First authenticate your domain under Email → Domains, or Twilio refuses the From address. Twilio\'s API can\'t set Reply-To, so each message says where to reply.'],
+  ['sendgrid', 'SendGrid SMTP (SG. key)', 'smtp.sendgrid.net', 2525, 'starttls', 'For accounts in the SendGrid app (app.sendgrid.com). Username is the word apikey (literally); password is a key starting with SG., made at app.sendgrid.com → Settings → API Keys with Mail Send access. An SK key from the Twilio Console doesn\'t work here — use "Twilio Email (API key SK…)" for that. Authenticate your domain first (Sender Authentication).'],
   ['brevo', 'Brevo', 'smtp-relay.brevo.com', 2525, 'starttls', 'Username and SMTP key are under Brevo → SMTP & API. Verify your domain or sender in Brevo.'],
   ['ses', 'Amazon SES', 'email-smtp.us-west-2.amazonaws.com', 2587, 'starttls', 'Use SES SMTP credentials (not your AWS login) and the server for your SES region. Verify your domain in SES.'],
   ['google', 'Google Workspace / Gmail', 'smtp.gmail.com', 587, 'starttls', 'Username is the full Google address; password is an App Password (Google Account → Security → 2-Step Verification → App passwords). Note: some hosts, DigitalOcean included, block port 587.'],
@@ -1561,9 +1562,13 @@ async function emailSetup(el) {
     <p class="small muted" style="margin-top:8px">The test uses what's in the form, saved or not. For mail to land in inboxes rather than spam, the provider will ask you to add a few DNS records (SPF/DKIM) for your domain — they show you exactly which.</p></form>
     ${recent}`;
   const f = $('#mailf', el);
-  const hint = () => { const p = MAIL_PRESETS.find(x => x[0] === f.preset.value); $('#mailhint', el).textContent = p[5]; };
+  const hint = () => { const p = MAIL_PRESETS.find(x => x[0] === f.preset.value), tw = p[0] === 'twilio'; $('#mailhint', el).textContent = p[5];
+    f.user.placeholder = tw ? 'API key SID — SK…' : ''; f.pass.placeholder = tw ? 'API key secret' : '';
+    for (const n of ['port', 'security']) { const w = f[n].closest('label, .field') || f[n].parentElement; if (w && w !== f) w.style.display = tw ? 'none' : ''; } };
   f.preset.onchange = () => { const p = MAIL_PRESETS.find(x => x[0] === f.preset.value); if (p[2]) f.host.value = p[2]; f.port.value = p[3]; f.security.value = p[4];
-    if (p[0] === 'sendgrid' && !f.user.value) f.user.value = 'apikey'; hint(); };
+    if (p[0] === 'sendgrid' && !f.user.value) f.user.value = 'apikey';
+    if (p[0] === 'twilio' && f.user.value === 'apikey') f.user.value = '';
+    hint(); };
   hint();
   if (!e.host) f.preset.onchange();
   const vals = () => ({ host: f.host.value.trim(), port: f.port.value, security: f.security.value, user: f.user.value.trim(), pass: f.pass.value, from_email: f.from_email.value.trim(), from_name: f.from_name.value.trim() });
