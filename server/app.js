@@ -1167,6 +1167,8 @@ function createApp(db) {
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');
+  // the service worker must be re-checked on every load, or phones keep running an old app
+  app.get('/sw.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.set('Service-Worker-Allowed', '/'); res.sendFile(path.join(pub, 'sw.js')); });
   app.use(express.static(pub));
   app.get('/p/:kind(estimate|invoice)/:token', (req, res) => res.sendFile(path.join(pub, 'doc.html')));
   app.get('/p/report/:token', (req, res) => res.sendFile(path.join(pub, 'report.html')));

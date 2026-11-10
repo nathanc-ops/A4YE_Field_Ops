@@ -1,0 +1,26 @@
+{
+  "name": "a4ye-field-ops-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "description": "iPhone and Android app for A4YE Field Ops: a native shell that opens the company's Field Ops server.",
+  "scripts": {
+    "setup": "npm run add:android && npm run add:ios && npm run assets && npm run native",
+    "add:android": "cap add android",
+    "add:ios": "cap add ios",
+    "assets": "capacitor-assets generate --ios --android --assetPath assets --iconBackgroundColor \"#000000\" --iconBackgroundColorDark \"#000000\" --splashBackgroundColor \"#000000\" --splashBackgroundColorDark \"#000000\"",
+    "native": "node scripts/configure-native.js && cap sync",
+    "sync": "cap sync",
+    "open:android": "cap open android",
+    "open:ios": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "3.0.5",
+    "@capacitor/cli": "8.5.3"
+  },
+  "engines": { "node": ">=22" }
+}

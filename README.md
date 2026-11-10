@@ -18,6 +18,8 @@ If you skip the seed, the first visit asks you to create the owner (admin) accou
 
 **Putting it online** for the crew: see [docs/DEPLOY.md](docs/DEPLOY.md). It covers a DigitalOcean server at ops.all4youelectrical.com with HTTPS, nightly and off-site backups, and one-command updates.
 
+**On phones:** the crew can install it from the browser today (iPhone Safari → Share → *Add to Home Screen*; Android Chrome → *Install app*). For App Store and Google Play builds, see [docs/MOBILE_APPS.md](docs/MOBILE_APPS.md); the native projects are in `mobile/`.
+
 Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no native modules to compile. Data lives in `data/fieldops.db` and uploaded photos in `data/uploads/`; set `DB_PATH` / `UPLOAD_DIR` to put them somewhere else. **Back up the `data/` folder** (database and photos). It is your entire business record.
 
 ## What it does

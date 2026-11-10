@@ -1,0 +1,8 @@
+node_modules/
+# signing keys never go in the repo (it is public)
+*.jks
+*.keystore
+keystore.properties
+*.p12
+*.mobileprovision
+*.p8

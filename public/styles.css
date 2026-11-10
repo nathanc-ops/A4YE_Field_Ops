@@ -479,3 +479,12 @@ table.items .lk-job .lk-q { width: 100%; }
 .wk-proj th.today { color: var(--brand); }
 .wk-proj td.nocrew { background: var(--warn-soft); }
 .wk-proj .crewlink { text-decoration: none; }
+
+/* installed app / phone app: keep content clear of the notch, status bar and home indicator */
+@supports (padding: env(safe-area-inset-top)) {
+  .side { padding-top: calc(14px + env(safe-area-inset-top)); padding-bottom: env(safe-area-inset-bottom); }
+  .main { padding-top: calc(22px + env(safe-area-inset-top)); padding-left: calc(26px + env(safe-area-inset-left)); padding-right: calc(26px + env(safe-area-inset-right)); padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  #toast { bottom: calc(18px + env(safe-area-inset-bottom)); }
+  .auth { padding-top: calc(16px + env(safe-area-inset-top)); }
+  @media (max-width: 900px) { .main { padding-top: calc(14px + env(safe-area-inset-top)); padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); } }
+}

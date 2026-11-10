@@ -1,0 +1,17 @@
+{
+  "appId": "com.all4youelectrical.fieldops",
+  "appName": "A4YE Field Ops",
+  "webDir": "www",
+  "server": {
+    "url": "https://ops.all4youelectrical.com",
+    "cleartext": false,
+    "errorPath": "offline.html"
+  },
+  "backgroundColor": "#000000",
+  "ios": {
+    "contentInset": "never"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
