@@ -651,7 +651,7 @@ const MIGRATIONS = [
       const row = db.prepare('SELECT id FROM cost_codes WHERE code = ?').get(code);
       if (row && !tables.some(t => db.prepare(`SELECT 1 x FROM ${t} WHERE cost_code_id = ? LIMIT 1`).get(row.id))) db.prepare('UPDATE cost_codes SET active = 0 WHERE id = ?').run(row.id);
     }
-    addColumn(db, 'users', 'timeclock_id', 'TEXT');           // Employee ID in the A4Y Time Clock (e.g. EB3B7D64377)
+    addColumn(db, 'users', 'timeclock_id', 'TEXT');           // Employee ID in the A4Y Time Clock (e.g. E0A1B2C3D4F)
     addColumn(db, 'jobs', 'timeclock_job', 'TEXT');           // Job # in the A4Y Time Clock (e.g. 2417)
     addColumn(db, 'time_entries', 'external_id', 'TEXT');     // Entry ID in the A4Y Time Clock
     addColumn(db, 'time_entries', 'ext_job', 'TEXT');         // the time clock's Job #, kept so entries link once a job gets that number
@@ -829,6 +829,10 @@ const MIGRATIONS = [
   db => {
     for (const [c, d] of [['public_token', 'TEXT'], ['sent_at', 'TEXT'], ['sent_to', 'TEXT'], ['viewed_at', 'TEXT']]) addColumn(db, 'project_reports', c, d);
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_report_token ON project_reports(public_token)');
+  },
+  // 23: job workbook import — expenses brought in as history (already in the real books) skip the ledger like old-system invoices do
+  db => {
+    addColumn(db, 'expenses', 'ledger_skip', 'INTEGER NOT NULL DEFAULT 0');
   },
 ];
 

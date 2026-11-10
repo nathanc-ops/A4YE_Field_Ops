@@ -1447,7 +1447,7 @@ async function userForm(u) {
       { name: 'hourly_wage', label: 'Hourly wage $', type: 'number', default: 0 }, { name: 'burden_pct', label: 'Burden % (taxes, WC, benefits)', type: 'number', default: 25 },
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },
       { name: 'password', label: u.id ? 'New password (leave blank to keep)' : 'Password (8+ chars)', type: 'password', required: !u.id },
-      { name: 'timeclock_id', label: 'Time clock ID (A4Y Time Clock employee ID)', placeholder: 'e.g. EB3B7D64377' },
+      { name: 'timeclock_id', label: 'Time clock ID (A4Y Time Clock employee ID)', placeholder: 'e.g. E0A1B2C3D4F' },
       { name: 'active', label: 'Active (can sign in)', type: 'checkbox', default: 1 }],
     extra: `<h3 style="margin-top:14px">Permissions</h3><div id="perms"></div>`,
     submit: async (d, form) => {

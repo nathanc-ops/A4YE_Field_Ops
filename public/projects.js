@@ -22,6 +22,55 @@ async function companyManpower(el) {
     <details style="margin-top:10px"><summary class="small">Week-by-week detail</summary>${table(cols, d.weeks)}</details>`;
   $('#mpcsv', el).onclick = () => toCSV(cols, d.weeks, `company_manpower_${d.today}.csv`);
 }
+// Bring a whole A4YE job workbook (.xlsx) in as a project: preview what each tab becomes, then import.
+function importJobWorkbook() {
+  let file = null, name = '';
+  const m = modal(`<h2>Import a job workbook</h2>
+    <p class="small muted">Choose an A4YE job workbook (.xlsx, the job template format). Nothing is saved until you press Import. Each tab becomes the matching sheet on the project; tabs the app calculates itself (Dashboard, Manpower Loading, the G702/G703 tabs, Bi-Weekly Report copies, Rollup) are rebuilt from the data. The Employee List tab is never read.</p>
+    <label class="f full"><span>Job workbook</span><input type="file" id="jwfile" accept=".xlsx"></label>
+    <div id="jwpv" style="margin-top:12px"></div>
+    <div class="actions"><button type="button" class="btn" data-x>Close</button><button class="btn primary" id="jwgo" disabled>Import</button></div>`, { wide: true });
+  $('[data-x]', m.el).onclick = m.close;
+  const body = () => ({ file, file_name: name, job_id: $('#jwtarget', m.el) && $('#jwtarget', m.el).value || null,
+    create_invoices: $('#jwinv', m.el) ? $('#jwinv', m.el).checked : true, post_to_ledger: $('#jwpost', m.el) ? $('#jwpost', m.el).checked : false });
+  $('#jwfile', m.el).onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    if (f.size > 30 * 1024 * 1024) return toast('That file is over 30 MB', true);
+    name = f.name; $('#jwpv', m.el).innerHTML = '<div class="muted">Reading the workbook…</div>';
+    const rd = new FileReader();
+    rd.onload = async () => {
+      file = String(rd.result).replace(/^data:[^,]*,/, '');
+      let p; try { p = await POST('/import/job-workbook/preview', { file }); } catch (err) { $('#jwpv', m.el).innerHTML = `<div class="alert">${esc(err.message)}</div>`; return; }
+      const J = p.job;
+      $('#jwpv', m.el).innerHTML = `<div class="card" style="padding:12px"><b>${esc(J.number)} · ${esc(J.name)}</b> <span class="muted">— ${esc(J.client)}</span>
+          <div class="small muted">${esc(J.address || '')}</div>
+          <div class="small" style="margin-top:4px">Contract ${money0(J.contract || 0)}${J.approved_co ? ` + ${money0(J.approved_co)} approved COs` : ''} · ${esc(J.start || '?')} to ${esc(J.finish || '?')} · PM ${esc(J.pm || '—')}${p.pm ? ` <span class="muted">(${esc(p.pm)})</span>` : ''} · Foreman ${esc(J.foreman || '—')}${p.foreman ? ` <span class="muted">(${esc(p.foreman)})</span>` : ''}</div>
+          <div style="margin-top:8px">${p.target ? `<b>Goes into the existing project ${esc(p.target.number)} · ${esc(p.target.title)}</b> (time clock job # ${esc(p.target.timeclock_job || '—')}). Sections it already has are skipped, never overwritten.<input type="hidden" id="jwtarget" value="${p.target.id}">`
+            : '<b>Creates a new commercial project</b>, with the customer and address added if they are not already in the app.'}</div></div>
+        ${table([{ label: 'Tab', key: 'label' }, { label: 'Rows', num: 1, key: 'count' }, { label: 'Will do', html: s => s.skip ? `<span class="muted">Skip — ${esc(s.skip)}</span>` : '<span class="pill good">Import</span>' }, { label: '', html: s => `<span class="small muted">${esc(s.detail || '')}</span>` }], p.sections)}
+        ${Object.keys(p.people).length ? `<p class="small" style="margin-top:8px"><b>Labor Log people:</b> ${Object.entries(p.people).map(([k, v]) => `${esc(k)} <span class="muted">(${esc(v)})</span>`).join(', ')}</p>` : ''}
+        ${p.unknown_codes.length ? `<p class="small"><b>Cost codes not in the app:</b> ${p.unknown_codes.map(esc).join(', ')} — those rows come in without a code.</p>` : ''}
+        <label class="check full" style="margin-top:8px"><input type="checkbox" id="jwinv" checked> Create the invoices and payments for past pay applications, so billed-to-date, cash and over/under billing are right</label>
+        <label class="check full"><input type="checkbox" id="jwpost"> Post imported invoices, payments and costs to Accounting <span class="muted small">(leave off if they are already in your books — they still count on the project)</span></label>
+        <p class="small muted">Not imported (the app calculates these): ${esc(p.not_imported)}.</p>`;
+      $('#jwgo', m.el).disabled = false;
+    };
+    rd.readAsDataURL(f);
+  };
+  $('#jwgo', m.el).onclick = async () => {
+    $('#jwgo', m.el).disabled = true; $('#jwgo', m.el).textContent = 'Importing…';
+    let r; try { r = await POST('/import/job-workbook', body()); } catch (err) { toast(err.message, true); $('#jwgo', m.el).disabled = false; $('#jwgo', m.el).textContent = 'Import'; return; }
+    const line = (k, v) => v.skipped ? `<li class="muted">${esc(k)}: skipped — ${esc(v.skipped)}</li>` : `<li>${esc(k)}: ${esc(Object.entries(v).filter(([, x]) => !Array.isArray(x) || x.length).map(([a, x]) => `${a.replace(/_/g, ' ')} ${Array.isArray(x) ? x.length : typeof x === 'number' ? x.toLocaleString() : x}`).join(', '))}</li>`;
+    const c = r.check || {};
+    $('#jwpv', m.el).innerHTML = `<div class="card" style="padding:12px"><h3 style="margin:0 0 6px">${r.created_job ? 'Project created' : 'Imported into the existing project'}</h3>
+      <ul class="small" style="margin:0;padding-left:18px">${Object.entries(r.done).map(([k, v]) => line(k, v)).join('')}</ul>
+      <p class="small" style="margin:8px 0 0">Check against the workbook: revised contract ${money0(c.contract_here || 0)}${c.contract_workbook != null ? ` (workbook ${money0(c.contract_workbook)})` : ''} · labor hours ${c.labor_hours_here ?? 0}${c.labor_hours_workbook != null ? ` (workbook ${c.labor_hours_workbook})` : ''} · budget cost ${money0(c.budget_here || 0)}</p>
+      ${r.warnings.length ? `<div class="alert" style="margin-top:8px"><ul style="margin:0;padding-left:18px">${r.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}</div>`;
+    $('.actions', m.el).innerHTML = `<button type="button" class="btn" id="jwclose">Close</button><a class="btn primary" href="#/jobs/${r.job_id}?tab=project">Open the project</a>`;
+    $('#jwclose', m.el).onclick = () => { m.close(); route(); };
+    $('.actions a', m.el).onclick = () => m.close();
+  };
+}
 async function viewProjects() {
   const { params } = hashParams(); const status = params.get('status') || 'active';
   if (!isOffice()) return viewMyProjects();
@@ -64,7 +113,7 @@ async function viewProjects() {
   ];
   const ex = d.exceptions;
   $('#view').innerHTML = setTop('Commercial Dashboard', `<div class="seg">${[['active', 'Active'], ['all', 'All projects']].map(([k, l]) => `<a href="#/projects${qs({ status: k })}" class="${k === status ? 'on' : ''}">${l}</a>`).join('')}</div>
-      <button class="btn" id="pcsv">Export CSV</button><button class="btn" onclick="print()">Print</button>${can('jobs') ? '<button class="btn primary" id="newp">+ New project</button>' : ''}`,
+      <button class="btn" id="pcsv">Export CSV</button><button class="btn" onclick="print()">Print</button>${S.user.role === 'admin' ? '<button class="btn" id="impwb">Import job workbook</button>' : ''}${can('jobs') ? '<button class="btn primary" id="newp">+ New project</button>' : ''}`,
     `Company roll-up of ${t.projects} commercial project${t.projects === 1 ? '' : 's'} · as of ${fmtDate(d.as_of)}`) + `
     <div class="card"><h2>Executive summary</h2>${summary.map(x => `<p style="margin:4px 0">${x}</p>`).join('')}</div>
     ${M ? `<h3 style="margin:16px 0 6px">Contract &amp; margin</h3><div class="grid g4">
@@ -101,6 +150,7 @@ async function viewProjects() {
   companyManpower($('#mpall'));
   $('#pcsv').onclick = () => toCSV(cols, d.projects, `commercial_dashboard_${d.as_of}.csv`);
   if ($('#newp')) $('#newp').onclick = () => jobForm({ is_project: 1, billing_type: 'fixed', job_type: 'commercial' });
+  if ($('#impwb')) $('#impwb').onclick = importJobWorkbook;
 }
 // techs: just the projects they're on
 async function viewMyProjects() {

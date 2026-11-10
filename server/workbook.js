@@ -197,8 +197,7 @@ module.exports = function workbookRoutes(app, db, X) {
     run(db, 'DELETE FROM pay_apps WHERE id = ?', a.id); res.json({ ok: true });
   }));
   // Invoice for a pay app: each SOV line's work this period + change in stored materials, less retainage this app.
-  app.post('/api/pay-apps/:id/invoice', wrap((req, res) => {
-    const { a, job } = appOf(req, req.params.id);
+  function invoicePayApp(job, a, { issueDate = null } = {}) {
     const apps = payApps(job), i = apps.findIndex(x => x.id === a.id), me = apps[i], prev = apps[i - 1];
     if (me.locked) throw bad(`Already on invoice ${me.invoice_number}`);
     if (prev && !prev.locked) throw bad(`Invoice App #${prev.app_no} first`);
@@ -214,9 +213,11 @@ module.exports = function workbookRoutes(app, db, X) {
     if (me.retainage_this_app > 0.004) inv.line({ description: `Less retainage withheld (${me.retainage_used}%)`, unit_price: -me.retainage_this_app, taxable: 0 });
     else if (me.retainage_this_app < -0.004) inv.line({ description: 'Retainage release', unit_price: -me.retainage_this_app, taxable: 0 });
     run(db, 'UPDATE invoices SET retainage = ?, title = ? WHERE id = ?', me.retainage_this_app, `${job.title} — Pay App #${me.app_no}`, inv.id);
-    run(db, "UPDATE pay_apps SET invoice_id = ?, status = 'Submitted', date_submitted = COALESCE(date_submitted, ?) WHERE id = ?", inv.id, today(), a.id);
-    res.json({ invoice_id: inv.id });
-  }));
+    if (issueDate) run(db, 'UPDATE invoices SET issue_date = ? WHERE id = ?', issueDate, inv.id);
+    run(db, "UPDATE pay_apps SET invoice_id = ?, status = 'Submitted', date_submitted = COALESCE(date_submitted, ?) WHERE id = ?", inv.id, issueDate || today(), a.id);
+    return inv.id;
+  }
+  app.post('/api/pay-apps/:id/invoice', wrap((req, res) => { const { a, job } = appOf(req, req.params.id); res.json({ invoice_id: invoicePayApp(job, a) }); }));
   // AIA G702 summary + G703 continuation sheet for one application
   app.get('/api/pay-apps/:id/print', wrap((req, res) => {
     const a = mustGet('pay_apps', req.params.id), job = project(req, a.job_id);
@@ -876,12 +877,12 @@ module.exports = function workbookRoutes(app, db, X) {
     const job = project(req, req.params.id, { write: true }), b = req.body || {};
     res.json(parseQuote(job, b.text, { source: b.source, overrides: b.overrides || {} }));
   }));
-  app.post('/api/projects/:id/quote-import', wrap((req, res) => {
-    const job = project(req, req.params.id, { write: true }), b = req.body || {}, mode = b.mode === 'add' ? 'add' : 'replace';
+  function applyQuote(job, b, userId) {
+    const mode = b.mode === 'add' ? 'add' : 'replace';
     const p = parseQuote(job, b.text, { source: b.source, overrides: b.overrides || {} });
     if (!p.totals.lines) throw bad('No importable lines — every row was skipped or needs a cost code');
     if (p.totals.need_code && !b.skip_uncoded) throw bad(`${p.totals.need_code} line(s) need a cost code — fix them or choose to skip them`);
-    const importId = `${Date.now().toString(36)}-${req.user.id}`;
+    const importId = `${Date.now().toString(36)}-${userId}`;
     const progress = new Map(all(db, 'SELECT cost_code_id, percent_complete FROM job_budgets WHERE job_id = ? AND percent_complete IS NOT NULL', job.id).map(r => [r.cost_code_id, r.percent_complete]));
     if (mode === 'replace') { run(db, 'DELETE FROM job_budgets WHERE job_id = ?', job.id); run(db, 'DELETE FROM project_quote_lines WHERE job_id = ?', job.id); }
     for (const x of p.budget) {
@@ -894,11 +895,12 @@ module.exports = function workbookRoutes(app, db, X) {
     for (const x of p.lines.filter(l => l.status === 'OK'))
       insert('project_quote_lines', { job_id: job.id, import_id: importId, source: b.source || null, area: x.area || null, cost_code_id: x.cost_code_id, cost_type: x.cost_type, phase_code: x.phase_code || null,
         tag: x.tag || null, description: x.description, qty: x.qty, unit: x.unit || null, material_unit: num(x.material_unit), hours_unit: x.hours_unit, ext_material: x.material, ext_hours: x.hours,
-        ext_labor: x.labor, ext_total: x.total, notes: x.notes || null, sort: sort += 1, imported_by: req.user.id });
+        ext_labor: x.labor, ext_total: x.total, notes: x.notes || null, sort: sort += 1, imported_by: userId });
     const t = get(db, 'SELECT SUM(budget_hours) h, SUM(budget_material) m FROM job_budgets WHERE job_id = ?', job.id);
     update('jobs', job.id, { budget_hours: r2(t.h || 0), budget_materials: r2(t.m || 0) });
-    res.json({ ok: true, import_id: importId, mode, lines: p.totals.lines, codes: p.budget.length, totals: p.totals });
-  }));
+    return { ok: true, import_id: importId, mode, lines: p.totals.lines, codes: p.budget.length, totals: p.totals };
+  }
+  app.post('/api/projects/:id/quote-import', wrap((req, res) => res.json(applyQuote(project(req, req.params.id, { write: true }), req.body || {}, req.user.id))));
   // the Import Quote sheet: every imported line, by cost code
   app.get('/api/projects/:id/quote-lines', wrap((req, res) => {
     const job = project(req, req.params.id, { write: true });
@@ -935,6 +937,7 @@ module.exports = function workbookRoutes(app, db, X) {
     },
     LISTS,
     taskRows,
+    applyQuote, invoicePayApp, payApps, snapshotProgress,
     manpowerPeak: job => { const e = laborEntries(job); return remainingPeak(scheduleWeeks(job, taskRows(job, today(), e), e, schedCfg())); },
   };
 };

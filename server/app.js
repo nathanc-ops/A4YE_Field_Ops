@@ -1059,7 +1059,9 @@ function createApp(db) {
   require('./routes_import')(app, db, { wrap, bad, admin, H });
   const hooks = {};
   const PR = require('./projects')(app, db, { wrap, bad, insert, update, mustGet, pick, jobSelect, fixTechs, addDays, hooks });
-  hooks.exceptions = require('./workbook')(app, db, { wrap, bad, insert, update, mustGet, pick, P: PR, baseUrl }).exceptions;
+  const WB = require('./workbook')(app, db, { wrap, bad, insert, update, mustGet, pick, P: PR, baseUrl });
+  hooks.exceptions = WB.exceptions;
+  require('./job_import')(app, db, { wrap, bad, insert, update, WB });
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
 
   // ------------------------------------------------------------ static

@@ -112,7 +112,7 @@ function expenseAccount(db, e) {
 }
 function postExpense(db, id) {
   const e = get(db, 'SELECT * FROM expenses WHERE id = ?', id);
-  if (!e) return unpost(db, 'expense', id);
+  if (!e || e.ledger_skip) return unpost(db, 'expense', id);
   return post(db, { date: e.date, memo: `${e.category}${e.vendor ? ' · ' + e.vendor : ''}${e.description ? ' · ' + e.description : ''}`, source_type: 'expense', source_id: e.id, lines: [
     { account: expenseAccount(db, e), debit: e.amount, job_id: e.job_id, cost_code_id: e.cost_code_id },
     { account: e.paid_from_account_id || settings(db).default_paid_from_account || '1000', credit: e.amount },

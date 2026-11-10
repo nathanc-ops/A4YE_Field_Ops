@@ -205,6 +205,28 @@ A project bills **either** by pay application **or** from the job's Billing tab,
 
 Every tab of the job template now has a sheet here. Two shortcuts to know about: schedule float only measures the gap to the next task that names this one as its predecessor (no full critical path), and a late predecessor doesn't move the tasks after it.
 
+### Importing an existing job workbook
+
+**Commercial Projects → Import job workbook** (admins) takes a job's whole A4YE workbook (.xlsx) and turns it into a project. A preview shows what each tab becomes before anything is saved.
+
+| Tab | Becomes |
+|---|---|
+| Job Register, Cover | The project: customer (matched by name or added), address, PM and foreman (matched to Team by name), dates, contract, retainage, mobilization %, time clock job #, Gantt start; the Cover's blended rate fills Settings if it's empty |
+| Estimate Import, Cost Codes | The cost-code budget (same parser as the Estimate Import sheet) and any typed % complete |
+| Schedule, Milestones, RFI-Submittal Log, Safety-Quality Log | Those logs. `T-###` predecessors link up; other Pred. text (e.g. the GC's schedule line) is kept in the task notes |
+| Change Orders | Change-order estimates at the log's exact sell price and cost; approved ones add to the contract |
+| SOV, Billing Entry, Pay Apps | The schedule of values and every pay application with its per-line work and stored materials. The G702 math is re-checked against the workbook's gross. Optionally creates each app's invoice and recorded payment |
+| Labor Log | Time entries through the A4Y Time Clock sync rules: Entry ID is the key, so rows already synced are updated, never duplicated; people the app doesn't know are added as inactive techs |
+| Cost Log | Invoiced costs as job expenses; open commitments as purchase orders (grouped by vendor and PO #) |
+| Weekly History | % complete only for weeks where it was typed — formula weeks are hours proxies, not reported progress |
+
+Dashboard, Manpower Loading, Billing Worksheet, Pay App Summary, Import Quote, the Bi-Weekly Report copies and Rollup are calculated, so the app rebuilds them. **The Employee List tab is never read.**
+
+- **Re-running is safe.** If a project with that time clock job # exists, the import goes into it, fills only blank job fields, and skips any section the project already has.
+- **Accounting.** Imported invoices, payments and costs count on the project (billed to date, cash, cost to date) but are **not posted to Accounting** unless you tick that box, since they're normally already in your books.
+- **Checked on a real job file** (239 quote lines, 98 tasks, 10 COs, 24 RFIs, 46 labor punches, a pay app): revised contract, budget cost, labor hours and the pay app's gross / retainage / net due all matched the workbook.
+- The .xlsx reader is built in (no add-on library); it reads the values Excel last calculated and knows which cells were formulas.
+
 ## A4Y Time Clock and cost codes
 
 The cost code list is the A4YE list (0110 Estimating & Takeoff … 9060 Overtime Premium, divisions 01–90). The time clock's `0810-L` is code `0810` here.
