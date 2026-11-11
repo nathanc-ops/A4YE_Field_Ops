@@ -981,6 +981,13 @@ const MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_appt_moves_at ON appointment_moves(at);`);
   },
+  // 32: imported invoices didn't mark their finished job invoiced, so paid jobs sat on "Ready to invoice"
+  db => {
+    db.exec(`UPDATE jobs SET status = 'invoiced' WHERE status = 'completed' AND id IN (
+      SELECT i.job_id FROM invoices i JOIN import_records r ON r.entity = 'invoice' AND r.entity_id = i.id
+      JOIN import_batches b ON b.id = r.batch_id AND b.undone_at IS NULL
+      WHERE i.job_id IS NOT NULL AND i.status NOT IN ('void', 'draft'))`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

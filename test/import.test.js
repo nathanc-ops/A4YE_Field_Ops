@@ -99,6 +99,20 @@ test('invoices: line rows group by number, payments recorded, kept off the books
   assert.equal(again.data.created_total, 0); assert.equal(again.data.skipped, 2);
 });
 
+test('imported invoices take finished jobs off "Ready to invoice"; undo puts them back', async () => {
+  const st = n => db.prepare('SELECT status FROM jobs WHERE number = ?').get(n).status;
+  const ready = async () => (await call('GET', '/dashboard')).data.to_invoice.map(j => j.number);
+  assert.equal(st('5001'), 'invoiced', 'paid invoice 9001 is on finished job 5001');
+  assert.equal(st('5002'), 'scheduled', 'an invoice does not finish a job that is not done');
+  await imp('jobs', 'Job #,Customer Name,Job Name,Status,Completed\n5003,Pat Lee,Dryer outlet,Completed,10/05/2026\n');
+  assert.equal(st('5003'), 'completed'); assert.ok((await ready()).includes('5003'));
+  const r = await imp('invoices', 'Invoice #,Job #,Invoice Date,Total,Amount Paid,Paid Date\n9003,5003,10/06/2026,300,300,10/07/2026\n');
+  assert.equal(st('5003'), 'invoiced'); assert.ok(!(await ready()).includes('5003'));
+  assert.ok(!(await ready()).includes('5001'));
+  await call('POST', `/import/batches/${r.data.batch_id}/undo`);
+  assert.equal(st('5003'), 'completed', 'with its only invoice undone, the job is ready to invoice again');
+});
+
 test('estimates with good/better/best options', async () => {
   const csv = 'Estimate #,Customer Name,Name,Status,Option,Item,Qty,Price\n' +
     'Q-1,Jordan Smith,EV charger,Sold,Good,Level 2 charger install,1,1200\nQ-1,Jordan Smith,EV charger,Sold,Better,Charger + load mgmt,1,1800\nQ-1,Jordan Smith,EV charger,Sold,Better,Surge protector,1,350\n';

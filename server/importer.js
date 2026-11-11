@@ -741,6 +741,8 @@ function importDocs(ctx, recs, kind) {
       if (!isVoid && !isDraft) {
         const after = C.invoiceWithTotals(db, get(db, 'SELECT * FROM invoices WHERE id = ?', id));
         run(db, 'UPDATE invoices SET status = ? WHERE id = ?', after.balance <= 0.004 ? 'paid' : after.paid > 0 ? 'partial' : 'sent', id);
+        // A finished job with a sent invoice has been billed: take it off "Ready to invoice"
+        if (job && job.status === 'completed') { run(db, "UPDATE jobs SET status = 'invoiced' WHERE id = ?", job.id); job.status = 'invoiced'; }
       }
       if (post) A.postInvoice(db, id);
     }
@@ -759,13 +761,13 @@ function undoBatch(db, id, { removeFile } = {}) {
   if (!b) throw err('Import not found', 404);
   if (b.undone_at) throw err('This import was already undone');
   const recs = all(db, 'SELECT * FROM import_records WHERE batch_id = ? ORDER BY id DESC', id);
-  const files = [];
+  const files = [], reopened = new Set();
   tx(db, () => {
     for (const r of recs) {
       const table = ENTITY_TABLE[r.entity];
       const row = get(db, `SELECT * FROM ${table} WHERE id = ?`, r.entity_id);
       if (!row) continue;
-      if (r.entity === 'invoice') { for (const p of all(db, 'SELECT id FROM payments WHERE invoice_id = ?', row.id)) A.unpost(db, 'payment', p.id); A.unpost(db, 'invoice', row.id); }
+      if (r.entity === 'invoice') { for (const p of all(db, 'SELECT id FROM payments WHERE invoice_id = ?', row.id)) A.unpost(db, 'payment', p.id); A.unpost(db, 'invoice', row.id); if (row.job_id) reopened.add(row.job_id); }
       if (r.entity === 'payment') A.unpost(db, 'payment', row.id);
       if (r.entity === 'journal_entry') { A.assertOpen(db, row.date); A.assertNotReconciled(db, row.id); }
       if (r.entity === 'job') { run(db, 'DELETE FROM appointments WHERE job_id = ?', row.id); }
@@ -776,6 +778,9 @@ function undoBatch(db, id, { removeFile } = {}) {
         throw e;
       }
     }
+    // jobs this import marked invoiced go back to "completed" once none of their invoices are left
+    for (const jid of reopened) run(db, `UPDATE jobs SET status = 'completed' WHERE id = ? AND status = 'invoiced'
+      AND NOT EXISTS (SELECT 1 FROM invoices WHERE job_id = ? AND status NOT IN ('void', 'draft'))`, jid, jid);
     run(db, "UPDATE import_batches SET undone_at = datetime('now') WHERE id = ?", id);
   });
   if (removeFile) for (const p of files) removeFile(p);
