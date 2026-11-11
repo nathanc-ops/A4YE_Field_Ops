@@ -141,7 +141,9 @@ The A4YE KPI Dashboard sheet, inside Field Ops, with the same people and rules.
 - **Rows:**
   - *Manual* and *auto* rows are typed in. The sheet's auto pulls from Housecall Pro, Ply and the time clock are not connected here.
   - *Calc* rows work out their formula, including from other pages (`B14/(B4/7)`, `N6*OT_RATE`).
-- **Status:** within the yellow band (25%) of target is *close*; past it is *off target*. Every off-target row needs a Cause and a Fix before the week can be submitted.
+- **Looks and works like the KPI Command Center web app:** Team overview tiles, a coloured bar, Team cards that filter the KPI list, and "click any KPI to see where its number came from". Each person has a page with Save draft / Submit week at the bottom.
+- **Status:** within the yellow band (25%) of target is yellow; past it is red. **Every yellow or red row needs a Cause and a Fix** before the week can be submitted. A number with no target isn't scored (target "not set").
+- **Auto numbers** (from the sheet's Snapshots and auto values) show a blue *auto* badge. *Replace this number* keeps the automatic one beside yours and asks why you replaced it.
 - **Scorecard:** shows who has reported, how many metrics are on, close or off target, headline numbers against the quarter's weekly average, the constraint (the section furthest from target), and every off-target row with its cause and fix.
 
 ## Phone notifications

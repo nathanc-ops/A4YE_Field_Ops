@@ -933,6 +933,10 @@ const MIGRATIONS = [
   Object.assign(function (db) {
     rebuildTable(db, 'users', sql => sql.replace(/CHECK \(role IN \('admin',\s*'office',\s*'tech'\)\)/, "CHECK (role IN ('admin','manager','office','tech'))"));
   }, { foreignKeysOff: true }),
+  // 29: KPIs like the Command Center web app — an auto number kept beside a typed replacement, and why it was replaced
+  db => {
+    for (const [c, d] of [['auto_value', 'REAL'], ['auto_at', 'TEXT'], ['auto_source', 'TEXT'], ['reason', 'TEXT']]) addColumn(db, 'kpi_values', c, d);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

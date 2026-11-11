@@ -8,8 +8,10 @@
 //  - Inputs: manual (typed), auto (the sheet pulled these from Housecall Pro / Ply / the time clock; here they are typed
 //    until Field Ops is the source), calc (a formula of other metric IDs, e.g. K6/K5, B14/(B4/7), N6*OT_RATE).
 //  - Status: Higher/Lower against the target. Within BAND (25%) of the target is yellow, beyond is red. Info metrics have
-//    no status; a metric with no target says "set target"; no number says "no data".
-//  - A red row needs a Cause and a Fix before the page can be submitted.
+//    no status; no number says "no data"; a number with no target set isn't scored (shown as info, target "not set").
+//  - A yellow or red row needs a Cause and a Fix before the page can be submitted (the Command Center web app's rule).
+//  - An auto number (pulled, or imported from the sheet) shows as "auto". Replacing it keeps the auto number beside the
+//    typed one and needs a reason.
 // Definitions, settings and history come in from the sheet (download it as .xlsx) — nothing about the company's metrics
 // or people is in this code.
 const D = require('./db');
@@ -128,10 +130,13 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     }
     return out;
   }
+  const NEEDS = st => st === 'red' || st === 'yellow';
+  const explained = n => !!(n && str(n.cause) && str(n.fix));
+  const updatedAt = () => (get(db, 'SELECT MAX(at) at FROM (SELECT MAX(at) at FROM kpi_values UNION ALL SELECT MAX(auto_at) FROM kpi_values UNION ALL SELECT MAX(at) FROM kpi_notes UNION ALL SELECT MAX(at) FROM kpi_submissions)') || {}).at || null;
   function status(m, v, c) {
     if (m.better === 'Info') return 'info';
-    if (m.target == null) return 'set_target';
     if (v == null) return 'no_data';
+    if (m.target == null) return 'info';
     const t = m.target;
     if (m.better === 'Higher') return v >= t ? 'green' : v >= t - Math.abs(t) * c.band ? 'yellow' : 'red';
     return v <= t ? 'green' : v <= t + Math.abs(t) * c.band ? 'yellow' : 'red';
@@ -171,11 +176,15 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
       let sec = sections.find(s => s.name === m.section); if (!sec) sections.push(sec = { name: m.section, metrics: [] });
       sec.metrics.push({ id: m.id, metric: m.metric, unit: m.unit, better: m.better, target: m.target, input: m.input, rule: m.rule, source: m.source, how: m.how, target_note: m.target_note,
         value: v.value, status: st, entered_by: v.row ? v.row.by_label : null, entered_at: v.row ? v.row.at : null,
-        note: n ? { cause: n.cause, fix: n.fix, by: n.by_label, at: n.at } : null, needs_note: st === 'red',
+        origin: v.row ? v.row.origin : null, auto_value: v.row ? v.row.auto_value : null, auto_source: v.row ? v.row.auto_source : null, reason: v.row ? v.row.reason : null,
+        note: n ? { cause: n.cause, fix: n.fix, by: n.by_label, at: n.at } : null, needs_note: NEEDS(st),
         trend: hist.map(w => ({ week: w, value: vals.get(w).get(m.id).value })) });
     }
+    const flat = sections.flatMap(x => x.metrics);
     res.json({ week, week_end: addDays(week, 6), due: dueOf(week, c), tz: c.tz, owner: { id: owner.id, name: owner.name, user_name: owner.user_name },
-      can_edit: canEdit(a, owner.id), report: reportState(week, owner.id, c), submissions: subsOf(week, owner.id), band: c.band, sections });
+      can_edit: canEdit(a, owner.id), report: reportState(week, owner.id, c), submissions: subsOf(week, owner.id), band: c.band, sections,
+      counts: { total: flat.length, with_number: flat.filter(x => x.value != null).length, need_note: flat.filter(x => x.needs_note && !explained(x.note)).length },
+      updated_at: updatedAt(), signed_in_as: req.user.email });
   }));
 
   // save (and optionally submit) a page: { values: {K1: 150, K2: null}, notes: {K2: {cause, fix}}, submit: true }
@@ -185,20 +194,37 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     if (!canEdit(a, owner.id)) throw bad('Only the page\'s owner (or someone allowed to fill in anyone\'s page) can enter these numbers', 403);
     const mine = new Map(all(db, 'SELECT * FROM kpi_metrics WHERE owner_id = ? AND active = 1', owner.id).map(m => [m.id, m]));
     const now = new Date().toISOString(), who = label(req.user), onBehalf = owner.user_id !== req.user.id;
-    let changed = 0;
+    let changed = 0; const whyMissing = [];
+    const by = onBehalf ? `${who} for ${owner.name}` : who;
     for (const [id, raw] of Object.entries(b.values || {})) {
       const m = mine.get(id); if (!m) throw bad(`${id} isn't on ${owner.name}'s page`);
       if (m.input === 'calc') continue;
       const v = raw === '' || raw == null ? null : Number(raw);
       if (v != null && !Number.isFinite(v)) throw bad(`${id} ${m.metric}: "${raw}" isn't a number`);
-      const cur = get(db, 'SELECT value FROM kpi_values WHERE week = ? AND metric_id = ?', week, id);
+      const cur = get(db, 'SELECT * FROM kpi_values WHERE week = ? AND metric_id = ?', week, id);
+      const reason = str((b.reasons || {})[id]).slice(0, 1000) || null;
+      if (cur && cur.auto_value != null) {
+        // an auto number: blank or the same number = keep the auto one; anything else replaces it and needs a reason
+        if (v == null || v === cur.auto_value) {
+          if (cur.origin !== 'auto' || cur.value !== cur.auto_value) {
+            run(db, "UPDATE kpi_values SET value = auto_value, origin = 'auto', reason = NULL, user_id = ?, by_label = ?, at = ? WHERE week = ? AND metric_id = ?", req.user.id, by, now, week, id); changed++;
+          }
+          continue;
+        }
+        const why = reason || (cur.origin === 'manual' && cur.value === v ? cur.reason : null);
+        if (!why) { whyMissing.push(`${id} ${m.metric}`); continue; }
+        if (cur.value === v && cur.reason === why && cur.origin === 'manual') continue;
+        run(db, "UPDATE kpi_values SET value = ?, origin = 'manual', reason = ?, user_id = ?, by_label = ?, at = ? WHERE week = ? AND metric_id = ?", v, why, req.user.id, by, now, week, id);
+        changed++; continue;
+      }
       if (v == null) { if (cur) { run(db, 'DELETE FROM kpi_values WHERE week = ? AND metric_id = ?', week, id); changed++; } continue; }
       if (cur && cur.value === v) continue;
       run(db, `INSERT INTO kpi_values (week, metric_id, value, origin, user_id, by_label, at) VALUES (?,?,?,?,?,?,?)
         ON CONFLICT(week, metric_id) DO UPDATE SET value = excluded.value, origin = excluded.origin, user_id = excluded.user_id, by_label = excluded.by_label, at = excluded.at`,
-        week, id, v, 'manual', req.user.id, onBehalf ? `${who} for ${owner.name}` : who, now);
+        week, id, v, 'manual', req.user.id, by, now);
       changed++;
     }
+    if (whyMissing.length) throw bad(`Say why you're replacing the automatic number for: ${whyMissing.join(', ')}`);
     const prev = latestNotes(week, [...mine.keys()]);
     for (const [id, n] of Object.entries(b.notes || {})) {
       if (!mine.has(id)) throw bad(`${id} isn't on ${owner.name}'s page`);
@@ -211,7 +237,7 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     let submitted = false, need = [];
     if (b.submit) {
       const all_ = metricsAll(), vals = valuesFor([week], all_, c).get(week), notes = latestNotes(week, [...mine.keys()]);
-      need = [...mine.values()].filter(m => status(m, vals.get(m.id).value, c) === 'red').filter(m => { const n = notes.get(m.id); return !(n && n.cause && n.fix); }).map(m => ({ id: m.id, metric: m.metric }));
+      need = [...mine.values()].filter(m => NEEDS(status(m, vals.get(m.id).value, c)) && !explained(notes.get(m.id))).map(m => ({ id: m.id, metric: m.metric }));
       if (!need.length) { run(db, 'INSERT OR IGNORE INTO kpi_submissions (week, owner_id, user_id, by_label, at) VALUES (?,?,?,?,?)', week, owner.id, req.user.id, who, now); submitted = true; }
     }
     res.json({ ok: true, changed, submitted, need_notes: need });
@@ -225,9 +251,10 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     const q = quarterOf(week), qWeeks = weeksBack(week, 14).filter(w => quarterOf(w) === q);
     const vals = valuesFor([...new Set([...qWeeks, week])], metrics, c), now = vals.get(week);
     const notes = latestNotes(week, metrics.map(m => m.id));
-    const health = { green: 0, yellow: 0, red: 0, no_data: 0, set_target: 0 };
-    const rows = metrics.map(m => { const v = now.get(m.id).value, st = status(m, v, c); if (st in health) health[st]++; return { m, v, st }; });
-    const owners = all(db, 'SELECT o.id, o.name, u.name user_name FROM kpi_owners o LEFT JOIN users u ON u.id = o.user_id ORDER BY o.sort, o.name');
+    const health = { green: 0, yellow: 0, red: 0, no_data: 0, info: 0 };
+    const rows = metrics.map(m => { const x = now.get(m.id), st = status(m, x.value, c); health[st]++; return { m, v: x.value, row: x.row, st, note: notes.get(m.id) || null }; });
+    const owners = all(db, 'SELECT o.id, o.name, o.user_id, u.name user_name, u.color FROM kpi_owners o LEFT JOIN users u ON u.id = o.user_id ORDER BY o.sort, o.name');
+    const unexplained = r => NEEDS(r.st) && !explained(r.note);
     const qAvg = id => { const xs = qWeeks.map(w => vals.get(w).get(id).value).filter(v => v != null); return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null; };
     const pub = r => ({ id: r.m.id, metric: r.m.metric, owner: r.m.owner, unit: r.m.unit, better: r.m.better, target: r.m.target, value: r.v, status: r.st });
     const headlines = c.headlines.map(id => rows.find(r => r.m.id === id)).filter(Boolean).map(r => ({ ...pub(r), qtr_avg: qAvg(r.m.id) }));
@@ -239,9 +266,21 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
       secs.get(k)[r.st]++;
     }
     const sections = [...secs.values()].map(s => ({ ...s, score: (s.green + s.yellow / 2) / (s.green + s.yellow + s.red) })).sort((x, y) => x.score - y.score);
-    res.json({ week, week_end: addDays(week, 6), due: dueOf(week, c), quarter: q, quarter_weeks: qWeeks.length, health,
-      reports: owners.map(o => ({ ...o, ...reportState(week, o.id, c) })), headlines, constraint: sections[0] || null, sections,
-      red: rows.filter(r => r.st === 'red').map(r => ({ ...pub(r), note: notes.get(r.m.id) ? { cause: notes.get(r.m.id).cause, fix: notes.get(r.m.id).fix } : null })) });
+    const reports = owners.map(o => {
+      const mine = rows.filter(r => r.m.owner_id === o.id), cnt = st => mine.filter(r => r.st === st).length;
+      return { ...o, ...reportState(week, o.id, c), green: cnt('green'), yellow: cnt('yellow'), red: cnt('red'), no_data: cnt('no_data'), info: cnt('info'),
+        total: mine.length, with_number: mine.filter(r => r.v != null).length, need_note: mine.filter(unexplained).length };
+    });
+    const scored = health.green + health.yellow + health.red;
+    res.json({ week, week_end: addDays(week, 6), due: dueOf(week, c), quarter: q, quarter_weeks: qWeeks.length, health, updated_at: updatedAt(), band: c.band,
+      on_target_pct: scored ? Math.round(health.green / scored * 100) : null, scored,
+      submitted: reports.filter(r => r.state === 'in' || r.state === 'late').length, waiting_on: reports.filter(r => !(r.state === 'in' || r.state === 'late')).map(r => r.name),
+      need_note: rows.filter(unexplained).length,
+      kpis: rows.map(r => ({ ...pub(r), owner_id: r.m.owner_id, section: r.m.section, input: r.m.input, rule: r.m.rule, source: r.m.source, how: r.m.how, target_note: r.m.target_note,
+        origin: r.row ? r.row.origin : null, entered_by: r.row ? r.row.by_label : null, entered_at: r.row ? r.row.at : null, auto_value: r.row ? r.row.auto_value : null,
+        auto_source: r.row ? r.row.auto_source : null, reason: r.row ? r.row.reason : null, note: r.note ? { cause: r.note.cause, fix: r.note.fix, by: r.note.by_label } : null, needs_note: unexplained(r) })),
+      reports, headlines, constraint: sections[0] || null, sections,
+      red: rows.filter(r => r.st === 'red').map(r => ({ ...pub(r), note: r.note ? { cause: r.note.cause, fix: r.note.fix } : null })) });
   }));
 
   // ---------------------------------------------------------------- set-up: metrics, targets, owners, settings
@@ -289,7 +328,8 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   }));
 
   // ---------------------------------------------------------------- import the KPI Dashboard workbook (File → Download → .xlsx)
-  // Reads Metrics, Settings, Values, Notes, Submissions. Never reads the HCP_*, Ply_*, Clock_* data tabs.
+  // Reads Metrics, Settings, Values, Notes, Submissions and the numbers in Snapshots. Never reads the HCP_*, Ply_*, Clock_*
+  // data tabs, or the Snapshots Detail column.
   function readWorkbook(b) {
     if (!b || !b.file) throw bad('Choose the KPI Dashboard workbook (.xlsx)');
     const buf = Buffer.from(String(b.file).replace(/^data:[^,]*,/, ''), 'base64');
@@ -308,7 +348,9 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
       }
       return out;
     };
-    return { metrics: table('Metrics'), settings: table('Settings'), values: table('Values'), notes: table('Notes'), submissions: table('Submissions') };
+    // Snapshots: only week, ID, number, when and source — its Detail column (customer lines) is never read
+    const snaps = table('Snapshots').map(r => ({ Week: r.Week, ID: r.ID, Value: r.Value, 'Taken at': r['Taken at'], Source: r.Source }));
+    return { metrics: table('Metrics'), settings: table('Settings'), values: table('Values'), notes: table('Notes'), submissions: table('Submissions'), snapshots: snaps };
   }
   const emailsIn = v => str(v).toLowerCase().split(/[\s,;]+/).filter(e => e.includes('@'));
   function plan(t) {
@@ -374,12 +416,24 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     const wk = v => { const d = X.dateOf(v); return d && isSunday(d) ? d : null; };
     const known = new Set(all(db, 'SELECT id FROM kpi_metrics').map(r => r.id));
     let nv = 0, nn = 0, ns = 0;
+    // automatic numbers (Snapshots, and Values rows marked auto): kept as the auto number; a typed number stays in front
+    const autoRows = [...t.snapshots.map(r => ({ ...r, at: r['Taken at'] })), ...t.values.filter(r => str(r.Origin).toLowerCase() === 'auto').map(r => ({ ...r, at: r['Entered at'] }))];
+    for (const r of autoRows) {
+      const w = wk(r.Week), id = str(r.ID), v = num(r.Value); if (!w || !known.has(id) || v == null) continue;
+      const at = when(r.at), src = str(r.Source) || 'KPI sheet';
+      const x = run(db, `INSERT INTO kpi_values (week, metric_id, value, origin, by_label, at, auto_value, auto_at, auto_source) VALUES (?,?,?,'auto',?,?,?,?,?)
+        ON CONFLICT(week, metric_id) DO UPDATE SET auto_value = excluded.auto_value, auto_at = excluded.auto_at, auto_source = excluded.auto_source,
+          value = CASE WHEN kpi_values.origin = 'auto' THEN excluded.auto_value ELSE kpi_values.value END
+        WHERE kpi_values.auto_at IS NULL OR excluded.auto_at > kpi_values.auto_at`, w, id, v, src, at, v, at, src);
+      nv += Number(x.changes);
+    }
     for (const r of t.values) {
+      if (str(r.Origin).toLowerCase() === 'auto') continue;
       const w = wk(r.Week), id = str(r.ID), v = num(r.Value); if (!w || !known.has(id) || v == null) continue;
       const at = when(r['Entered at']);
-      const x = run(db, `INSERT INTO kpi_values (week, metric_id, value, origin, user_id, by_label, at) VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(week, metric_id) DO UPDATE SET value = excluded.value, origin = excluded.origin, user_id = excluded.user_id, by_label = excluded.by_label, at = excluded.at
-        WHERE excluded.at > kpi_values.at`, w, id, v, str(r.Origin) || 'manual', userId(r['Entered by']), str(r['Entered by']) || 'KPI sheet', at);
+      const x = run(db, `INSERT INTO kpi_values (week, metric_id, value, origin, user_id, by_label, at, reason) VALUES (?,?,?,'manual',?,?,?,?)
+        ON CONFLICT(week, metric_id) DO UPDATE SET value = excluded.value, origin = 'manual', user_id = excluded.user_id, by_label = excluded.by_label, at = excluded.at, reason = excluded.reason
+        WHERE kpi_values.origin = 'auto' OR excluded.at > kpi_values.at`, w, id, v, userId(r['Entered by']), str(r['Entered by']) || 'KPI sheet', at, str(r.Reason) || null);
       nv += Number(x.changes);
     }
     for (const r of t.notes) {

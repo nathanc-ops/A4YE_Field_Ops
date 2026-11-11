@@ -1,122 +1,181 @@
 'use strict';
-// 🎯 KPIs: each owner's weekly page, the company scorecard, set-up and the import from the KPI Dashboard workbook.
+// 🎯 KPIs — laid out like the KPI Command Center web app: Team overview + one page per person, a week picker, auto numbers
+// that can be replaced with a reason, cause/fix on every yellow or red row, Save draft / Submit week in a bar at the bottom.
 // Who sees what is decided by the server (server/kpi.js); this only draws what it is given.
 
-const KPI_STATE = { in: ['Submitted', 'good'], late: ['Submitted late', 'warn'], missing: ['Missing', 'bad'], open: ['Not submitted yet', ''] };
-const KPI_STATUS = { green: 'On target', yellow: 'Close', red: 'Off target', no_data: 'No data', set_target: 'Set target', info: '' };
+const KPI_STATE = { in: ['Submitted', 'good'], late: ['Submitted late', 'warn'], missing: ['Not submitted', 'bad'], open: ['Not submitted yet', ''] };
+const KPI_LABEL = { green: 'Green', yellow: 'Yellow', red: 'Red', no_data: 'No data', info: 'Info' };
+const KPI_COLORS = ['#dc2626', '#7c3aed', '#2a7fa8', '#c2541a', '#3f8f4f', '#b45309', '#0e7490', '#be185d'];
+const kpiColor = (o, i) => (o && o.color && o.color !== '#2563eb' ? o.color : KPI_COLORS[(i ?? 0) % KPI_COLORS.length]);
+const kpiAvatar = (name, color, size = '') => `<span class="kpi-av ${size}" style="background:${esc(color)}">${esc(String(name || '?').trim()[0] || '?').toUpperCase()}</span>`;
 const kpiPct = u => u === '%';
 function kpiFmt(v, unit) {
   if (v == null || v === '') return '—';
-  if (unit === '%') return `${(v * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0)}%`;
-  if (unit === '$') return (Math.abs(v) >= 1000 ? money0(v) : money(v));
-  return String(Math.round(v * 100) / 100);
+  if (unit === '%') return `${(Math.round(v * 1000) / 10).toLocaleString('en-US')}%`;
+  if (unit === '$') return '$' + Math.round(v).toLocaleString('en-US');
+  const n = (Math.round(v * 10) / 10).toLocaleString('en-US');
+  return unit === 'hrs' ? `${n} h` : unit === 'days' ? `${n} d` : n;
 }
+const kpiTarget = m => m.better === 'Info' ? '—' : m.target == null ? 'not set' : `${m.better === 'Higher' ? '≥' : '≤'} ${kpiFmt(m.target, m.unit)}`;
 const kpiIn = (v, unit) => v == null ? '' : String(kpiPct(unit) ? Math.round(v * 10000) / 100 : Math.round(v * 10000) / 10000);
 const kpiOut = (s, unit) => { const t = String(s ?? '').replace(/[$,%\s]/g, ''); if (t === '') return null; const n = Number(t); return Number.isFinite(n) ? (kpiPct(unit) ? n / 100 : n) : NaN; };
-const kpiDay = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-const kpiWeekLabel = w => { const e = new Date(w + 'T12:00:00Z'); e.setUTCDate(e.getUTCDate() + 6); return `${kpiDay(w)} – ${kpiDay(e.toISOString().slice(0, 10))}`; };
-const kpiDue = s => { const [d, t] = s.split(' '); const x = new Date(`${d}T${t}:00Z`); return `${x.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })}, ${x.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`; };
-const kpiStatus = st => st && st !== 'info' ? `<span class="kpi-st kpi-${st}">${esc(KPI_STATUS[st])}</span>` : '';
-function kpiSpark(trend, m) {
-  const xs = trend.map(t => t.value); const ys = xs.filter(v => v != null); if (ys.length < 2) return '';
-  const lo = Math.min(...ys, m.target ?? Infinity), hi = Math.max(...ys, m.target ?? -Infinity), w = 84, h = 22, sx = i => 2 + i * (w - 4) / (xs.length - 1), sy = v => hi === lo ? h / 2 : h - 3 - (v - lo) / (hi - lo) * (h - 6);
-  const pts = xs.map((v, i) => v == null ? null : `${sx(i).toFixed(1)},${sy(v).toFixed(1)}`).filter(Boolean).join(' ');
-  const tgt = m.target != null && m.better !== 'Info' ? `<line x1="0" x2="${w}" y1="${sy(m.target).toFixed(1)}" y2="${sy(m.target).toFixed(1)}" class="kpi-tline"/>` : '';
-  return `<svg class="kpi-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Last ${xs.length} weeks: ${xs.map(v => kpiFmt(v, m.unit)).join(', ')}">${tgt}<polyline points="${pts}"/></svg>`;
+const kpiMD = d => { const x = new Date(d + 'T12:00:00Z'); return `${x.getUTCMonth() + 1}/${x.getUTCDate()}`; };
+const kpiWeekLabel = w => { const e = new Date(w + 'T12:00:00Z'); e.setUTCDate(e.getUTCDate() + 6); return `${kpiMD(w)}–${kpiMD(e.toISOString().slice(0, 10))}/${String(e.getUTCFullYear()).slice(2)}`; };
+const kpiDue = s => { const [d, t] = s.split(' '); const x = new Date(`${d}T${t}:00Z`); return `${x.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric', timeZone: 'UTC' })} ${x.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })}`; };
+const kpiStamp = s => s ? new Date(normDT(s)).toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit', hour: 'numeric', minute: '2-digit' }) : '';
+const kpiPill = st => `<span class="kpi-pill kpi-p-${st}">${esc(KPI_LABEL[st] || st)}</span>`;
+function kpiRing(part, whole, color) {
+  const p = whole ? Math.max(0, Math.min(1, part / whole)) : 0, r = 30, c = 2 * Math.PI * r;
+  return `<svg class="kpi-ring" viewBox="0 0 76 76" aria-hidden="true"><circle cx="38" cy="38" r="${r}" class="kpi-ring-bg"/><circle cx="38" cy="38" r="${r}" stroke="${color}" stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 38 38)"/></svg>`;
 }
 
 async function viewKpi() {
   const q = new URLSearchParams((location.hash.split('?')[1]) || '');
   const me = await GET('/kpi/me');
   const tabs = [];
-  if (me.view_all || me.edit_all) tabs.push(['dash', 'Scorecard']);
-  for (const o of me.owners) tabs.push([`o${o.id}`, `${o.name}${me.owners.length > 1 && o.user_id === S.user.id ? ' (you)' : ''}`]);
-  if (me.edit_all) tabs.push(['setup', 'Targets & set-up']);
-  if (me.admin) tabs.push(['import', 'Import from sheet']);
+  if (me.view_all || me.edit_all) tabs.push({ k: 'dash', html: 'Team overview' });
+  me.owners.forEach((o, i) => tabs.push({ k: `o${o.id}`, html: `${kpiAvatar(o.name, kpiColor(o, i), 'sm')} ${esc(o.name)}` }));
+  if (me.edit_all) tabs.push({ k: 'setup', html: 'Targets & set-up', minor: true });
+  if (me.admin) tabs.push({ k: 'import', html: 'Import', minor: true });
   if (!tabs.length) { $('#view').innerHTML = setTop('KPIs') + '<div class="card"><p>You have no KPI page. An admin links each KPI owner to a person under KPIs → Targets & set-up.</p></div>'; return; }
-  const mineFirst = me.owners.find(o => o.user_id === S.user.id);
-  // your own page first; people without one start on the scorecard
-  let tab = q.get('tab') || (mineFirst ? `o${mineFirst.id}` : tabs[0][0]);
-  if (!tabs.some(t => t[0] === tab)) tab = tabs[0][0];
+  const mine = me.owners.find(o => o.user_id === S.user.id);
+  let tab = q.get('tab') || (mine ? `o${mine.id}` : tabs[0].k);
+  if (!tabs.some(t => t.k === tab)) tab = tabs[0].k;
   const week = me.weeks.includes(q.get('week')) ? q.get('week') : me.week;
-  const go_ = (t, w = week) => { location.hash = `#/kpi?tab=${t}&week=${w}`; };
-  $('#view').innerHTML = setTop('KPIs', ['dash'].includes(tab) || tab.startsWith('o') ? `<label class="small muted" style="display:flex;gap:6px;align-items:center">Week
-      <select id="kwk">${me.weeks.map(w => `<option value="${w}" ${w === week ? 'selected' : ''}>${kpiWeekLabel(w)}${w === me.week ? ' (last week)' : ''}</option>`).join('')}</select></label>` : '')
-    + `<div class="tabs">${tabs.map(([k, l]) => `<button data-kt="${k}" class="${k === tab ? 'on' : ''}">${esc(l)}</button>`).join('')}</div><div id="kbody"><div class="muted small">Loading…</div></div>`;
+  const go_ = (t, w = week, extra = '') => { location.hash = `#/kpi?tab=${t}&week=${w}${extra}`; };
+  const logo = S.settings.logo_url || '/brand/a4y-logo.png';
+  const weekly = tab === 'dash' || tab.startsWith('o');
+  $('#view').innerHTML = `<div class="kpi-top">
+      <div class="row spread" style="align-items:center;gap:10px"><div class="row" style="gap:10px;align-items:center"><button class="btn menu-btn" onclick="document.getElementById('side').classList.toggle('open')">☰</button>
+        <div><h1 class="kpi-title">KPI <span>Command</span> Center</h1><div class="small muted">Powered by people. Built all 4 you</div></div></div>
+        <img class="kpi-logo" src="${esc(logo)}" alt="${esc(S.settings.company_name || '')}"></div>
+      <div class="kpi-tabs">${tabs.map(t => `<button data-kt="${t.k}" class="${t.k === tab ? 'on' : ''} ${t.minor ? 'minor' : ''}">${t.html}</button>`).join('')}</div>
+      ${weekly ? `<div class="row spread" style="gap:10px;flex-wrap:wrap;align-items:center"><label class="kpi-week">Week <select id="kwk">${me.weeks.map(w => `<option value="${w}" ${w === week ? 'selected' : ''}>${kpiWeekLabel(w)}</option>`).join('')}</select></label>
+        <span class="small muted" id="kupd"></span></div>` : ''}</div>
+    <div id="kbody"><div class="muted small" style="padding:16px">Loading…</div></div>`;
   $$('[data-kt]').forEach(b => b.onclick = () => go_(b.dataset.kt));
   if ($('#kwk')) $('#kwk').onchange = e => go_(tab, e.target.value);
   const el = $('#kbody');
-  if (tab === 'dash') return kpiDashboard(el, week, me);
+  const updated = at => { if ($('#kupd') && at) $('#kupd').innerHTML = `<span class="kpi-dot"></span> Updated ${esc(kpiStamp(at))}`; };
+  if (tab === 'dash') return kpiDashboard(el, week, me, updated, q.get('who'));
   if (tab === 'setup') return kpiSetup(el);
   if (tab === 'import') return kpiImport(el);
-  return kpiPage(el, Number(tab.slice(1)), week);
+  const idx = me.owners.findIndex(o => `o${o.id}` === tab);
+  return kpiPage(el, Number(tab.slice(1)), week, kpiColor(me.owners[idx], idx), updated);
 }
 
-async function kpiPage(el, ownerId, week) {
+// one person's KPIs for a week
+async function kpiPage(el, ownerId, week, color, updated) {
   const p = await GET(`/kpi/page?owner=${ownerId}&week=${week}`);
-  const st = KPI_STATE[p.report.state];
-  el.innerHTML = `<div class="card"><div class="row spread" style="flex-wrap:wrap;gap:8px">
-      <div><h2 style="margin:0">${esc(p.owner.name)} · ${kpiWeekLabel(p.week)}</h2>
-        <div class="small muted">Due ${kpiDue(p.due)}${p.owner.user_name ? ` · filled in by ${esc(p.owner.user_name)}` : ' · <b>no person linked to this page yet</b>'}</div></div>
-      <div><span class="pill ${st[1]}">${st[0]}</span>${p.report.at ? ` <span class="small muted">${fmtDT(p.report.at)}${p.report.by ? ` by ${esc(p.report.by)}` : ''}</span>` : ''}</div></div>
-    ${p.can_edit ? `<p class="small muted" style="margin:8px 0 0">Type numbers in the white boxes; gray rows calculate. A row that's <b>off target</b> needs a cause and a fix before you can submit. Percent boxes take a percent (6 = 6%).</p>` : '<p class="small muted">View only.</p>'}</div>
-    <form id="kpf">${p.sections.map(s => `<div class="card" style="margin-top:12px"><h3>${esc(s.name)}</h3><div class="table-wrap"><table class="kpi-t">
-      <thead><tr><th>#</th><th>Metric</th><th class="num">Target</th><th class="num">This week</th><th>Status</th><th>Last ${s.metrics[0] ? s.metrics[0].trend.length : ''} weeks</th></tr></thead><tbody>
-      ${s.metrics.map(m => `<tr data-row="${m.id}" class="${m.input === 'calc' ? 'kpi-calc' : ''}">
-        <td class="small muted">${esc(m.id)}</td>
-        <td><b>${esc(m.metric)}</b><div class="small muted">${esc(m.how || '')}${m.input === 'calc' ? ` · ${esc(m.rule || '')}` : m.source ? ` · <span title="${esc(m.source)}">${esc(m.source.length > 70 ? m.source.slice(0, 70) + '…' : m.source)}</span>` : ''}</div>
-          ${m.target_note ? `<div class="small" style="color:var(--warn,#b45309)">${esc(m.target_note)}</div>` : ''}</td>
-        <td class="num small">${m.better === 'Info' ? '<span class="muted">info</span>' : m.target == null ? '—' : `${m.better === 'Higher' ? '≥' : '≤'} ${kpiFmt(m.target, m.unit)}`}</td>
-        <td class="num">${m.input === 'calc' || !p.can_edit ? `<b>${kpiFmt(m.value, m.unit)}</b>` : `<input class="kpi-in" name="v_${m.id}" inputmode="decimal" value="${esc(kpiIn(m.value, m.unit))}" data-unit="${esc(m.unit)}" aria-label="${esc(m.metric)}">${m.unit === '%' ? ' %' : ''}`}
-          ${m.entered_by && m.input !== 'calc' ? `<div class="small muted" title="${esc(m.entered_by)}">${fmtDT(m.entered_at)}</div>` : ''}</td>
-        <td>${kpiStatus(m.status)}</td><td>${kpiSpark(m.trend, m)}</td></tr>
-        ${m.status === 'red' || m.note ? `<tr class="kpi-note ${m.status === 'red' ? 'need' : ''}" data-note="${m.id}"><td></td><td colspan="5"><div class="kpi-cf">
-          ${p.can_edit ? `<label>Cause<textarea name="c_${m.id}" rows="2" placeholder="Why it missed">${esc(m.note ? m.note.cause : '')}</textarea></label><label>Fix<textarea name="f_${m.id}" rows="2" placeholder="What we'll do about it">${esc(m.note ? m.note.fix : '')}</textarea></label>`
-            : `<div><b>Cause:</b> ${esc(m.note ? m.note.cause : '—')}</div><div><b>Fix:</b> ${esc(m.note ? m.note.fix : '—')}</div>`}</div></td></tr>` : ''}`).join('')}
-      </tbody></table></div></div>`).join('')}
-    ${p.can_edit ? `<div class="row" style="margin:14px 0;gap:8px"><button type="button" class="btn" id="ksave">Save</button><button class="btn primary" id="ksub">Submit week</button></div>` : ''}</form>`;
-  if (!p.can_edit) return;
+  updated(p.updated_at);
+  const C = p.counts, edit = p.can_edit, rep = p.report;
+  const sub = rep.state === 'in' || rep.state === 'late'
+    ? `<div class="kpi-ok">Submitted ${esc(kpiStamp(rep.at))}${rep.state === 'late' ? ' (late)' : ''}.${edit ? ' You can still correct numbers and submit again.' : ''}</div>`
+    : rep.state === 'missing' ? '<div class="kpi-bad">Not submitted — past due.</div>' : '';
+  const row = m => {
+    const auto = m.origin === 'auto' && m.auto_value != null, replaced = m.origin === 'manual' && m.auto_value != null;
+    const val = m.input === 'calc' || !edit
+      ? `<b class="kpi-num">${kpiFmt(m.value, m.unit)}</b>${auto ? ' <span class="kpi-auto">auto</span>' : ''}${m.input === 'calc' ? `<div class="kpi-rule">${esc(m.rule || '')}</div>` : ''}`
+      : auto ? `<b class="kpi-num">${kpiFmt(m.value, m.unit)}</b> <span class="kpi-auto">auto</span><div><a href="#" class="kpi-repl" data-repl="${m.id}">replace this number</a></div>
+          <div class="kpi-replbox" data-rb="${m.id}" hidden><input class="kpi-in" name="v_${m.id}" data-unit="${esc(m.unit)}" data-auto="${m.auto_value}" inputmode="decimal" value="${esc(kpiIn(m.value, m.unit))}" aria-label="${esc(m.metric)}" disabled>
+          <label class="kpi-why">Why replace ${esc(m.auto_source || m.source || 'the automatic number')}?<input name="r_${m.id}" placeholder="What the automatic number got wrong"></label></div>`
+      : `<input class="kpi-in" name="v_${m.id}" data-unit="${esc(m.unit)}" inputmode="decimal" value="${esc(kpiIn(m.value, m.unit))}" aria-label="${esc(m.metric)}">${m.unit === '%' ? '<span class="small muted"> %</span>' : ''}
+          ${replaced ? `<div class="small muted">auto was ${kpiFmt(m.auto_value, m.unit)}</div><label class="kpi-why">Why replace ${esc(m.auto_source || m.source || 'the automatic number')}?<input name="r_${m.id}" value="${esc(m.reason || '')}"></label>` : ''}`;
+    const needs = m.status === 'red' || m.status === 'yellow';
+    const cf = (needs || (m.note && (m.note.cause || m.note.fix))) ? `<div class="kpi-cf">${edit
+      ? `<label>Cause (why it's off target)<textarea name="c_${m.id}" rows="2" class="${needs && !(m.note && m.note.cause) ? 'empty' : ''}">${esc(m.note ? m.note.cause : '')}</textarea></label>
+         <label>Fix (what you'll do, by when)<textarea name="f_${m.id}" rows="2" class="${needs && !(m.note && m.note.fix) ? 'empty' : ''}">${esc(m.note ? m.note.fix : '')}</textarea></label>`
+      : `<div><b>Cause:</b> ${esc(m.note ? m.note.cause : '—')}</div><div><b>Fix:</b> ${esc(m.note ? m.note.fix : '—')}</div>`}</div>` : '';
+    return `<div class="kpi-row kpi-s-${m.status}" data-row="${m.id}">
+      <div class="kpi-k"><div><span class="kpi-id">${esc(m.id)}</span> <span class="kpi-name">${esc(m.metric)}</span></div>
+        <div class="kpi-src">${esc(m.input === 'calc' ? (m.source || 'Calculated') : (m.source || m.how || ''))}</div>
+        ${m.target_note ? `<div class="kpi-tnote">${esc(m.target_note)}</div>` : ''}${cf}</div>
+      <div class="kpi-v">${val}</div><div class="kpi-t">${esc(kpiTarget(m))}</div><div class="kpi-st">${kpiPill(m.status)}</div></div>`;
+  };
+  el.innerHTML = `<div class="kpi-wrap"><div class="card kpi-head"><div class="row" style="gap:14px;align-items:center;flex:1;min-width:240px">${kpiAvatar(p.owner.name, color, 'lg')}
+        <div><h2 class="kpi-h2">${esc(p.owner.name)}'s KPIs</h2><div class="small muted">Week of <b>${kpiWeekLabel(p.week)}</b> (Sun–Sat) · due ${esc(kpiDue(p.due))}</div>${sub}</div></div>
+      <div class="row" style="gap:10px;align-items:center">${kpiRing(C.with_number, C.total, C.need_note ? '#e5484d' : '#3fb950')}
+        <div><div class="kpi-big">${C.with_number} / ${C.total}</div><div class="small ${C.need_note ? 'kpi-bad' : 'muted'}">${C.need_note ? `${C.need_note} still need a cause and fix` : 'KPIs with a number'}</div></div></div></div>
+    <div class="kpi-banner">Blue <span class="kpi-auto">auto</span> numbers fill themselves; type the rest. Anything yellow or red needs a cause and a fix before you can submit.</div>
+    <form id="kpf"><div class="card kpi-table"><div class="kpi-thead"><div>KPI</div><div>This week</div><div>Target</div><div>Status</div></div>
+      ${p.sections.map(s => `<div class="kpi-sec">${esc(s.name)}</div>${s.metrics.map(row).join('')}`).join('')}</div></form>
+    ${edit ? `<div class="kpi-bar"><span class="small muted">Signed in as ${esc(p.signed_in_as || '')}</span><span class="row" style="gap:8px"><button type="button" class="btn" id="ksave">Save draft</button><button type="button" class="btn primary" id="ksub">Submit week</button></span></div>` : ''}</div>`;
+  if (!edit) return;
   const f = $('#kpf');
+  $$('[data-repl]', f).forEach(a => a.onclick = e => { e.preventDefault(); const box = $(`[data-rb="${a.dataset.repl}"]`, f); box.hidden = false; $('input', box).disabled = false; $('input', box).focus(); a.parentElement.hidden = true; });
+  $$('textarea', f).forEach(t => t.oninput = () => t.classList.toggle('empty', !t.value.trim() && t.closest('.kpi-s-red, .kpi-s-yellow')));
   const collect = () => {
-    const values = {}, notes = {};
-    for (const i of $$('.kpi-in', f)) { const v = kpiOut(i.value, i.dataset.unit); if (Number.isNaN(v)) throw new Error(`"${i.value}" isn't a number`); values[i.name.slice(2)] = v; }
+    const values = {}, notes = {}, reasons = {};
+    for (const i of $$('.kpi-in', f)) { if (i.disabled) continue; const v = kpiOut(i.value, i.dataset.unit); if (Number.isNaN(v)) throw new Error(`"${i.value}" isn't a number`); values[i.name.slice(2)] = v; }
+    for (const i of $$('input[name^="r_"]', f)) if (i.value.trim()) reasons[i.name.slice(2)] = i.value.trim();
     for (const t of $$('textarea[name^="c_"]', f)) { const id = t.name.slice(2); notes[id] = { cause: t.value, fix: f[`f_${id}`].value }; }
-    return { owner: ownerId, week, values, notes };
+    return { owner: ownerId, week, values, notes, reasons };
   };
   const save = async submit => {
     let body; try { body = collect(); } catch (e) { return toast(e.message, true); }
     try {
       const r = await PUT('/kpi/page', { ...body, submit });
       if (submit && !r.submitted) {
-        await kpiPage(el, ownerId, week);
+        await kpiPage(el, ownerId, week, color, updated);
         toast(`Saved. Before submitting, add a cause and a fix for: ${r.need_notes.map(n => `${n.id} ${n.metric}`).join(', ')}`, true);
-        const first = $(`[data-note="${r.need_notes[0].id}"] textarea`); if (first) first.focus();
+        const first = $(`[data-row="${r.need_notes[0].id}"] textarea`); if (first) { first.scrollIntoView({ block: 'center' }); first.focus(); }
         return;
       }
-      toast(submit ? 'Week submitted' : 'Saved'); kpiPage(el, ownerId, week);
+      toast(submit ? 'Week submitted' : 'Draft saved'); kpiPage(el, ownerId, week, color, updated);
     } catch (e) { toast(e.message, true); }
   };
   $('#ksave').onclick = () => save(false);
-  f.onsubmit = e => { e.preventDefault(); save(true); };
+  $('#ksub').onclick = () => save(true);
 }
 
-async function kpiDashboard(el, week) {
+// Team overview: how the week is going, who's in, and every KPI (filter by person; click one to see where it came from)
+async function kpiDashboard(el, week, me, updated, who) {
   const d = await GET(`/kpi/dashboard?week=${week}`);
-  const H = d.health;
-  el.innerHTML = `<div class="card"><h2 style="margin-top:0">Reports in · ${kpiWeekLabel(d.week)} <span class="small muted">due ${kpiDue(d.due)}</span></h2>
-      <div class="row" style="flex-wrap:wrap;gap:8px">${d.reports.map(r => `<a class="kpi-chip ${r.state}" href="#/kpi?tab=o${r.id}&week=${d.week}">${esc(r.name)}<span>${KPI_STATE[r.state][0]}</span></a>`).join('')}</div>
-      <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:12px">${[['green', H.green], ['yellow', H.yellow], ['red', H.red], ['no_data', H.no_data], ['set_target', H.set_target]].map(([k, n]) => `<div class="kpi-count kpi-${k}"><b>${n}</b>${KPI_STATUS[k]}</div>`).join('')}</div></div>
-    ${d.headlines.length ? `<div class="kpi-heads">${d.headlines.map(h => `<div class="card kpi-head kpi-b-${h.status}"><div class="small muted">${esc(h.metric)} · ${esc(h.owner)}</div>
-      <div class="kpi-big">${kpiFmt(h.value, h.unit)}</div><div class="small">${kpiStatus(h.status)} ${h.target != null && h.better !== 'Info' ? `target ${h.better === 'Higher' ? '≥' : '≤'} ${kpiFmt(h.target, h.unit)}` : ''}</div>
-      <div class="small muted">vs ${d.quarter.slice(4)} weekly avg: ${kpiFmt(h.qtr_avg, h.unit)}</div></div>`).join('')}</div>` : ''}
-    ${d.constraint ? `<div class="card" style="margin-top:12px"><h3 style="margin-top:0">The constraint</h3><p>Furthest from target: <b>${esc(d.constraint.owner)} · ${esc(d.constraint.section)}</b> —
-      ${d.constraint.red} off target, ${d.constraint.yellow} close, ${d.constraint.green} on target. It gets the most meeting time.</p></div>` : ''}
-    <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Off target this week (${d.red.length})</h3>${table([{ label: 'Metric', html: r => `<b>${esc(r.metric)}</b><div class="small muted">${esc(r.id)} · ${esc(r.owner)}</div>` },
-      { label: 'Value', num: true, get: r => kpiFmt(r.value, r.unit) }, { label: 'Target', num: true, get: r => `${r.better === 'Higher' ? '≥' : '≤'} ${kpiFmt(r.target, r.unit)}` },
-      { label: 'Cause / fix', html: r => r.note ? `${esc(r.note.cause)}<div class="small muted">→ ${esc(r.note.fix)}</div>` : '<span class="small" style="color:var(--bad)">none given</span>' }], d.red, { empty: 'Nothing off target' })}</div>
-    <div class="card" style="margin-top:12px"><h3 style="margin-top:0">By section</h3>${table([{ label: 'Owner', key: 'owner' }, { label: 'Section', key: 'section' },
-      { label: 'On / close / off', html: s => `<span class="kpi-st kpi-green">${s.green}</span> <span class="kpi-st kpi-yellow">${s.yellow}</span> <span class="kpi-st kpi-red">${s.red}</span>` },
-      { label: 'Score', num: true, get: s => `${Math.round(s.score * 100)}%` }], d.sections, { empty: 'No scored metrics with numbers yet' })}</div>`;
+  updated(d.updated_at);
+  const H = d.health, total = H.green + H.yellow + H.red + H.no_data;
+  const colorOf = id => { const i = d.reports.findIndex(r => r.id === id); return kpiColor(d.reports[i], i); };
+  const filter = who ? Number(who) : null;
+  const list = d.kpis.filter(k => !filter || k.owner_id === filter);
+  const tile = (cls, label, big, sub, extra = '') => `<div class="kpi-tile ${cls}">${extra}<div><div class="kpi-tl">${label}</div><div class="kpi-tb">${big}</div><div class="kpi-ts">${sub}</div></div></div>`;
+  el.innerHTML = `<div class="kpi-wrap"><h2 class="kpi-h2" style="font-size:30px;margin:6px 0 2px">Week of ${kpiWeekLabel(d.week)}</h2>
+    <p class="muted" style="margin:0 0 10px">Owner pages are due ${esc(kpiDue(d.due))}. Click any KPI to see where its number came from.</p>
+    <button class="btn sm" id="khow">How status works</button>
+    <div id="khowtext" class="card small" hidden style="margin-top:8px"><b>Green</b> = at or better than target. <b>Yellow</b> = missed, but within ${Math.round((d.band ?? 0.25) * 100) || 25}% of target. <b>Red</b> = missed by more than that.
+      <b>No data</b> = waiting on a number. <b>Info</b> = tracked without a target. Every yellow or red KPI needs a cause and a fix before its page can be submitted.
+      Pages are due ${esc(kpiDue(d.due).split(' ')[0])} for the Sunday–Saturday week before.</div>
+    <div class="kpi-tiles">
+      ${tile('t-green', 'On target', `${d.on_target_pct ?? '—'}<small>%</small>`, `${H.green} of ${d.scored} scored KPIs`, kpiRing(H.green, d.scored, '#3fb950'))}
+      ${tile('t-red', 'Red', H.red, 'Off target')}
+      ${tile('t-yellow', 'Yellow', H.yellow, 'Close to target')}
+      ${tile('t-grey', 'No data', H.no_data, 'Waiting on a number')}
+      ${tile('t-red', 'Pages submitted', `${d.submitted}<small>/${d.reports.length}</small>`, d.waiting_on.length ? `Waiting on ${esc(d.waiting_on.join(', '))}` : 'Everyone is in')}
+      ${tile('t-red', 'Need cause and fix', d.need_note, 'Off-target KPIs not explained')}</div>
+    <div class="kpi-stack">${[['green', H.green], ['yellow', H.yellow], ['red', H.red], ['no_data', H.no_data]].map(([k, n]) => n ? `<span class="kpi-b-${k}" style="flex:${n}"></span>` : '').join('')}</div>
+    <div class="kpi-legend"><span><i class="kpi-b-green"></i>${H.green} green</span><span><i class="kpi-b-yellow"></i>${H.yellow} yellow</span><span><i class="kpi-b-red"></i>${H.red} red</span><span><i class="kpi-b-no_data"></i>${H.no_data} no data</span><span>${H.info} tracked for info</span></div>
+    <div class="row spread" style="margin-top:22px;align-items:baseline"><h2 class="kpi-h2">Team</h2><span class="small muted">Click a person to filter the KPI list</span></div>
+    <div class="kpi-team">${d.reports.map(r => { const st = KPI_STATE[r.state];
+      return `<button class="card kpi-person ${filter === r.id ? 'on' : ''}" data-who="${r.id}"><div class="row spread" style="align-items:center"><span class="row" style="gap:10px;align-items:center">${kpiAvatar(r.name, colorOf(r.id))}<b class="kpi-pname">${esc(r.name)}</b></span><span class="kpi-sub ${st[1]}">${st[0]}</span></div>
+        <div class="kpi-mini"><span class="kpi-b-green"></span>${r.green} <span class="kpi-b-yellow"></span>${r.yellow} <span class="kpi-b-red"></span>${r.red} <span class="kpi-b-no_data"></span>${r.no_data}</div>
+        <div class="small muted">${r.with_number} of ${r.total} with a number${r.need_note ? ` · <span class="kpi-bad">${r.need_note} need a cause and fix</span>` : ''}${r.at ? ` · in ${esc(kpiStamp(r.at))}` : ''}</div></button>`; }).join('')}</div>
+    <div class="row spread" style="margin-top:22px;align-items:baseline"><h2 class="kpi-h2">KPIs${filter ? ` — ${esc((d.reports.find(r => r.id === filter) || {}).name || '')}` : ''}</h2>${filter ? '<a href="#" id="kall" class="small">Show everyone</a>' : ''}</div>
+    <div class="card kpi-table">${list.map((k, i) => `${i === 0 || list[i - 1].section !== k.section || list[i - 1].owner_id !== k.owner_id ? `<div class="kpi-sec">${esc(k.owner)} · ${esc(k.section)}</div>` : ''}
+      <div class="kpi-row kpi-s-${k.status} click" data-k="${esc(k.id)}"><div class="kpi-k"><div><span class="kpi-id">${esc(k.id)}</span> <span class="kpi-name">${esc(k.metric)}</span></div>
+        ${k.needs_note ? '<div class="small kpi-bad">needs a cause and fix</div>' : k.note && k.note.cause ? `<div class="kpi-src">${esc(k.note.cause)} → ${esc(k.note.fix)}</div>` : ''}</div>
+        <div class="kpi-v"><b class="kpi-num">${kpiFmt(k.value, k.unit)}</b>${k.origin === 'auto' ? ' <span class="kpi-auto">auto</span>' : ''}</div><div class="kpi-t">${esc(kpiTarget(k))}</div><div class="kpi-st">${kpiPill(k.status)}</div></div>`).join('')}</div></div>`;
+  $('#khow').onclick = () => { $('#khowtext').hidden = !$('#khowtext').hidden; };
+  $$('[data-who]', el).forEach(b => b.onclick = () => { location.hash = `#/kpi?tab=dash&week=${week}${filter === Number(b.dataset.who) ? '' : `&who=${b.dataset.who}`}`; });
+  if ($('#kall')) $('#kall').onclick = e => { e.preventDefault(); location.hash = `#/kpi?tab=dash&week=${week}`; };
+  $$('[data-k]', el).forEach(r => r.onclick = () => {
+    const k = d.kpis.find(x => x.id === r.dataset.k);
+    const where = k.input === 'calc' ? `Calculated: <code>${esc(k.rule || '')}</code>` : k.origin === 'auto' ? `Automatic — ${esc(k.auto_source || k.source || '')}` : k.origin === 'manual' ? `Typed in${k.auto_value != null ? ` (replacing the automatic ${kpiFmt(k.auto_value, k.unit)})` : ''}` : 'No number yet';
+    modal(`<h2>${esc(k.id)} · ${esc(k.metric)}</h2><dl class="kv">
+      <dt>This week</dt><dd><b>${kpiFmt(k.value, k.unit)}</b> ${kpiPill(k.status)}</dd><dt>Target</dt><dd>${esc(kpiTarget(k))}${k.target_note ? `<div class="small muted">${esc(k.target_note)}</div>` : ''}</dd>
+      <dt>Where it came from</dt><dd>${where}</dd>${k.entered_by ? `<dt>Entered</dt><dd>${esc(k.entered_by)} · ${esc(kpiStamp(k.entered_at))}</dd>` : ''}
+      ${k.reason ? `<dt>Why replaced</dt><dd>${esc(k.reason)}</dd>` : ''}<dt>Source</dt><dd>${esc(k.source || '—')}</dd><dt>How it's measured</dt><dd>${esc(k.how || '—')}</dd>
+      <dt>Owner</dt><dd>${esc(k.owner)} · ${esc(k.section)}</dd>${k.note ? `<dt>Cause</dt><dd>${esc(k.note.cause)}</dd><dt>Fix</dt><dd>${esc(k.note.fix)}</dd>` : ''}</dl>
+      <div class="actions"><a class="btn" href="#/kpi?tab=o${k.owner_id}&week=${week}">Open ${esc(k.owner)}'s page</a><button class="btn primary" data-x>Close</button></div>`);
+    const x = $('.modal [data-x]'); if (x) x.onclick = () => x.closest('.modal-bg').remove();
+  });
 }
 
 async function kpiSetup(el) {

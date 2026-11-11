@@ -40,6 +40,7 @@ function workbook() {
     Notes: tab([['Week', 'ID', 'Owner', 'Cause', 'Fix', 'By', 'At'], [WEEK, 'P2', 'Pat', 'Spam calls', 'Block numbers', 'pat@x.com', '2026-10-27 09:16']]),
     Submissions: tab([['Week', 'Owner', 'Submitted at', 'By'], ['2026-10-18', 'Pat', '2026-10-20 09:05', 'pat@x.com']]),
     HCP_Invoices: tab([['Customer', 'Amount'], ['Somebody Real', 123]]),
+    Snapshots: tab([['Key', 'Week', 'ID', 'Value', 'Detail', 'Taken at', 'Source'], ['k1', '2026-10-18', 'L1', 800, 'Somebody Real $123 invoice', '2026-10-25 05:00', 'Billing system']]),
   }).toString('base64');
 }
 
@@ -75,7 +76,10 @@ test('import: preview first; then metrics, settings, owners by email, the sheet\
   const r = (await call('admin', 'POST', '/import/kpi-workbook', { file: workbook() })).data;
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.deepEqual(r.unmatched_emails, ['nobody@x.com']); assert.deepEqual(r.skipped_technicians, ['Tom Tech']); assert.deepEqual(r.permissions_for.sort(), ['Boss Manager', 'Vi Ewer']);
-  assert.equal(r.values, 4, 'unknown metric ID and non-Sunday week skipped'); assert.equal(r.notes, 1); assert.equal(r.submissions, 1);
+  assert.equal(r.values, 5, 'unknown metric ID and non-Sunday week skipped; one snapshot number');
+  const snap = db.prepare("SELECT * FROM kpi_values WHERE week = '2026-10-18' AND metric_id = 'L1'").get();
+  assert.equal(snap.auto_value, 800); assert.equal(snap.origin, 'auto'); assert.equal(snap.auto_source, 'Billing system');
+  assert.equal(JSON.stringify(db.prepare('SELECT * FROM kpi_values').all()).includes('Somebody'), false, 'the Detail column is never read'); assert.equal(r.notes, 1); assert.equal(r.submissions, 1);
   assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'kpi_ot_rate'").get().value, '50');
   // times in the sheet are Boise wall-clock: 09:15 MDT = 15:15 UTC
   assert.equal(db.prepare("SELECT at FROM kpi_values WHERE week = ? AND metric_id = 'P1'").get(WEEK).at, '2026-10-27T15:15:00.000Z');
@@ -110,9 +114,10 @@ test('a page: values, formulas across pages, status colours, trend, late/missing
   assert.deepEqual(m.P1.trend.slice(-2).map(t => t.value), [120, 90]);
   const lee = (await call('lee', 'GET', `/kpi/page?owner=${ids.Lee}&week=${WEEK}`)).data;
   const l = Object.fromEntries(lee.sections.flatMap(s => s.metrics).map(x => [x.id, x]));
-  assert.equal(l.L1.value, 1200); assert.equal(l.L1.input, 'auto');
+  assert.equal(l.L1.value, 1200); assert.equal(l.L1.input, 'auto'); assert.equal(l.L1.origin, 'auto'); assert.equal(l.L1.auto_value, 1200);
   assert.ok(Math.abs(l.L4.value - 1200 / 76) < 1e-9, 'a formula can use another page\'s numbers');
-  assert.equal(l.L3.status, 'set_target');
+  assert.equal(l.L3.status, 'no_data', 'no number yet (and no target: shown as "not set")');
+  assert.deepEqual(pg.counts, { total: 4, with_number: 3, need_note: 2 }, 'P1 yellow and P3 red unexplained; P2 has its note');
   // last week was submitted on time, from the sheet
   assert.equal((await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=2026-10-18`)).data.report.state, 'in');
 });
@@ -132,11 +137,11 @@ test('filling in: owners their own page only; "fill in anyone\'s page" can do an
 
 test('submit: every red row needs a cause and a fix; then it counts as in (late, here)', async () => {
   let r = (await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: WEEK, values: { P1: 95 }, submit: true })).data;
-  assert.equal(r.submitted, false); assert.deepEqual(r.need_notes.map(n => n.id), ['P3'], 'P2 already has its note from the sheet');
+  assert.equal(r.submitted, false); assert.deepEqual(r.need_notes.map(n => n.id), ['P1', 'P3'], 'yellow needs one too; P2 already has its note from the sheet');
   assert.equal(db.prepare("SELECT value FROM kpi_values WHERE week = ? AND metric_id = 'P1'").get(WEEK).value, 95, 'the numbers are saved even so');
   r = (await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: WEEK, notes: { P3: { cause: 'Spam calls', fix: '' } }, submit: true })).data;
   assert.equal(r.submitted, false, 'a fix is needed too');
-  r = (await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: WEEK, notes: { P3: { cause: 'Spam calls', fix: 'Block numbers' } }, submit: true })).data;
+  r = (await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: WEEK, notes: { P1: { cause: 'Slow week', fix: 'Call back old leads' }, P3: { cause: 'Spam calls', fix: 'Block numbers' } }, submit: true })).data;
   assert.equal(r.submitted, true);
   const pg = (await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${WEEK}`)).data;
   assert.equal(pg.report.state, 'late'); assert.equal(pg.submissions.at(-1).by_label, 'pat@x.com');
@@ -149,7 +154,11 @@ test('company scorecard: viewers only; reports in, health, headlines with quarte
   await call('boss', 'PUT', '/kpi/settings', { headlines: 'P1, L1' });
   const d = (await call('viewer', 'GET', `/kpi/dashboard?week=${WEEK}`)).data;
   assert.deepEqual(d.reports.map(r => `${r.name}:${r.state}`), ['Pat:late', 'Lee:missing']);
-  assert.deepEqual(d.health, { green: 2, yellow: 1, red: 3, no_data: 0, set_target: 1 });
+  assert.deepEqual(d.health, { green: 2, yellow: 1, red: 3, no_data: 0, info: 2 }, 'L3 has a number but no target: not scored');
+  assert.equal(d.on_target_pct, 33); assert.equal(d.scored, 6); assert.equal(d.submitted, 1); assert.deepEqual(d.waiting_on, ['Lee']);
+  assert.equal(d.need_note, 1, 'L2 red with no cause/fix'); assert.equal(d.kpis.length, 8);
+  const lee = d.reports.find(x => x.name === 'Lee'); assert.equal(lee.red, 1); assert.equal(lee.need_note, 1); assert.equal(lee.with_number, 4);
+  assert.equal(d.kpis.find(k => k.id === 'L1').origin, 'auto'); assert.ok(d.updated_at);
   assert.deepEqual(d.headlines.map(h => h.id), ['P1', 'L1']);
   assert.equal(d.headlines[0].qtr_avg, (120 + 95) / 2, 'Q4 weeks so far: 10/18 and 10/25'); assert.equal(d.quarter, '2026Q4');
   assert.equal(d.constraint.section, 'Labor', 'Labor: 1 red of 1 scored; Calls: 1 yellow + 2 red'); assert.equal(d.sections[1].section, 'Calls');
@@ -185,4 +194,18 @@ test('managers see and fill in every page by default; technicians get no KPIs at
   const perms = (await call('admin', 'GET', '/permissions')).data;
   assert.ok(!perms.list.find(p => p.key === 'kpi_view_all').roles.includes('tech'));
   assert.equal(perms.defaults.manager.accounting, true); assert.equal(perms.defaults.office.kpi_view_all, false);
+});
+
+test('an automatic number: shown as auto; replacing it needs a reason; blank goes back to the auto number', async () => {
+  let r = await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: 900 } });
+  assert.equal(r.status, 400); assert.match(r.data.error, /why you're replacing.*L1/);
+  r = await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: 900 }, reasons: { L1: 'Two jobs were finished twice' } });
+  assert.equal(r.status, 200);
+  const one = async () => (await call('lee', 'GET', `/kpi/page?owner=${ids.Lee}&week=${WEEK}`)).data.sections.flatMap(x => x.metrics).find(x => x.id === 'L1');
+  let m = await one();
+  assert.equal(m.value, 900); assert.equal(m.origin, 'manual'); assert.equal(m.auto_value, 1200); assert.equal(m.reason, 'Two jobs were finished twice');
+  // saving the page again with the same number keeps the reason without asking again
+  assert.equal((await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: 900 } })).status, 200);
+  await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: null } });
+  m = await one(); assert.equal(m.value, 1200); assert.equal(m.origin, 'auto'); assert.equal(m.reason, null);
 });
