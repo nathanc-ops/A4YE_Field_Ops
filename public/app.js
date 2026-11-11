@@ -47,6 +47,7 @@ async function api(method, path, body) {
   if (res.status === 401 && path !== '/login') { logout(true); throw new Error('Please sign in again'); }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   if (Array.isArray(data) && res.headers.get('X-Total-Count')) data.total = Number(res.headers.get('X-Total-Count'));
+  if (Array.isArray(data) && res.headers.get('X-Sums')) { try { data.sums = JSON.parse(res.headers.get('X-Sums')); } catch { /* ignore */ } }
   return data;
 }
 const GET = p => api('GET', p);
@@ -119,17 +120,46 @@ function formModal({ title, fields, values = {}, submit, wide, extra = '', okLab
   };
   return m;
 }
-function table(cols, rows, { onClick, empty = 'Nothing here yet', foot } = {}) {
+function table(cols, rows, { onClick, empty = 'Nothing here yet', foot, sort } = {}) {
   if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
   const id = 't' + Math.random().toString(36).slice(2);
   setTimeout(() => {
-    const t = document.getElementById(id); if (!t || !onClick) return;
+    const t = document.getElementById(id); if (!t) return;
+    if (sort) $$('th[data-sk]', t).forEach(th => { th.onclick = () => sort.go(th.dataset.sk); th.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); sort.go(th.dataset.sk); } }; });
+    if (!onClick) return;
     $$('tbody tr', t).forEach((tr, i) => tr.onclick = e => { if (!e.target.closest('a,button,input,select')) onClick(rows[i], e); });
   });
-  return `<div class="table-wrap"><table id="${id}"><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${esc(c.label)}</th>`).join('')}</tr></thead>
+  const head = c => {
+    if (!sort || !c.sort) return `<th class="${c.num ? 'num' : ''}">${esc(c.label)}</th>`;
+    const on = sort.by === c.sort, arrow = on ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+    return `<th class="${c.num ? 'num ' : ''}sortable${on ? ' on' : ''}" data-sk="${esc(c.sort)}" tabindex="0" role="button" aria-sort="${on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}" title="Sort by ${esc(c.label.toLowerCase())}">${esc(c.label)}<span class="sarrow">${arrow}</span></th>`;
+  };
+  return `<div class="table-wrap"><table id="${id}"><thead><tr>${cols.map(head).join('')}</tr></thead>
     <tbody>${rows.map(r => `<tr class="${onClick ? 'click' : ''}">${cols.map(c => `<td class="${c.num ? 'num' : ''}">${c.html ? c.html(r) : esc(c.get ? c.get(r) : r[c.key])}</td>`).join('')}</tr>`).join('')}</tbody>
     ${foot ? `<tfoot><tr>${foot.map(f => `<td class="${f && f.num ? 'num' : ''}">${f ? esc(f.v ?? f) : ''}</td>`).join('')}</tr></tfoot>` : ''}</table></div>`;
 }
+// list pages keep filters/sort/page in the URL, so Back and bookmarks work
+// clicking the sorted column flips it; a new column starts in its natural order (dates and money newest/largest first)
+function listSort(params, base, def, descFirst = []) {
+  const by = params.get('order') || def.by, dir = params.get('dir') || (params.get('order') ? (descFirst.includes(by) ? 'desc' : 'asc') : def.dir);
+  return { by, dir, go: k => {
+    const p = new URLSearchParams(params); p.delete('page');
+    p.set('order', k); p.set('dir', k === by ? (dir === 'asc' ? 'desc' : 'asc') : descFirst.includes(k) ? 'desc' : 'asc');
+    go(base + '?' + p.toString());
+  } };
+}
+// a filter form's values → URL (empty ones dropped); keeps tab/status and sort
+function listFilterGo(form, base, keep = {}) {
+  const o = { ...keep };
+  for (const el of form.elements) if (el.name) o[el.name] = el.type === 'checkbox' ? (el.checked ? '1' : '') : el.value.trim();
+  go(base + qs(o));
+}
+function listPager(total, page, per, link) {
+  const pages = Math.max(1, Math.ceil(total / per));
+  return pages > 1 ? `<div class="row" style="margin-top:10px;justify-content:center;gap:8px">${page > 1 ? `<a class="btn" href="${link(page - 1)}">‹ Previous</a>` : ''}<span class="muted">Page ${page} of ${pages}</span>${page < pages ? `<a class="btn" href="${link(page + 1)}">Next ›</a>` : ''}</div>` : '';
+}
+const listCount = (total, shown, page, per, noun) => `<p class="small muted" style="margin:6px 0">${total.toLocaleString()} ${noun}${total === 1 ? '' : 's'}${total > shown ? ` · showing ${((page - 1) * per + 1).toLocaleString()}–${((page - 1) * per + shown).toLocaleString()}` : ''}</p>`;
+
 function toCSV(cols, rows, filename) {
   const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const csv = [cols.map(c => cell(c.label)).join(','), ...rows.map(r => cols.map(c => cell(c.csv ? c.csv(r) : c.get ? c.get(r) : r[c.key])).join(','))].join('\n');
@@ -506,19 +536,31 @@ async function jobForm(job, { customerId } = {}) {
 async function viewJobs() {
   const { params } = hashParams();
   const status = params.get('status') || (isOffice() ? 'unscheduled,scheduled,dispatched,in_progress,on_hold,completed' : '');
-  const q = params.get('q') || '';
-  const jobs = await GET('/jobs' + qs({ status: status === 'all' ? '' : status, q }));
+  const F = ['q', 'job_type', 'billing_type', 'kind', 'tech_id', 'sched_from', 'sched_to'];
+  const f = Object.fromEntries(F.map(k => [k, params.get(k) || '']));
+  const sort = listSort(params, '#/jobs', { by: 'scheduled', dir: 'asc' }, ['created', 'completed', 'number']);
+  const jobs = await GET('/jobs' + qs({ status: status === 'all' ? '' : status, ...(isOffice() ? f : { q: f.q }), order: sort.by, dir: sort.dir }));
   const tabs = [['unscheduled,scheduled,dispatched,in_progress,on_hold,completed', 'Open'], ['unscheduled', 'Unscheduled'], ['in_progress', 'In progress'], ['completed', 'Needs invoice'], ['invoiced', 'Invoiced'], ['all', 'All'], ['cancelled', 'Cancelled'], ['', 'All']];
+  const keep = { status, order: params.get('order'), dir: params.get('dir') };
+  const filtered = F.some(k => f[k]);
   $('#view').innerHTML = setTop('Jobs', isOffice() ? '<button class="btn primary" id="new">+ Book job</button>' : '') + `<div class="card">
-    <div class="row spread"><div class="tabs" style="margin:0;border:0">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
-    <form id="srch" class="row"><input name="q" placeholder="Search job #, customer, address, PO" value="${esc(q)}" style="width:260px"></form></div>
-    ${jobs.total > jobs.length ? `<p class="small muted" style="margin:6px 0">Showing ${jobs.length.toLocaleString()} of ${jobs.total.toLocaleString()} jobs — search, or pick a status, to narrow it down.</p>` : ''}
-    ${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b>${j.priority === 'emergency' ? ' <span class="pill bad">Emergency</span>' : ''}<div>${esc(j.title)}</div>` },
-      { label: 'Customer', html: j => `${esc(j.customer_name)} <span class="muted small">${esc(label(j.customer_type))}</span><div class="muted small">${esc(j.address || '')}</div>` },
-      { label: 'Type', html: j => `${esc(label(j.job_type))}<div>${billingPill(j.billing_type)}</div>` }, { label: 'Scheduled', get: j => fmtDT(j.scheduled_start) },
-      { label: 'Techs', get: j => j.tech_names || '—' }, { label: 'Status', html: j => pill(j.status) }], jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs match' })}</div>`;
-  $$('[data-s]').forEach(b => b.onclick = () => go('#/jobs' + qs({ status: b.dataset.s, q })));
-  $('#srch').onsubmit = e => { e.preventDefault(); go('#/jobs' + qs({ status, q: e.target.q.value })); };
+    <div class="tabs" style="margin:0;border:0">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
+    <form id="srch" class="filters"><input name="q" type="search" placeholder="Search job #, customer, address, PO" value="${esc(f.q)}">
+      ${isOffice() ? `<select name="job_type" aria-label="Job type"><option value="">Any type</option>${JOB_TYPES.map(t => `<option value="${t}" ${t === f.job_type ? 'selected' : ''}>${label(t)}</option>`).join('')}</select>
+      <select name="kind" aria-label="Service or project"><option value="">Service + projects</option><option value="service" ${f.kind === 'service' ? 'selected' : ''}>Service jobs</option><option value="project" ${f.kind === 'project' ? 'selected' : ''}>Commercial projects</option></select>
+      <select name="billing_type" aria-label="Billing"><option value="">Any billing</option><option value="fixed" ${f.billing_type === 'fixed' ? 'selected' : ''}>Fixed price</option><option value="tm" ${f.billing_type === 'tm' ? 'selected' : ''}>Time & material</option></select>
+      <select name="tech_id" aria-label="Tech"><option value="">Any tech</option>${techOptions().map(([v, l]) => `<option value="${v}" ${String(v) === f.tech_id ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <label class="small muted">Scheduled <input type="date" name="sched_from" value="${esc(f.sched_from)}"> to <input type="date" name="sched_to" value="${esc(f.sched_to)}"></label>` : ''}
+      <button class="btn">Filter</button>${filtered ? `<a class="btn" href="#/jobs${qs({ status })}">Clear</a>` : ''}</form>
+    ${listCount(jobs.total ?? jobs.length, jobs.length, 1, jobs.length, 'job')}${jobs.total > jobs.length ? '<p class="small muted" style="margin:0 0 6px">Filter or search to narrow it down.</p>' : ''}
+    ${table([{ label: 'Job', sort: 'number', html: j => `<b>${esc(j.number)}</b>${j.priority === 'emergency' ? ' <span class="pill bad">Emergency</span>' : ''}<div>${esc(j.title)}</div>` },
+      { label: 'Customer', sort: 'customer', html: j => `${esc(j.customer_name)} <span class="muted small">${esc(label(j.customer_type))}</span><div class="muted small">${esc(j.address || '')}</div>` },
+      { label: 'Type', sort: 'type', html: j => `${esc(label(j.job_type))}<div>${billingPill(j.billing_type)}</div>` }, { label: 'Scheduled', sort: 'scheduled', get: j => fmtDT(j.scheduled_start) },
+      ...(status === 'completed' || status === 'invoiced' ? [{ label: 'Completed', sort: 'completed', get: j => fmtDate(j.completed_at) }] : []),
+      { label: 'Techs', get: j => j.tech_names || '—' }, { label: 'Status', sort: 'status', html: j => pill(j.status) }], jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs match', sort })}</div>`;
+  $$('[data-s]').forEach(b => b.onclick = () => go('#/jobs' + qs({ ...f, ...keep, status: b.dataset.s })));
+  $('#srch').onsubmit = e => { e.preventDefault(); listFilterGo(e.target, '#/jobs', keep); };
+  $$('#srch select').forEach(s => s.onchange = () => listFilterGo($('#srch'), '#/jobs', keep));
   if (isOffice()) { $('#new').onclick = () => jobForm({}); if (params.get('new')) jobForm({}, { customerId: params.get('customer_id') }); }
 }
 
@@ -763,23 +805,28 @@ async function viewCustomers() {
   const q = params.get('q') || '', type = params.get('type') || '', letter = params.get('letter') || '';
   let sort = params.get('sort'); if (sort == null) { try { sort = localStorage.getItem('fo_cust_sort') || ''; } catch { sort = ''; } }
   const page = Math.max(Number(params.get('page')) || 1, 1), per = 100;
-  const list = await GET('/customers' + qs({ q, type, letter, sort, limit: per, offset: (page - 1) * per }));
+  const lead = params.get('lead_source') || '', cfrom = params.get('created_from') || '', cto = params.get('created_to') || '';
+  const ls = listSort(params, '#/customers', { by: 'name', dir: 'asc' }, ['created', 'jobs']);
+  const list = await GET('/customers' + qs({ q, type, letter, sort, lead_source: lead, created_from: cfrom, created_to: cto, order: ls.by, dir: ls.dir, limit: per, offset: (page - 1) * per }));
   const total = list.total ?? list.length, pages = Math.max(1, Math.ceil(total / per));
-  const link = o => '#/customers' + qs({ q, type, letter, sort, ...o });
+  const link = o => '#/customers' + qs({ q, type, letter, sort, lead_source: lead, created_from: cfrom, created_to: cto, order: params.get('order'), dir: params.get('dir'), ...o });
   $('#view').innerHTML = setTop('Customers', '<button class="btn primary" id="new">+ New customer</button>') + `<div class="card">
     <form id="srch" class="row"><input name="q" placeholder="Search name, company, phone, email or address" value="${esc(q)}" style="max-width:360px">
-      <select name="type" style="width:auto"><option value="">All types</option><option ${type === 'residential' ? 'selected' : ''}>residential</option><option ${type === 'commercial' ? 'selected' : ''}>commercial</option></select><button class="btn">Search</button>
-      ${q || type || letter ? `<a class="btn" href="#/customers">Clear</a>` : ''}<span class="grow"></span>
+      <select name="type" style="width:auto"><option value="">All types</option><option ${type === 'residential' ? 'selected' : ''}>residential</option><option ${type === 'commercial' ? 'selected' : ''}>commercial</option></select>
+      <select name="lead_source" style="width:auto" aria-label="Lead source"><option value="">Any lead source</option>${LEAD_SOURCES.map(s => `<option ${s === lead ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select>
+      <label class="small muted">Added <input type="date" name="created_from" value="${esc(cfrom)}" style="width:auto"> to <input type="date" name="created_to" value="${esc(cto)}" style="width:auto"></label><button class="btn">Search</button>
+      ${q || type || letter || lead || cfrom || cto ? `<a class="btn" href="#/customers">Clear</a>` : ''}<span class="grow"></span>
       <select id="csort" style="width:auto" title="How people are filed A to Z"><option value="">A–Z by last name</option><option value="first" ${sort === 'first' ? 'selected' : ''}>A–Z by first name</option></select></form>
     <div class="az">${['', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ', '#'].map(L => `<button type="button" data-letter="${L}" class="${L === letter ? 'on' : ''}">${L || 'All'}</button>`).join('')}</div>
     <p class="small muted" style="margin:0 0 8px">${total.toLocaleString()} customer${total === 1 ? '' : 's'}${total > per ? ` · showing ${((page - 1) * per + 1).toLocaleString()}–${Math.min(page * per, total).toLocaleString()}` : ''}</p>
-    ${table([{ label: 'Name', html: c => `<b>${esc(c.company || c.name)}</b>${c.company ? `<div class="muted small">${esc(c.name)}</div>` : ''}` }, { label: 'Type', html: c => pill(c.type) },
-      { label: 'Phone', key: 'phone' }, { label: 'Email', key: 'email' }, { label: 'Address', key: 'primary_address' }, { label: 'Jobs', num: 1, key: 'job_count' }], list, { onClick: c => go('#/customers/' + c.id), empty: q || letter ? 'No customers match' : 'No customers yet' })}
+    ${table([{ label: 'Name', sort: 'name', html: c => `<b>${esc(c.company || c.name)}</b>${c.company ? `<div class="muted small">${esc(c.name)}</div>` : ''}` }, { label: 'Type', html: c => pill(c.type) },
+      { label: 'Phone', key: 'phone' }, { label: 'Email', key: 'email' }, { label: 'Address', key: 'primary_address' }, { label: 'Added', sort: 'created', get: c => fmtDate((c.created_at || '').slice(0, 10)) },
+      { label: 'Jobs', num: 1, sort: 'jobs', key: 'job_count' }], list, { onClick: c => go('#/customers/' + c.id), empty: q || letter || lead || cfrom || cto ? 'No customers match' : 'No customers yet', sort: ls })}
     ${pages > 1 ? `<div class="row" style="margin-top:10px;justify-content:center">${page > 1 ? `<a class="btn" href="${link({ page: page - 1 })}">‹ Previous</a>` : ''}<span class="muted">Page ${page} of ${pages}</span>${page < pages ? `<a class="btn" href="${link({ page: page + 1 })}">Next ›</a>` : ''}</div>` : ''}</div>`;
   $('#new').onclick = () => customerForm();
   $$('[data-letter]').forEach(b => b.onclick = () => go('#/customers' + qs({ q, type, sort, letter: b.dataset.letter })));
   $('#csort').onchange = e => { try { localStorage.setItem('fo_cust_sort', e.target.value); } catch { /* private mode */ } go('#/customers' + qs({ q, type, letter, sort: e.target.value })); };
-  $('#srch').onsubmit = e => { e.preventDefault(); go('#/customers' + qs({ q: e.target.q.value.trim(), type: e.target.type.value, sort })); };
+  $('#srch').onsubmit = e => { e.preventDefault(); const t = e.target; go('#/customers' + qs({ q: t.q.value.trim(), type: t.type.value, sort, lead_source: t.lead_source.value, created_from: t.created_from.value, created_to: t.created_to.value, order: params.get('order'), dir: params.get('dir') })); };
 }
 async function viewCustomer(id) {
   const c = await GET('/customers/' + id);
@@ -803,27 +850,60 @@ async function viewCustomer(id) {
 // ============================================================ estimates & invoices (shared editor)
 async function viewEstimates() {
   const { params } = hashParams(); const status = params.get('status') || '';
-  const list = await GET('/estimates' + qs({ status }));
-  const tabs = isOffice() ? [['', 'All'], ['review', 'Needs review'], ['draft', 'Draft'], ['sent', 'Sent'], ['viewed', 'Viewed'], ['approved', 'Approved'], ['declined', 'Declined'], ['cancelled', 'Cancelled']] : [['', 'All']];
-  $('#view').innerHTML = setTop(isOffice() ? 'Estimates' : 'My Estimates', isOffice() ? '<a class="btn primary" href="#/estimates/new">+ New estimate</a>' : '', isOffice() ? '' : 'Start a new estimate from one of your jobs.') + `<div class="card">
+  if (!isOffice()) return viewEstimatesTech(status);
+  const f = { q: params.get('q') || '', from: params.get('from') || '', to: params.get('to') || '' };
+  const page = Math.max(Number(params.get('page')) || 1, 1), per = 100;
+  const sort = listSort(params, '#/estimates', { by: 'created', dir: 'desc' }, ['created', 'total', 'margin', 'number']);
+  const list = await GET('/estimates' + qs({ status, ...f, order: sort.by, dir: sort.dir, limit: per, offset: (page - 1) * per }));
+  const total = list.total ?? list.length, keep = { status, order: params.get('order'), dir: params.get('dir') };
+  const tabs = [['', 'All'], ['review', 'Needs review'], ['draft', 'Draft'], ['sent,viewed', 'Open'], ['sent', 'Sent'], ['viewed', 'Viewed'], ['approved', 'Approved'], ['declined', 'Declined'], ['cancelled', 'Cancelled']];
+  $('#view').innerHTML = setTop('Estimates', '<a class="btn primary" href="#/estimates/new">+ New estimate</a>') + `<div class="card">
     <div class="tabs">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
+    <form id="srch" class="filters"><input name="q" type="search" placeholder="Search estimate #, customer, title, job #" value="${esc(f.q)}">
+      <label class="small muted">Created <input type="date" name="from" value="${esc(f.from)}"> to <input type="date" name="to" value="${esc(f.to)}"></label>
+      <button class="btn">Filter</button>${f.q || f.from || f.to ? `<a class="btn" href="#/estimates${qs({ status })}">Clear</a>` : ''}</form>
+    ${listCount(total, list.length, page, per, 'estimate')}
+    ${table([{ label: '#', sort: 'number', key: 'number' }, { label: 'Customer', sort: 'customer', key: 'customer_name' }, { label: 'Title', sort: 'title', key: 'title' }, { label: 'Created', sort: 'created', get: e => fmtDate(e.created_at.slice(0, 10)) },
+      { label: 'Status', sort: 'status', html: e => pill(e.status) }, { label: 'Margin', num: 1, sort: 'margin', get: e => pct(e.est_margin_pct) },
+      { label: 'Total', num: 1, sort: 'total', html: e => e.options && e.options.length && e.status !== 'approved' ? `${money(e.price_min)}–${money(e.price_max)}<div class="small muted">${e.options.length} options</div>` : money(e.total) }], list,
+    { onClick: e => go('#/estimates/' + e.id), empty: f.q || f.from || f.to ? 'No estimates match' : 'No estimates', sort,
+      foot: list.sums && total ? ['', '', '', '', '', `${total > list.length ? 'All matches' : 'Total'}`, { v: money(list.sums.total), num: 1 }] : null })}
+    ${listPager(total, page, per, n => '#/estimates' + qs({ ...f, ...keep, page: n }))}</div>`;
+  $$('[data-s]').forEach(b => b.onclick = () => go('#/estimates' + qs({ ...f, ...keep, status: b.dataset.s })));
+  $('#srch').onsubmit = e => { e.preventDefault(); listFilterGo(e.target, '#/estimates', keep); };
+}
+// a tech's own estimates (their list comes from the field-estimate routes)
+async function viewEstimatesTech(status) {
+  const list = await GET('/estimates' + qs({ status }));
+  $('#view').innerHTML = setTop('My Estimates', '', 'Start a new estimate from one of your jobs.') + `<div class="card">
     ${table([{ label: '#', key: 'number' }, { label: 'Customer', key: 'customer_name' }, { label: 'Title', key: 'title' }, { label: 'Created', get: e => fmtDate(e.created_at.slice(0, 10)) },
-      { label: 'Status', html: e => pill(e.status) }, { label: 'Margin', num: 1, get: e => pct(e.est_margin_pct) },
-      { label: 'Total', num: 1, html: e => e.options && e.options.length && e.status !== 'approved' ? `${money(e.price_min)}–${money(e.price_max)}<div class="small muted">${e.options.length} options</div>` : money(e.total) }], list, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>`;
-  $$('[data-s]').forEach(b => b.onclick = () => go('#/estimates' + qs({ status: b.dataset.s })));
+      { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }], list, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>`;
 }
 async function viewInvoices() {
   const { params } = hashParams(); const status = params.get('status') ?? 'sent,partial';
-  const list = await GET('/invoices' + qs({ status }));
-  const tabs = [['sent,partial', 'Open'], ['draft', 'Draft'], ['paid', 'Paid'], ['void', 'Void'], ['', 'All']];
-  const t = todayStr();
+  const f = { q: params.get('q') || '', from: params.get('from') || '', to: params.get('to') || '', overdue: params.get('overdue') || '' };
+  const page = Math.max(Number(params.get('page')) || 1, 1), per = 100;
+  const sort = listSort(params, '#/invoices', { by: 'issued', dir: 'desc' }, ['issued', 'due', 'total', 'balance', 'number']);
+  const list = await GET('/invoices' + qs({ status: status === 'all' ? '' : status, ...f, order: sort.by, dir: sort.dir, limit: per, offset: (page - 1) * per }));
+  const total = list.total ?? list.length, keep = { status, order: params.get('order'), dir: params.get('dir') };
+  const tabs = [['sent,partial', 'Open'], ['draft', 'Draft'], ['paid', 'Paid'], ['void', 'Void'], ['all', 'All']];
+  const t = todayStr(), filtered = f.q || f.from || f.to || f.overdue;
   $('#view').innerHTML = setTop('Invoices', '<a class="btn primary" href="#/invoices/new">+ New invoice</a>') + `<div class="card">
     <div class="tabs">${tabs.map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
-    ${table([{ label: '#', key: 'number' }, { label: 'Customer', key: 'customer_name' }, { label: 'Job', key: 'job_number' }, { label: 'Issued', get: i => fmtDate(i.issue_date) },
-      { label: 'Due', html: i => `${fmtDate(i.due_date)}${['sent', 'partial'].includes(i.status) && i.due_date < t ? ' <span class="pill bad">Overdue</span>' : ''}` },
-      { label: 'Status', html: i => pill(i.status) }, { label: 'Total', num: 1, get: i => money(i.total) }, { label: 'Balance', num: 1, get: i => money(i.balance) }], list,
-    { onClick: i => go('#/invoices/' + i.id), empty: 'No invoices', foot: list.length ? ['', '', '', '', '', 'Total', { v: money(list.reduce((s, i) => s + i.total, 0)), num: 1 }, { v: money(list.reduce((s, i) => s + i.balance, 0)), num: 1 }] : null })}</div>`;
-  $$('[data-s]').forEach(b => b.onclick = () => go('#/invoices' + qs({ status: b.dataset.s })));
+    <form id="srch" class="filters"><input name="q" type="search" placeholder="Search invoice #, customer, job #" value="${esc(f.q)}">
+      <label class="small muted">Issued <input type="date" name="from" value="${esc(f.from)}"> to <input type="date" name="to" value="${esc(f.to)}"></label>
+      <label class="check"><input type="checkbox" name="overdue" ${f.overdue ? 'checked' : ''}> Overdue only</label>
+      <button class="btn">Filter</button>${filtered ? `<a class="btn" href="#/invoices${qs({ status })}">Clear</a>` : ''}</form>
+    ${listCount(total, list.length, page, per, 'invoice')}
+    ${table([{ label: '#', sort: 'number', key: 'number' }, { label: 'Customer', sort: 'customer', key: 'customer_name' }, { label: 'Job', sort: 'job', key: 'job_number' }, { label: 'Issued', sort: 'issued', get: i => fmtDate(i.issue_date) },
+      { label: 'Due', sort: 'due', html: i => `${fmtDate(i.due_date)}${['sent', 'partial'].includes(i.status) && i.due_date < t ? ' <span class="pill bad">Overdue</span>' : ''}` },
+      { label: 'Status', sort: 'status', html: i => pill(i.status) }, { label: 'Total', num: 1, sort: 'total', get: i => money(i.total) }, { label: 'Balance', num: 1, sort: 'balance', get: i => money(i.balance) }], list,
+    { onClick: i => go('#/invoices/' + i.id), empty: filtered ? 'No invoices match' : 'No invoices', sort,
+      foot: list.sums && total ? ['', '', '', '', '', total > list.length ? 'All matches' : 'Total', { v: money(list.sums.total), num: 1 }, { v: money(list.sums.balance), num: 1 }] : null })}
+    ${listPager(total, page, per, n => '#/invoices' + qs({ ...f, ...keep, page: n }))}</div>`;
+  $$('[data-s]').forEach(b => b.onclick = () => go('#/invoices' + qs({ ...f, ...keep, status: b.dataset.s })));
+  $('#srch').onsubmit = e => { e.preventDefault(); listFilterGo(e.target, '#/invoices', keep); };
+  $('#srch [name=overdue]').onchange = () => listFilterGo($('#srch'), '#/invoices', keep);
 }
 
 function calcTotals(doc) {
@@ -1128,11 +1208,12 @@ async function viewTime() {
   const to = params.get('to') || todayStr();
   const userId = params.get('user_id') || '';
   $('#view').innerHTML = setTop('Time Clock', isOffice() ? '<button class="btn" id="add">+ Add time</button>' : '') + `<div id="clock"></div>
+    ${isOffice() ? '<div class="card" style="margin-top:14px" id="weekcard"></div>' : ''}
     <div class="card" style="margin-top:14px"><div class="row spread"><h2>${isOffice() ? 'Timesheets' : 'My hours'}</h2>
       <form id="flt" class="row">${isOffice() ? `<select name="user_id" style="width:auto"><option value="">Everyone</option>${techOptions().map(([v, l]) => `<option value="${v}" ${String(v) === userId ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>` : ''}
         <input type="date" name="from" value="${from}" style="width:auto"> to <input type="date" name="to" value="${to}" style="width:auto"><button class="btn">Show</button></form></div><div id="sheet"></div></div>`;
   await clockCard($('#clock'));
-  if (isOffice()) $('#add').onclick = () => timeForm({});
+  if (isOffice()) { $('#add').onclick = () => timeForm({}); weekCard($('#weekcard'), params.get('week') || todayStr()); }
   $('#flt').onsubmit = e => { e.preventDefault(); const f = e.target; go('#/time' + qs({ from: f.from.value, to: f.to.value, user_id: f.user_id ? f.user_id.value : '' })); };
   const rows = await GET('/time' + qs({ from, to, user_id: userId }));
   const total = rows.reduce((s, r) => s + r.hours, 0);
@@ -1145,6 +1226,34 @@ async function viewTime() {
       { label: 'GPS', html: t => [['in', t.in_lat, t.in_lng, t.in_acc], ['out', t.out_lat, t.out_lng, t.out_acc]].filter(x => x[1] != null).map(([k, la, ln, ac]) => `<a target="_blank" rel="noopener" href="https://maps.google.com/?q=${la},${ln}" title="±${ac || '?'} m">📍${k}</a>`).join(' ') || '—', csv: t => t.in_lat != null ? `${t.in_lat},${t.in_lng}` : '' }, { label: 'Out', html: t => t.clock_out ? fmtTime(t.clock_out) : '<span class="pill good">On the clock</span>' },
       { label: 'Hours', num: 1, get: t => num(t.hours) }, { label: 'Notes', key: 'notes' }], rows,
     { onClick: isOffice() ? t => timeForm(t) : null, empty: 'No time in this range', foot: rows.length ? ['Total', ...(isOffice() ? [''] : []), '', '', '', '', '', '', { v: num(total), num: 1 }, ''] : null });
+}
+
+// Everyone's week (Mon–Sun): hours worked so far, scheduled, projected; flags anyone over or headed over the overtime line.
+async function weekCard(el, day) {
+  const w = await GET('/time/week' + qs({ week: day }));
+  const shift = n => { const d = new Date(w.week + 'T00:00:00'); d.setDate(d.getDate() + n); return localDate(d); };
+  const t = todayStr(), lim = w.ot_after;
+  const FLAG = { over: ['bad', `⚠ Over ${lim} now`], projected: ['warn', `⚠ Headed over ${lim}`], scheduled: ['info', `Scheduled over ${lim}`] };
+  const rows = w.rows.slice().sort((a, b) => (b.flags.length > 0) - (a.flags.length > 0) || b.projected - a.projected || a.name.localeCompare(b.name));
+  const bar = r => { const max = Math.max(lim * 1.25, r.projected, r.scheduled);
+    return `<div class="wkbar" title="${num(r.worked)} h worked · ${num(r.ahead)} h still scheduled · ${num(r.scheduled)} h scheduled this week">
+      <span class="wkw ${r.worked > lim ? 'over' : ''}" style="width:${r.worked / max * 100}%"></span><span class="wka" style="width:${r.ahead / max * 100}%"></span>
+      <span class="wkl" style="left:${lim / max * 100}%" aria-hidden="true"></span></div>`; };
+  const flagged = w.rows.filter(r => r.flags.length).length;
+  el.innerHTML = `<div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">Week at a glance</h2>
+      <div class="row" style="gap:6px"><button class="btn sm" data-wk="${shift(-7)}" aria-label="Previous week">‹</button><b>${fmtDate(w.days[0])} – ${fmtDate(w.days[6])}</b><button class="btn sm" data-wk="${shift(7)}" aria-label="Next week">›</button>
+      ${w.days.includes(t) ? '' : `<button class="btn sm" data-wk="${t}">This week</button>`}</div></div>
+    <p class="small muted" style="margin:6px 0 10px">Worked = clocked hours so far (anyone on the clock counts up to now). Scheduled = their visits on the board this week.
+      Projected = worked + scheduled time still ahead. Overtime after ${esc(lim)} h (Settings). ${flagged ? `<b>${flagged} flagged.</b>` : 'Nobody flagged.'}</p>
+    ${table([{ label: 'Employee', html: r => `<b>${esc(r.name)}</b>${r.on_clock ? ' <span class="pill good">On the clock</span>' : ''}<div class="small muted">${esc(label(r.role))}</div>` },
+      ...w.days.map((d, i) => ({ label: new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }), num: true,
+        html: r => `${r.worked_by_day[i] ? num(r.worked_by_day[i], 1) : d <= t ? '<span class="muted">–</span>' : ''}${r.scheduled_by_day[i] ? `<div class="small muted" title="Scheduled">${num(r.scheduled_by_day[i], 1)} sch</div>` : ''}` })),
+      { label: 'Worked', num: true, html: r => `<b>${num(r.worked, 1)}</b>` },
+      { label: 'Scheduled', num: true, get: r => num(r.scheduled, 1) },
+      { label: 'Projected', num: true, html: r => `<b>${num(r.projected, 1)}</b>${bar(r)}` },
+      { label: 'Flag', html: r => r.flags.map(f => `<span class="pill ${FLAG[f][0]}">${FLAG[f][1]}</span>`).join(' ') || '<span class="pill good">✓ Under</span>' }],
+      rows, { empty: 'No one on the clock or the schedule this week' })}`;
+  $$('[data-wk]', el).forEach(b => b.onclick = () => weekCard(el, b.dataset.wk));
 }
 
 // ============================================================ price book & inventory

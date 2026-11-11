@@ -627,3 +627,20 @@ table.items .lk-job .lk-q { width: 100%; }
 #elog tr.est-estimating td:first-child { box-shadow: inset 4px 0 var(--info); }
 #elog tr.est-no_bid td { color: var(--muted); }
 #elog td:last-child { max-width: 320px; }
+
+/* ===== Time clock: week at a glance ===== */
+.wkbar { position: relative; height: 6px; background: var(--surface-2); border-radius: 3px; margin-top: 4px; min-width: 90px; display: flex; }
+.wkbar .wkw { background: var(--series-1); height: 100%; border-radius: 3px 0 0 3px; }
+.wkbar .wkw.over { background: var(--bad); }
+.wkbar .wka { background: repeating-linear-gradient(45deg, var(--series-1) 0 2px, transparent 2px 5px); opacity: .7; height: 100%; }
+.wkbar .wkl { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); }
+
+/* ===== list filters & sortable headers ===== */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.filters input[type=search] { flex: 1 1 220px; max-width: 340px; }
+.filters select, .filters input[type=date] { width: auto; }
+.filters label { display: inline-flex; align-items: center; gap: 4px; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover, th.sortable:focus-visible { color: var(--text); }
+th.sortable.on { color: var(--text); }
+th.sortable .sarrow { font-size: 10px; }

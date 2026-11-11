@@ -120,9 +120,10 @@ function timeInRange(db, from, to, extraWhere = '', ...params) {
 const endOfDay = d => new Date(new Date(d + 'T00:00:00').getTime() + 86400000).toISOString();
 // Hours a visit takes up on one day. A visit spanning several days (e.g. 7 AM Mon to 3 PM Fri) is a daily
 // 7–3 crew window, not 100 straight hours, so each day counts its start-to-end time of day.
-function visitHoursOnDay(a, day) {
+// `after` (ms) counts only the part of the visit after that moment (what's still ahead today).
+function visitHoursOnDay(a, day, after = -Infinity) {
   const d0 = new Date(day + 'T00:00:00').getTime(), d1 = d0 + 864e5, s = Date.parse(a.start), e = Date.parse(a.end);
-  const overlap = (x, y) => Math.max(0, Math.min(y, d1, e) - Math.max(x, d0, s)) / 36e5;
+  const overlap = (x, y) => Math.max(0, Math.min(y, d1, e) - Math.max(x, d0, s, after)) / 36e5;
   const st = new Date(s), en = new Date(e);
   const multiDay = st.toDateString() !== en.toDateString();
   if (!multiDay) return overlap(s, e);
@@ -211,6 +212,42 @@ function hoursByJob(db, from, to, userId) {
     ...j, hours: r2(j.hours), labor_cost: r2(j.labor_cost),
     techs: Object.entries(j.techs).map(([name, h]) => ({ name, hours: r2(h) })),
   })).sort((a, b) => b.hours - a.hours);
+}
+
+// One week (Mon–Sun, like payroll) for everyone: hours worked so far, hours scheduled, and what the week is headed for.
+// projected = worked so far + the scheduled visit time still ahead. Flags against the overtime threshold.
+function weekHours(db, anyDay, nowIso = new Date().toISOString()) {
+  const s = settings(db), otAfter = Number(s.overtime_weekly_hours) || 40;
+  const d = new Date(anyDay + 'T00:00:00'); d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  const days = [...Array(7)].map((_, i) => { const x = new Date(d); x.setDate(d.getDate() + i); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; });
+  const from = startOfDay(days[0]), to = endOfDay(days[6]), now = Date.parse(nowIso);
+  const users = all(db, "SELECT id, name, role, color FROM users WHERE active = 1 ORDER BY CASE role WHEN 'tech' THEN 0 ELSE 1 END, name");
+  const by = new Map(users.map(u => [u.id, { user_id: u.id, name: u.name, role: u.role, color: u.color, worked: Array(7).fill(0), scheduled: Array(7).fill(0), ahead: 0, on_clock: false }]));
+  // time entries, split across the days they touch (an entry past midnight counts on both)
+  const entries = all(db, `SELECT user_id, clock_in, clock_out FROM time_entries WHERE clock_in < ? AND COALESCE(clock_out, ?) > ?`, to, nowIso, from);
+  for (const t of entries) {
+    const u = by.get(t.user_id); if (!u) continue;
+    if (!t.clock_out) u.on_clock = true;
+    const a = Date.parse(t.clock_in), b = Math.min(Date.parse(t.clock_out || nowIso), now);
+    days.forEach((day, i) => { const d0 = new Date(day + 'T00:00:00').getTime(); u.worked[i] += Math.max(0, Math.min(b, d0 + 864e5) - Math.max(a, d0)) / 36e5; });
+  }
+  const visits = all(db, `SELECT a.id, a.start, a.end, at.user_id FROM appointments a JOIN appointment_techs at ON at.appointment_id = a.id
+    WHERE a.status != 'cancelled' AND a.start < ? AND a.end > ?`, to, from);
+  for (const v of visits) {
+    const u = by.get(v.user_id); if (!u) continue;
+    days.forEach((day, i) => { u.scheduled[i] += visitHoursOnDay(v, day); u.ahead += visitHoursOnDay(v, day, now); });
+  }
+  const rows = [...by.values()].map(u => {
+    const worked = r2(u.worked.reduce((x, y) => x + y, 0)), scheduled = r2(u.scheduled.reduce((x, y) => x + y, 0)), ahead = r2(u.ahead);
+    const projected = r2(worked + ahead);
+    const flags = [];
+    if (worked > otAfter) flags.push('over');
+    else if (projected > otAfter) flags.push('projected');
+    if (scheduled > otAfter) flags.push('scheduled');
+    return { ...u, worked_by_day: u.worked.map(r2), scheduled_by_day: u.scheduled.map(r2), worked, scheduled, ahead, projected,
+      overtime: r2(Math.max(0, worked - otAfter)), projected_overtime: r2(Math.max(0, projected - otAfter)), flags };
+  }).filter(u => u.role === 'tech' || u.worked || u.scheduled);
+  return { week: days[0], days, ot_after: otAfter, now: nowIso, rows };
 }
 
 // Weekly payroll with overtime over the configured threshold (per ISO week starting Monday).
@@ -375,7 +412,7 @@ function costCodeReport(db, from, to) {
 }
 
 module.exports = {
-  visitHoursOnDay,
+  visitHoursOnDay, weekHours,
   estimateChosenItems, jobCostCodes, costCodeReport,
   r2, docTotals, invoiceWithTotals, estimateWithTotals, refreshInvoiceStatus, jobCosting,
   profitAndLoss, monthlyTrend, hoursByJob, payroll, arAging, techPerformance, estimateConversion,

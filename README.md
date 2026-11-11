@@ -127,6 +127,23 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 
 `PUBLIC_URL` controls the links in emails, so set it to the address customers can actually reach.
 
+## Lists: filter and sort
+
+Customers, Jobs, Estimates and Invoices: click a column heading to sort (click again to flip). Filters sit above each list; the URL keeps filters, sort and page, so Back and bookmarks work.
+- **Customers:** search, type, lead source, date added. Sort by name, newest, or number of jobs.
+- **Jobs:** status tabs, search, job type, service vs commercial project, billing (fixed / T&M), tech, scheduled date range. Sort by job # (J-9 before J-10), customer, type, scheduled, completed, status.
+- **Estimates:** status tabs (incl. Open = sent or viewed), search (#, customer, title, job #), created date range. Sort by #, customer, title, created, status, margin, total. The total row covers every match, not just the page.
+- **Invoices:** status tabs, search (#, customer, job #), issued date range, overdue only. Sort by #, customer, job, issued, due, status, total, balance. Total and balance cover every match.
+- Estimates and invoices used to stop at the newest 500; they now page through everything.
+
+## Time Clock: week at a glance (office, managers, admins)
+
+Everyone's Monday–Sunday week (same weeks as payroll): hours worked each day, hours scheduled on the board, and projected = worked so far + scheduled time still ahead. Flags against **Overtime after** (Settings, default 40):
+- **Over 40 now:** clocked hours are already past it (anyone on the clock counts up to now).
+- **Headed over 40:** worked + what's still scheduled goes past it.
+- **Scheduled over 40:** the board has them booked for more than 40 this week.
+A visit spanning several days counts its daily window (Mon–Fri 7–3 = 8 h a day). Technicians don't see this view.
+
 ## Estimating dashboard (📐 Estimating)
 
 The commercial bid log from the Estimating Dashboard workbook. **Admins and managers only**: office staff and technicians don't see it, and the server refuses them.

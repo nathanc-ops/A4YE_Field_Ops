@@ -286,6 +286,43 @@ function createApp(db) {
   // Search: every word must match somewhere (name, company, email, any service address, old-system id);
   // digits also match phone numbers however they were typed. Paged: X-Total-Count says how many match in all.
   const digitsOnly = col => `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(${col}, ''), ' ', ''), '-', ''), '(', ''), ')', ''), '.', ''), '+', '')`;
+  // ---- list filters & sorting shared by customers, jobs, estimates and invoices
+  const isDay = s => /^\d{4}-\d\d-\d\d$/.test(String(s || ''));
+  const dirOf = q => String(q.dir || '').toLowerCase() === 'asc' ? 'ASC' : String(q.dir || '').toLowerCase() === 'desc' ? 'DESC' : null;
+  // every word must match one of the columns
+  function words(q, cols, where, p) {
+    for (const word of String(q || '').trim().split(/\s+/).filter(Boolean).slice(0, 6)) {
+      const like = `%${word.replace(/[%_\\]/g, m => '\\' + m)}%`;
+      where.push(`(${cols.map(c => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`); cols.forEach(() => p.push(like));
+    }
+  }
+  function custOrder(q, sortName) {
+    const d = dirOf(q);
+    if (q.order === 'created') return `c.created_at ${d || 'DESC'}`;
+    if (q.order === 'jobs') return `job_count ${d || 'DESC'}, ${sortName}`;
+    return `${sortName} ${d || 'ASC'}`;
+  }
+  function jobOrder(q) {
+    const d = dirOf(q), by = {
+      number: [`LENGTH(j.number) {d}, j.number {d}`, 'DESC'], customer: ['LOWER(COALESCE(NULLIF(c.company, \'\'), c.name)) {d}', 'ASC'],
+      title: ['LOWER(j.title) {d}', 'ASC'], created: ['j.created_at {d}', 'DESC'], completed: ["COALESCE(j.completed_at, '') {d}", 'DESC'],
+      status: [`CASE j.status ${['unscheduled', 'scheduled', 'dispatched', 'in_progress', 'on_hold', 'completed', 'invoiced', 'cancelled'].map((s, i) => `WHEN '${s}' THEN ${i}`).join(' ')} END {d}`, 'ASC'],
+      type: ['j.job_type {d}', 'ASC'], scheduled: ["COALESCE(j.scheduled_start, '9999') {d}", 'ASC'] }[q.order];
+    return by ? `${by[0].replace(/\{d\}/g, d || by[1])}, j.id DESC` : "COALESCE(j.scheduled_start, '9999'), j.id DESC";
+  }
+  // sort computed rows in JS (totals aren't columns), then page; X-Total-Count and X-Sums describe every match
+  function pageOut(res, q, rows, keys, def, sums) {
+    const key = keys[q.order] ? q.order : def, get = keys[key];
+    const text = typeof rows.map(get).find(v => v != null && v !== '') === 'string' && !['created', 'issued', 'due'].includes(key);
+    const d = dirOf(q) || (text && key !== 'number' ? 'ASC' : 'DESC'), sign = d === 'ASC' ? 1 : -1;
+    rows.sort((a, b) => { const x = get(a), y = get(b);
+      const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x ?? '').localeCompare(String(y ?? ''), undefined, { numeric: true, sensitivity: 'base' });
+      return c * sign || b.id - a.id; });
+    const limit = Math.min(Math.max(Number(q.limit) || 200, 1), 1000), offset = Math.max(Number(q.offset) || 0, 0);
+    res.set('X-Total-Count', String(rows.length));
+    if (sums) res.set('X-Sums', JSON.stringify(Object.fromEntries(Object.entries(sums).map(([k, v]) => [k, C.r2(v)]))));
+    res.json(rows.slice(offset, offset + limit));
+  }
   app.get('/api/customers', wrap((req, res) => {
     const where = [], p = [];
     for (const word of String(req.query.q || '').trim().split(/\s+/).filter(Boolean).slice(0, 6)) {
@@ -298,6 +335,9 @@ function createApp(db) {
       where.push(`(${ors.join(' OR ')})`);
     }
     if (req.query.type) { where.push('c.type = ?'); p.push(req.query.type); }
+    if (req.query.lead_source) { where.push('c.lead_source = ?'); p.push(req.query.lead_source); }
+    if (isDay(req.query.created_from)) { where.push('c.created_at >= ?'); p.push(req.query.created_from); }
+    if (isDay(req.query.created_to)) { where.push("c.created_at < date(?, '+1 day')"); p.push(req.query.created_to); }
     // default: people by last name, businesses by name; sort=first files people by first name as typed
     const sortName = req.query.sort === 'first' ? "LOWER(COALESCE(NULLIF(c.company, ''), c.name))" : 'cust_sort(c.name, c.company)';
     if (/^[a-z]$/i.test(req.query.letter || '')) { where.push(`UPPER(SUBSTR(${sortName}, 1, 1)) = ?`); p.push(req.query.letter.toUpperCase()); }
@@ -307,7 +347,7 @@ function createApp(db) {
     res.set('X-Total-Count', String(get(db, `SELECT COUNT(*) n FROM customers c ${w}`, ...p).n));
     res.json(all(db, `SELECT c.*, (SELECT COUNT(*) FROM jobs j WHERE j.customer_id = c.id) job_count,
       (SELECT address || COALESCE(', ' || city, '') FROM locations l WHERE l.customer_id = c.id ORDER BY id LIMIT 1) primary_address
-      FROM customers c ${w} ORDER BY ${sortName}, c.id LIMIT ? OFFSET ?`, ...p, limit, offset));
+      FROM customers c ${w} ORDER BY ${custOrder(req.query, sortName)}, c.id LIMIT ? OFFSET ?`, ...p, limit, offset));
   }));
   app.get('/api/customers/:id', wrap((req, res) => {
     const c = mustGet('customers', req.params.id);
@@ -389,6 +429,13 @@ function createApp(db) {
     if (req.query.from) { where.push('j.scheduled_end >= ?'); p.push(req.query.from); }
     if (req.query.to) { where.push('j.scheduled_start < ?'); p.push(req.query.to); }
     if (req.query.customer_id) { where.push('j.customer_id = ?'); p.push(req.query.customer_id); }
+    if (req.query.job_type) { where.push('j.job_type = ?'); p.push(req.query.job_type); }
+    if (req.query.billing_type) { where.push('j.billing_type = ?'); p.push(req.query.billing_type); }
+    if (req.query.kind === 'project') where.push('j.is_project = 1'); else if (req.query.kind === 'service') where.push('COALESCE(j.is_project, 0) = 0');
+    if (req.query.tech_id) { where.push('EXISTS (SELECT 1 FROM job_techs jt2 WHERE jt2.job_id = j.id AND jt2.user_id = ?)'); p.push(req.query.tech_id); }
+    if (isDay(req.query.sched_from)) { where.push('j.scheduled_start >= ?'); p.push(C.startOfDay(req.query.sched_from)); }
+    if (isDay(req.query.sched_to)) { where.push('j.scheduled_start < ?'); p.push(C.endOfDay(req.query.sched_to)); }
+    if (req.query.unscheduled_only) where.push('j.scheduled_start IS NULL');
     // search like the customer list: every word must match somewhere (job #, time clock #, title, customer, address, PO)
     const q = String(req.query.q || '').trim();
     for (const word of q.split(/\s+/).filter(Boolean).slice(0, 6)) {
@@ -404,7 +451,7 @@ function createApp(db) {
     const order = req.query.picker
       ? `CASE WHEN lower(j.number) = lower(?) OR lower(j.number) = lower('J-' || ?) OR j.timeclock_job = ? THEN 0 WHEN j.number LIKE ? OR j.timeclock_job LIKE ? THEN 1 ELSE 2 END,
          CASE WHEN j.status IN ('cancelled') THEN 2 WHEN j.status IN ('completed', 'invoiced') THEN 1 ELSE 0 END, j.id DESC`
-      : "COALESCE(j.scheduled_start, '9999'), j.id DESC";
+      : jobOrder(req.query);
     const op = req.query.picker ? [q, q, q, `${q}%`, `${q}%`] : [];
     res.json(all(db, `${jobSelect} ${w} ORDER BY ${order} LIMIT ?`, ...p, ...op, limit).map(fixTechs));
   }));
@@ -714,6 +761,11 @@ function createApp(db) {
     if (req.user.role === 'tech') for (const r of rows) { delete r.hourly_cost; delete r.hourly_wage; }
     res.json(rows.map(r => ({ ...r, hours: C.r2(r.hours) })).reverse());
   }));
+  // everyone's week at a glance (office, managers, admins): worked, scheduled, projected, overtime flags
+  app.get('/api/time/week', office, wrap((req, res) => {
+    const day = /^\d{4}-\d\d-\d\d$/.test(req.query.week || '') ? req.query.week : today();
+    res.json(C.weekHours(db, day));
+  }));
   app.post('/api/time', office, wrap((req, res) => {
     const u = mustGet('users', req.body.user_id);
     if (!req.body.clock_in || !req.body.clock_out) throw bad('Start and end time are required');
@@ -763,9 +815,16 @@ function createApp(db) {
   app.get('/api/estimates', office, wrap((req, res) => {
     const p = [], where = [];
     if (req.query.status === 'review') where.push("e.review_status = 'pending'");
-    else if (req.query.status) { where.push('e.status = ?'); p.push(req.query.status); }
-    res.json(all(db, `SELECT e.*, c.name customer_name, c.type customer_type FROM estimates e JOIN customers c ON c.id = e.customer_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY e.id DESC LIMIT 500`, ...p)
-      .map(e => C.estimateWithTotals(db, e)));
+    else if (req.query.status) { where.push(`e.status IN (${req.query.status.split(',').map(() => '?').join(',')})`); p.push(...req.query.status.split(',')); }
+    words(req.query.q, ['e.number', 'e.title', 'c.name', 'c.company', 'j.number'], where, p);
+    if (isDay(req.query.from)) { where.push('e.created_at >= ?'); p.push(req.query.from); }
+    if (isDay(req.query.to)) { where.push("e.created_at < date(?, '+1 day')"); p.push(req.query.to); }
+    if (req.query.created_by) { where.push('e.created_by = ?'); p.push(req.query.created_by); }
+    const rows = all(db, `SELECT e.*, c.name customer_name, c.type customer_type, j.number job_number FROM estimates e JOIN customers c ON c.id = e.customer_id
+      LEFT JOIN jobs j ON j.id = e.job_id ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY e.id DESC`, ...p).map(e => C.estimateWithTotals(db, e));
+    pageOut(res, req.query, rows, {
+      number: e => e.number, created: e => e.created_at, customer: e => e.customer_name, title: e => e.title || '', status: e => e.status,
+      total: e => e.total, margin: e => e.est_margin_pct ?? -1e9 }, 'created', { total: rows.reduce((s, e) => s + (e.total || 0), 0) });
   }));
   app.get('/api/estimates/:id', office, wrap((req, res) => {
     const e = C.estimateWithTotals(db, mustGet('estimates', req.params.id));
@@ -916,8 +975,16 @@ function createApp(db) {
   app.get('/api/invoices', office, wrap((req, res) => {
     const p = [], where = [];
     if (req.query.status) { where.push(`i.status IN (${req.query.status.split(',').map(() => '?').join(',')})`); p.push(...req.query.status.split(',')); }
-    res.json(all(db, `SELECT i.*, c.name customer_name, j.number job_number FROM invoices i JOIN customers c ON c.id = i.customer_id LEFT JOIN jobs j ON j.id = i.job_id
-      ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY i.id DESC LIMIT 500`, ...p).map(i => C.invoiceWithTotals(db, i)));
+    words(req.query.q, ['i.number', 'c.name', 'c.company', 'j.number', 'j.title'], where, p);
+    if (isDay(req.query.from)) { where.push('i.issue_date >= ?'); p.push(req.query.from); }
+    if (isDay(req.query.to)) { where.push('i.issue_date <= ?'); p.push(req.query.to); }
+    if (req.query.overdue) { where.push("i.status IN ('sent','partial') AND i.due_date < ?"); p.push(today()); }
+    const rows = all(db, `SELECT i.*, c.name customer_name, j.number job_number FROM invoices i JOIN customers c ON c.id = i.customer_id LEFT JOIN jobs j ON j.id = i.job_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY i.id DESC`, ...p).map(i => C.invoiceWithTotals(db, i));
+    pageOut(res, req.query, rows, {
+      number: i => i.number, issued: i => i.issue_date || '', due: i => i.due_date || '', customer: i => i.customer_name, job: i => i.job_number || '',
+      status: i => i.status, total: i => i.total, balance: i => i.balance }, 'issued',
+      { total: rows.reduce((s, i) => s + (i.total || 0), 0), balance: rows.reduce((s, i) => s + (i.balance || 0), 0) });
   }));
   app.get('/api/invoices/:id', office, wrap((req, res) => {
     const i = C.invoiceWithTotals(db, mustGet('invoices', req.params.id));
