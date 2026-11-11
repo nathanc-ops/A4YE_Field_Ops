@@ -413,15 +413,28 @@ async function kpiSetup(el) {
       ${fieldHtml({ name: 'history_weeks', label: 'Weeks in trend lines', type: 'number' }, s.settings.history_weeks)}
       ${fieldHtml({ name: 'headlines', label: 'Scorecard headline IDs', full: true }, s.settings.headlines)}
       <div class="full"><button class="btn primary sm">Save rules</button></div></form></div></div>
+    <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Field Ops numbers</h3>
+      <p class="small muted">Auto KPIs are worked out from Field Ops: jobs, estimates, invoices, payments, the schedule, the time clock and purchase orders (no Housecall Pro).
+        Weeks before the start week keep what came from the sheet or was typed. A Feed number from the sheet, or an override with a reason, still wins.
+        ${s.settings.auto_from ? '' : s.settings.auto_from_effective ? `Not set, so it starts with the first week Field Ops has records for: <b>${kpiWeekLabel(s.settings.auto_from_effective)}</b>.` : 'Field Ops has no records yet.'}</p>
+      <form id="kauto" class="form-grid">
+        ${fieldHtml({ name: 'auto_from', label: 'Start with the week of (a date in the first week Field Ops is the record)', type: 'date' }, s.settings.auto_from)}
+        ${fieldHtml({ name: 'non_job_numbers', label: 'Job #s that aren\'t a job site (shop, house…)' }, s.settings.non_job_numbers)}
+        ${fieldHtml({ name: 'tardy_grace_min', label: 'Tardy grace (minutes after the first visit)', type: 'number' }, s.settings.tardy_grace_min)}
+        <p class="small muted full" style="margin:0">Overtime counts hours over <b>${esc(s.settings.ot_after)}</b> a week (Settings › Overtime after). Technicians are field; office, managers and admins are office.</p>
+        <div class="full"><button class="btn primary sm">Save</button></div></form></div>
     <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Targets</h3><p class="small muted">Changes save as you leave each box. Percent targets in percent (6 = 6%).</p>
-    <div class="table-wrap"><table class="kpi-t"><thead><tr><th>#</th><th>Page</th><th>Metric</th><th>Better</th><th class="num">Target</th><th>Active</th></tr></thead><tbody>
+    <div class="table-wrap"><table class="kpi-t"><thead><tr><th>#</th><th>Page</th><th>Metric</th><th>Better</th><th class="num">Target</th><th>Filled from</th><th>Active</th></tr></thead><tbody>
     ${s.metrics.map(m => `<tr data-m="${esc(m.id)}"><td class="small muted">${esc(m.id)}</td><td class="small">${esc(m.owner)}</td><td>${esc(m.metric)} <span class="small muted">${esc(m.input)}${m.rule ? ` · ${esc(m.rule)}` : ''}</span></td>
       <td><select data-f="better">${['Higher', 'Lower', 'Info'].map(b => `<option ${b === m.better ? 'selected' : ''}>${b}</option>`).join('')}</select></td>
       <td class="num"><input data-f="target" data-unit="${esc(m.unit)}" inputmode="decimal" style="width:90px" value="${esc(kpiIn(m.target, m.unit))}">${m.unit === '%' ? ' %' : ''}</td>
+      <td>${m.input === 'calc' ? `<span class="small muted">formula ${esc(m.rule || '')}</span>` : `<select data-f="rule" style="max-width:260px"><option value="">Typed by hand</option>${s.rules.map(r => `<option value="${esc(r.key)}" title="${esc(r.desc)}" ${r.key === m.rule ? 'selected' : ''}>${esc(r.desc.length > 60 ? r.desc.slice(0, 60) + '…' : r.desc)}</option>`).join('')}${m.rule && !s.rules.some(r => r.key === m.rule) ? `<option value="${esc(m.rule)}" selected>${esc(m.rule)} (not in Field Ops — typed)</option>` : ''}</select>`}</td>
       <td><input type="checkbox" data-f="active" ${m.active ? 'checked' : ''}></td></tr>`).join('')}</tbody></table></div></div>`;
   $$('[data-owner]', el).forEach(x => x.onchange = () => act(() => PUT(`/kpi/owners/${x.dataset.owner}`, { user_id: x.value }), 'Saved').catch(() => null));
   $('#kset', el).onsubmit = async e => { e.preventDefault(); const f = e.target;
     await act(() => PUT('/kpi/settings', { band: f.band.value, ot_rate: f.ot_rate.value, due_days: f.due_days.value, due_time: f.due_time.value, history_weeks: f.history_weeks.value, headlines: f.headlines.value }), 'Rules saved').catch(() => null); };
+  $('#kauto', el).onsubmit = async e => { e.preventDefault(); const f = e.target;
+    await act(() => PUT('/kpi/settings', { auto_from: f.auto_from.value, non_job_numbers: f.non_job_numbers.value, tardy_grace_min: f.tardy_grace_min.value }), 'Saved').catch(() => null); kpiSetup(el); };
   $$('[data-m] [data-f]', el).forEach(x => x.onchange = () => {
     const id = x.closest('[data-m]').dataset.m, k = x.dataset.f;
     let v = k === 'active' ? x.checked : x.value;
@@ -433,7 +446,7 @@ async function kpiSetup(el) {
 async function kpiImport(el) {
   el.innerHTML = `<div class="card"><h3 style="margin-top:0">Import from the KPI Dashboard sheet</h3>
     <ol class="small"><li>Open the <b>A4YE KPI Dashboard</b> Google Sheet → <b>File → Download → Microsoft Excel (.xlsx)</b>.</li><li>Choose that file here, check the preview, then import.</li></ol>
-    <p class="small muted">Reads only the Metrics, Settings, Values, Notes and Submissions tabs (never the Housecall Pro, Ply or time-clock data tabs).
+    <p class="small muted">Reads the Metrics, Settings, Values, Notes, Submissions, Extras, Feed, FeedDetail and Snapshots tabs (never the Housecall Pro, Ply or time-clock data tabs).
       Each page's person comes from the sheet's <code>EMAIL_&lt;Name&gt;</code> settings; <code>ADMINS</code> get "fill in anyone's page" and <code>MASTER_VIEWERS</code> get "see everyone's numbers", matched by email to Field Ops users.
       Importing again updates definitions and adds newer history; numbers typed here since are kept unless the sheet's are newer.</p>
     <input type="file" id="kfile" accept=".xlsx"> <div id="kprev" style="margin-top:12px"></div></div>`;

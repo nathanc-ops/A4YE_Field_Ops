@@ -133,6 +133,9 @@ module.exports = function routesExt(app, db, X) {
     for (const k of ['start', 'end']) if (data[k]) data[k] = new Date(data[k]).toISOString();
     checkTimes(data.start || a.start, data.end || a.end);
     const crewBefore = crewOf(a.id);
+    // a job visit moved to another time: logged for the KPI cancellations / reschedules count
+    if (data.start && data.start !== a.start && a.job_id && !['done', 'cancelled'].includes(a.status))
+      run(db, 'INSERT INTO appointment_moves (appointment_id, job_id, from_start, to_start, user_id) VALUES (?,?,?,?,?)', a.id, a.job_id, a.start, data.start, req.user.id);
     update('appointments', a.id, data);
     setApptTechs(a.id, a.job_id, req.body.tech_ids);
     noticeChanges(a, crewBefore);

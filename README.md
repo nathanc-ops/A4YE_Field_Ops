@@ -130,7 +130,7 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 ## Weekly KPIs (🎯 KPIs)
 
 The A4YE KPI Dashboard sheet, inside Field Ops, with the same people and rules.
-- **Setting it up:** admins import it once under **KPIs → Import from sheet**. Download the Google Sheet as .xlsx first. The import reads only the Metrics, Settings, Values, Notes and Submissions tabs.
+- **Setting it up:** admins import it once under **KPIs → Import from sheet**. Download the Google Sheet as .xlsx first. The import reads the Metrics, Settings, Values, Notes, Submissions, Extras, Feed, FeedDetail and Snapshots tabs.
 - **Who can use KPIs:** office staff, managers and admins. Technicians can't hold a KPI page or KPI permissions, and the import reports any it skips.
 - **Each person fills in their own page.** The import links each page to a Field Ops user by the sheet's `EMAIL_<Name>` settings, and the link can be changed under **KPIs → Targets & set-up**.
 - **Permissions:**
@@ -139,7 +139,10 @@ The A4YE KPI Dashboard sheet, inside Field Ops, with the same people and rules.
   - The import gives both permissions to matching users; they can also be switched per person under **Team**. Admins have both.
 - **The week** runs Sunday–Saturday. Pages are due the set number of days after the Saturday (3 = Tuesday 11:59 PM, company time zone). They show as submitted, submitted late, or missing.
 - **Rows:**
-  - *Manual* and *auto* rows are typed in. The sheet's auto pulls from Housecall Pro, Ply and the time clock are not connected here.
+  - *Manual* rows are typed in.
+  - *Auto* rows are worked out from Field Ops records, not Housecall Pro: jobs (commercial projects included), estimates, invoices, payments, the schedule (with moved appointments counted as reschedules), the time clock and purchase orders. Pick the source per row under **KPIs → Targets & set-up → Filled from**.
+  - **Start with the week of** (same page) protects history: weeks before it keep what came from the sheet or was typed. Left blank, it starts with the first week Field Ops has records for.
+  - A/R ageing and open estimates are rebuilt as of Saturday night. Headcount and inventory can only be read live, so they freeze when the week ends.
   - *Calc* rows work out their formula, including from other pages (`B14/(B4/7)`, `N6*OT_RATE`).
 - **Looks and works like the KPI Command Center web app:** Team overview tiles, a coloured bar, Team cards that filter the KPI list, and "click any KPI to see where its number came from". Each person has a page with Save draft / Submit week at the bottom.
 - **Status (the web app's rules):** within the yellow band (25%) of a target above zero is yellow; past it is red. A green or yellow number that has moved the wrong way 3 weeks running is red (↘3). **Every yellow or red row needs a Cause and a Fix** before the week can be submitted. A number with no target shows NO TARGET and isn't scored.

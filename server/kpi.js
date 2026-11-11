@@ -17,6 +17,7 @@
 const D = require('./db');
 const P = require('./perms');
 const X = require('./xlsx');
+const KpiAuto = require('./kpi_auto');
 const { all, get, run } = D;
 
 const DEFAULT_HEADLINES = 'B4,N27,B18,B15,N39,J5,K7,N5,J12,N17';
@@ -154,9 +155,48 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     }
     return { status: st, wrong_way: wrong };
   }
+  // ---------------------------------------------------------------- auto numbers from Field Ops' own records
+  const AUTO = KpiAuto(db, { localNow, localToUtc, addDays });
+  // works out each auto metric for the weeks asked for and keeps it beside the KPI as its auto number. A Feed number from
+  // the sheet still wins; a reasoned override still wins; a plain typed number gives way (as in the web app).
+  function refreshAuto(weeks, metrics, c) {
+    const autos = metrics.filter(m => m.input === 'auto' && AUTO.RULES[m.rule]);
+    if (!autos.length) return;
+    const from = AUTO.startWeek(c, sundayOf), last = addDays(currentWeek(c), 7);
+    if (!from) return;
+    const X = AUTO.context(c), now = Date.now(), at = new Date().toISOString(), memo = new Map();
+    for (const w of weeks) {
+      if (w < from || w > last) continue;
+      const ended = now > AUTO.satNight(w, c.tz);
+      for (const m of autos) {
+        const row = get(db, 'SELECT * FROM kpi_values WHERE week = ? AND metric_id = ?', w, m.id);
+        if (row && String(row.auto_source || '').startsWith('Feed:')) continue;
+        if (AUTO.NOW_ONLY.has(m.rule)) {
+          const frozen = row && String(row.auto_source || '').startsWith('Field Ops') && Date.parse(row.auto_at) >= AUTO.satNight(w, c.tz);
+          if (frozen || (ended && w < currentWeek(c))) continue;   // "now" numbers can't be rebuilt for an older week
+        }
+        const k = `${m.rule}|${w}`;
+        if (!memo.has(k)) memo.set(k, AUTO.compute(m.rule, w, c, X));
+        const res = memo.get(k); if (!res) continue;
+        const src = `Field Ops: ${AUTO.RULES[m.rule]}`, det = res.detail.length ? JSON.stringify(res.detail) : null;
+        if (row && row.auto_value === res.value && row.auto_source === src && (row.detail || null) === det && !(row.origin === 'manual' && !row.reason)) continue;
+        if (row) {
+          const keepOverride = row.origin === 'manual' && row.reason;
+          run(db, `UPDATE kpi_values SET auto_value = ?, auto_source = ?, auto_at = ?, auto_link = NULL, auto_note = ?, detail = ?,
+            value = CASE WHEN ? THEN value ELSE ? END, origin = CASE WHEN ? THEN origin ELSE 'auto' END, reason = CASE WHEN ? THEN reason ELSE NULL END WHERE week = ? AND metric_id = ?`,
+            res.value, src, at, res.note, det, keepOverride ? 1 : 0, res.value, keepOverride ? 1 : 0, keepOverride ? 1 : 0, w, m.id);
+        } else {
+          run(db, `INSERT INTO kpi_values (week, metric_id, value, origin, by_label, at, auto_value, auto_at, auto_source, auto_note, detail) VALUES (?,?,?,'auto','Field Ops',?,?,?,?,?,?)`,
+            w, m.id, res.value, at, res.value, at, src, res.note, det);
+        }
+      }
+    }
+  }
   // every metric for one week: value, stored row, status, trend (oldest → this week)
   function score(week, metrics, c) {
-    const hist = weeksBack(week, Math.max(4, c.history)), vals = valuesFor(hist, metrics, c), out = new Map();
+    const hist = weeksBack(week, Math.max(4, c.history));
+    refreshAuto(hist, metrics, c);
+    const vals = valuesFor(hist, metrics, c), out = new Map();
     for (const m of metrics) {
       const trend = hist.map(w => vals.get(w).get(m.id).value), cur = vals.get(week).get(m.id);
       out.set(m.id, { value: cur.value, row: cur.row, trend: trend.slice(-c.history), weeks: hist.slice(-c.history), ...scored(m, trend, c) });
@@ -339,7 +379,10 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   app.get('/api/kpi/setup', editAll, (req, res) => {
     const c = cfg();
     res.json({ owners: all(db, 'SELECT o.*, u.name user_name, (SELECT COUNT(*) FROM kpi_metrics m WHERE m.owner_id = o.id AND m.active = 1) metrics FROM kpi_owners o LEFT JOIN users u ON u.id = o.user_id ORDER BY o.sort, o.name'),
-      metrics: metricsAll(), settings: { band: c.band, ot_rate: c.otRate, due_days: c.dueDays, due_time: c.dueTime, history_weeks: c.history, headlines: c.headlines.join(', ') },
+      metrics: metricsAll(), settings: { band: c.band, ot_rate: c.otRate, due_days: c.dueDays, due_time: c.dueTime, history_weeks: c.history, headlines: c.headlines.join(', '),
+        auto_from: S().kpi_auto_from || '', auto_from_effective: AUTO.startWeek(c, sundayOf), non_job_numbers: S().kpi_non_job_numbers || '0000, 0500, 1000',
+        tardy_grace_min: num(S().kpi_tardy_grace_min) ?? 5, ot_after: num(S().overtime_weekly_hours) ?? 40 },
+      rules: Object.entries(AUTO.RULES).map(([k, d]) => ({ key: k, desc: d })),
       users: all(db, "SELECT id, name, email, role FROM users WHERE active = 1 AND role IN ('admin','manager','office') ORDER BY name") });
   });
   app.put('/api/kpi/metrics/:id', editAll, wrap((req, res) => {
@@ -350,6 +393,11 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     if ('active' in b) up.active = b.active ? 1 : 0;
     if ('owner_id' in b) { if (!get(db, 'SELECT 1 x FROM kpi_owners WHERE id = ?', Number(b.owner_id))) throw bad('No such owner'); up.owner_id = Number(b.owner_id); }
     if ('better' in b) { if (!['Higher', 'Lower', 'Info'].includes(b.better)) throw bad('Better must be Higher, Lower or Info'); up.better = b.better; }
+    if ('rule' in b && m.input !== 'calc') {   // which Field Ops number fills an auto (or typed) metric; blank = typed by hand
+      const r = str(b.rule);
+      if (r && !AUTO.RULES[r]) throw bad('Unknown Field Ops number');
+      up.rule = r || null; up.input = r ? 'auto' : 'manual';
+    }
     for (const [k, v] of Object.entries(up)) run(db, `UPDATE kpi_metrics SET ${k} = ? WHERE id = ?`, v, m.id);
     res.json({ ok: true });
   }));
@@ -369,6 +417,9 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     if ('due_days' in b) { const v = Number(b.due_days); if (!(Number.isInteger(v) && v >= 0 && v <= 14)) throw bad('Due days: 0 to 14'); up.run('kpi_due_days', String(v)); }
     if ('due_time' in b) { if (!/^\d\d:\d\d$/.test(str(b.due_time))) throw bad('Due time like 23:59'); up.run('kpi_due_time', str(b.due_time)); }
     if ('history_weeks' in b) up.run('kpi_history_weeks', String(Math.min(52, Math.max(4, Number(b.history_weeks) || 12))));
+    if ('auto_from' in b) { const v = str(b.auto_from); if (v && !/^\d{4}-\d\d-\d\d$/.test(v)) throw bad('Start week like 2026-11-01'); up.run('kpi_auto_from', v ? sundayOf(v) : ''); }
+    if ('non_job_numbers' in b) up.run('kpi_non_job_numbers', str(b.non_job_numbers).slice(0, 200));
+    if ('tardy_grace_min' in b) { const v = Number(b.tardy_grace_min); if (!(v >= 0 && v <= 120)) throw bad('Grace minutes: 0 to 120'); up.run('kpi_tardy_grace_min', String(v)); }
     if ('headlines' in b) {
       const ids = str(b.headlines).split(/[\s,]+/).filter(Boolean);
       const unknown = ids.filter(id => !get(db, 'SELECT 1 x FROM kpi_metrics WHERE id = ?', id));
@@ -452,7 +503,7 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
           target = excluded.target, input = excluded.input, rule = excluded.rule, source = excluded.source, how = excluded.how, target_note = excluded.target_note,
           active = excluded.active, sort = excluded.sort`,
         id, ownerId(str(r.Owner)), str(r.Section), str(r.Metric) || id, str(r.Unit) || '#', better, pct(r.Unit, num(r.Target)), input,
-        input === 'calc' ? str(r.Rule) : null, str(r.Source) || null, str(r['How measured']) || null, str(r['Target note']) || null, str(r.Active).toUpperCase() === 'N' ? 0 : 1, i);
+        input === 'manual' ? null : str(r.Rule) || null, str(r.Source) || null, str(r['How measured']) || null, str(r['Target note']) || null, str(r.Active).toUpperCase() === 'N' ? 0 : 1, i);
     });
     trees.clear();
     // permissions: the sheet's ADMINS and MASTER_VIEWERS, for people who aren't Field Ops admins already (they have everything)

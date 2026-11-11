@@ -968,6 +968,19 @@ const MIGRATIONS = [
         UNIQUE (week, owner_id, item, at)
       );`);
   },
+  // 31: a log of scheduled visits moved to a different time (the KPI "cancellations / reschedules" count reads it)
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS appointment_moves (
+      id INTEGER PRIMARY KEY,
+      appointment_id INTEGER,
+      job_id INTEGER,
+      from_start TEXT,
+      to_start TEXT,
+      user_id INTEGER,
+      at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_appt_moves_at ON appointment_moves(at);`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
