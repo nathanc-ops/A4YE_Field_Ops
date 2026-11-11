@@ -112,6 +112,9 @@ function estEdit(b, d) {
     `<label class="check"><input type="checkbox" name="gc" value="${g.id}" ${sent.has(g.id) ? 'checked' : ''}> ${esc(g.name)}</label>`).join('') || '<span class="muted small">No contractors yet — add them under Contractors.</span>'}</div></div>`;
   const plans = `<div class="f full" style="margin-top:8px"><span>Plans — Claude does the takeoff${b && b.takeoff_count ? ` · <a href="#" id="etos">${b.takeoff_count} takeoff${b.takeoff_count === 1 ? '' : 's'} on this bid</a>` : ''}</span>
     <div id="eplans"></div>
+    <label class="f full" style="margin-top:8px"><span>Instructions for Claude on this estimate (optional)</span>
+      <textarea id="enotes" rows="4" maxlength="4000" placeholder="e.g. MC cable for branch circuits above ceilings, EMT where exposed. Owner furnishes all fixtures (labor only). Only the restroom areas on sheets E1.1–E2.2 are in our scope. Exclude fire alarm. Carry 20% spare on devices."></textarea>
+      <span class="small muted">What to count and how. Crew rates, productivity factor and markups are set under Assumptions, not here.</span></label>
     <span class="small muted">Optional. Pick the job type above; the takeoff runs after you save (a few minutes for a big set). You review every line before it's used.</span></div>`;
   let fc = null;
   const m = formModal({ title: b ? `Bid ${b.bid_number || ''} · ${b.project_name}` : 'New bid', fields, wide: true,
@@ -124,7 +127,7 @@ function estEdit(b, d) {
       planCheck(files);
       let id = b && b.id;
       if (b) await act(() => PUT(`/estimating/bids/${b.id}`, o), 'Saved'); else id = (await act(() => POST('/estimating/bids', o), 'Bid added')).id;
-      if (files.length) { const t = await startTakeoff(id, o.job_kind, files); if (t) return go('#/estimating/takeoff/' + t.id); }
+      if (files.length) { const t = await startTakeoff(id, o.job_kind, files, $('#enotes', form).value); if (t) return go('#/estimating/takeoff/' + t.id); }
       viewEstimating();
     } });
   fc = fileCollector($('#eplans', m.el));
@@ -204,10 +207,10 @@ function planCheck(files, have = { count: 0, bytes: 0 }) {
   if (total > PLAN_MAX_MB * 1048576) throw new Error(`Those files come to ${mb(total)} — the limit is ${PLAN_MAX_MB} MB together. Leave out sheets that aren't electrical.`);
 }
 const readFile = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok({ file: r.result, filename: f.name }); r.onerror = no; r.readAsDataURL(f); });
-async function startTakeoff(bidId, kind, files) {
+async function startTakeoff(bidId, kind, files, notes = '') {
   try { planCheck(files); } catch (e) { toast(e.message, true); return null; }
   const payload = await Promise.all(files.map(readFile));
-  return act(() => POST(`/estimating/bids/${bidId}/takeoff`, { kind, files: payload }), `${files.length > 1 ? `${files.length} files` : 'Plans'} sent — Claude is doing the takeoff`).catch(() => null);
+  return act(() => POST(`/estimating/bids/${bidId}/takeoff`, { kind, files: payload, notes }), `${files.length > 1 ? `${files.length} files` : 'Plans'} sent — Claude is doing the takeoff`).catch(() => null);
 }
 function planFilesCard(t, id) {
   const have = t.files || [], bytes = have.reduce((s, f) => s + (f.size || 0), 0);
@@ -215,6 +218,10 @@ function planFilesCard(t, id) {
     ${table([{ label: 'File', html: f => `${f.mime === 'application/pdf' ? '📄' : '🖼'} ${esc(f.filename)}` }, { label: 'Size', num: 1, get: f => f.size ? mb(f.size) : '' },
       { label: '', html: f => have.length > 1 ? `<button class="btn sm" data-frm="${f.index}" aria-label="Remove ${esc(f.filename)}">Remove</button>` : '' }], have, { empty: 'No files' })}
     <div id="toaddf" style="margin-top:10px"></div>
+    <label class="f full" style="margin-top:10px"><span>Instructions for Claude on this estimate</span>
+      <textarea id="tonotes" rows="5" maxlength="4000" placeholder="e.g. MC cable above ceilings, EMT where exposed. Owner furnishes fixtures (labor only). Only the restroom areas are in our scope. Exclude fire alarm.">${esc(t.notes || '')}</textarea>
+      <span class="small muted">What to count and how; Claude follows these over the ${esc(t.kind)} template. Saved with this estimate and used each time it runs. Crew rates, productivity factor and markups are under Assumptions.</span></label>
+    <button class="btn sm" id="tonotesave" style="margin-top:4px">Save instructions</button>
     <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn" id="toaddfgo">Add these files</button><button class="btn primary" id="torerun2">Run the takeoff again with all files</button></div>
     <p class="small muted">Add specifications, addenda or photos of sheets, then run it again: Claude reads every file as one set, and a later addendum overrides what it changes. Running again replaces the line edits on this takeoff.</p></div>`;
 }
@@ -231,7 +238,9 @@ function wirePlanFiles(t, id) {
   };
   $$('[data-frm]').forEach(b => b.onclick = async () => { const f = have.find(x => String(x.index) === b.dataset.frm);
     if (!confirm(`Remove ${f.filename} from this takeoff?`)) return; await act(() => DEL(`/estimating/takeoffs/${id}/files/${f.index}`), 'Removed'); viewTakeoff(id); });
-  $('#torerun2').onclick = async () => { if (!confirm(`Run the takeoff again with ${have.length} file(s)? Your line edits on this takeoff are replaced.`)) return; await act(() => POST(`/estimating/takeoffs/${id}/rerun`)); viewTakeoff(id); };
+  const saveNotes = () => PUT(`/estimating/takeoffs/${id}/instructions`, { notes: $('#tonotes').value });
+  $('#tonotesave').onclick = () => act(saveNotes, 'Instructions saved');
+  $('#torerun2').onclick = async () => { if (!confirm(`Run the takeoff again with ${have.length} file(s)${$('#tonotes').value.trim() ? ' and your instructions' : ''}? Your line edits on this takeoff are replaced.`)) return; await act(saveNotes); await act(() => POST(`/estimating/takeoffs/${id}/rerun`)); viewTakeoff(id); };
 }
 // ---------------------------------------------------------------- estimate (A4YE quote workbook model)
 const EST_SCOPES = [['distribution', 'Electrical - Distribution'], ['lighting', 'Electrical - Lighting'], ['power', 'Electrical - Power'], ['fire_alarm', 'Fire Alarm'], ['data', 'Data & Telecom'], ['demo', 'Demolition - Electrical']];
@@ -270,7 +279,7 @@ async function viewTakeoff(id) {
         ${kpi('Total quote', money0(B.total), `O&P ${num(B.op_pct, 2)}% · contingency ${num(B.contingency_pct, 2)}%`)}</div>
       ${flags.length ? `<div class="alert" style="margin-top:12px">${flags.map(esc).join(' · ')}</div>` : ''}
       ${t.applied_at ? `<p class="small"><span class="pill good">✓ Used as the bid value ${fmtDT(t.applied_at)}</span></p>` : ''}
-      <div class="tabs" style="margin-top:14px">${[['lines', `Lines (${t.lines.filter(l => !l.derived).length})`], ['estimate', 'Estimate summary'], ['notes', `RFIs & notes (${(t.questions || []).length})`], ['files', `Plans (${(t.files || []).length})`]].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tt="${k}">${l}</button>`).join('')}</div>
+      <div class="tabs" style="margin-top:14px">${[['lines', `Lines (${t.lines.filter(l => !l.derived).length})`], ['estimate', 'Estimate summary'], ['notes', `RFIs & notes (${(t.questions || []).length})`], ['files', `Plans & instructions (${(t.files || []).length})`]].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tt="${k}">${l}</button>`).join('')}</div>
       <div id="tobody"></div>`;
     $$('[data-tt]').forEach(b => b.onclick = () => go(`#/estimating/takeoff/${id}?tab=${b.dataset.tt}`));
     const body = $('#tobody');

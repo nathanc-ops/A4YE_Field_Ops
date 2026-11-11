@@ -228,3 +228,24 @@ test('underbidding guards: complete-scope rules and coverage in the request; a $
   assert.equal((await call('admin', 'GET', '/estimating/takeoff-settings')).data.templates.commercial.effort, 'max');
   await call('admin', 'PUT', '/estimating/takeoff-settings', { templates: { commercial: { effort: 'xhigh' } } });
 });
+
+test('estimate-specific instructions: sent to Claude as their own block, editable, used on the next run', async () => {
+  reply = okReply;
+  const notes = 'MC cable above ceilings, EMT where exposed. Owner furnishes fixtures (labor only).';
+  const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', file: pdf, notes })).data;
+  let t = await waitDone(id);
+  assert.equal(t.notes, notes);
+  let blocks = calls.at(-1).params.messages[0].content.filter(b => b.type === 'text');
+  assert.equal(blocks.length, 2);
+  assert.match(blocks[1].text, /these win/); assert.match(blocks[1].text, /<estimator_instructions>\nMC cable above ceilings/);
+  assert.equal((await call('office', 'PUT', `/estimating/takeoffs/${id}/instructions`, { notes: 'x' })).status, 403);
+  await call('admin', 'PUT', `/estimating/takeoffs/${id}/instructions`, { notes: 'Only the restroom areas are in our scope.' });
+  await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`);
+  t = await waitDone(id);
+  blocks = calls.at(-1).params.messages[0].content.filter(b => b.type === 'text');
+  assert.match(blocks[1].text, /Only the restroom areas/);
+  // cleared: no instructions block at all
+  await call('admin', 'PUT', `/estimating/takeoffs/${id}/instructions`, { notes: '' });
+  await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`); await waitDone(id);
+  assert.equal(calls.at(-1).params.messages[0].content.filter(b => b.type === 'text').length, 1);
+});

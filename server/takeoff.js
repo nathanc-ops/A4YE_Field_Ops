@@ -179,7 +179,8 @@ ${items || '(empty)'}`;
         system: [{ type: 'text', text: systemPrompt(t.kind, tpl), cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: [
           ...blocks,
-          { type: 'text', text: `Do the ${t.kind} electrical takeoff for ${bid.project_name ? `"${bid.project_name}"` : 'this project'}.${list}${t.notes ? ` Estimator's notes: ${t.notes}` : ''}` },
+          { type: 'text', text: `Do the ${t.kind} electrical takeoff for ${bid.project_name ? `"${bid.project_name}"` : 'this project'}.${list}` },
+          ...(t.notes ? [{ type: 'text', text: `The estimator's instructions for this estimate. Follow them; where they conflict with the general instructions for ${t.kind} work, these win. If one can't be followed from the plans, say so in questions.\n<estimator_instructions>\n${t.notes}\n</estimator_instructions>` }] : []),
         ] }],
       });
       const msg = await stream.finalMessage();
@@ -240,7 +241,7 @@ ${items || '(empty)'}`;
     if (!incoming.length) throw bad('Choose the plan set (PDF files or images)');
     const saved = saveFiles(incoming, []);
     const id = Number(run(db, `INSERT INTO takeoffs (bid_id, kind, status, file_path, filename, files, notes, created_by) VALUES (?,?, 'running', ?,?,?,?,?)`,
-      bid.id, b.kind, saved[0].path, saved.map(f => f.filename).join(', ').slice(0, 200), JSON.stringify(saved), String(b.notes || '').slice(0, 1000) || null, req.user.id).lastInsertRowid);
+      bid.id, b.kind, saved[0].path, saved.map(f => f.filename).join(', ').slice(0, 200), JSON.stringify(saved), String(b.notes || '').trim().slice(0, 4000) || null, req.user.id).lastInsertRowid);
     run(db, 'UPDATE bids SET job_kind = ? WHERE id = ?', b.kind, bid.id);
     setImmediate(() => { runTakeoff(id); });
     res.json({ id });
@@ -281,6 +282,13 @@ ${items || '(empty)'}`;
     const [gone] = files.splice(i, 1);
     run(db, 'UPDATE takeoffs SET files = ?, filename = ?, file_path = ? WHERE id = ?', JSON.stringify(files), files.map(f => f.filename).join(', ').slice(0, 200), files[0].path, t.id);
     try { fs.unlinkSync(path.join(UPLOAD_DIR, gone.path)); } catch { /* already gone */ }
+    res.json({ ok: true });
+  }));
+  // the estimator's instructions for this estimate (used the next time it runs)
+  app.put('/api/estimating/takeoffs/:id/instructions', only, wrap((req, res) => {
+    const t = get(db, 'SELECT * FROM takeoffs WHERE id = ?', +req.params.id); if (!t) throw bad('Not found', 404);
+    if (t.status === 'running') throw bad('Wait for it to finish');
+    run(db, 'UPDATE takeoffs SET notes = ? WHERE id = ?', String((req.body || {}).notes || '').trim().slice(0, 4000) || null, t.id);
     res.json({ ok: true });
   }));
   app.post('/api/estimating/takeoffs/:id/rerun', only, wrap((req, res) => {
