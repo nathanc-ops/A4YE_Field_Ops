@@ -142,7 +142,9 @@ The A4YE KPI Dashboard sheet, inside Field Ops, with the same people and rules.
   - *Manual* and *auto* rows are typed in. The sheet's auto pulls from Housecall Pro, Ply and the time clock are not connected here.
   - *Calc* rows work out their formula, including from other pages (`B14/(B4/7)`, `N6*OT_RATE`).
 - **Looks and works like the KPI Command Center web app:** Team overview tiles, a coloured bar, Team cards that filter the KPI list, and "click any KPI to see where its number came from". Each person has a page with Save draft / Submit week at the bottom.
-- **Status:** within the yellow band (25%) of target is yellow; past it is red. **Every yellow or red row needs a Cause and a Fix** before the week can be submitted. A number with no target isn't scored (target "not set").
+- **Status (the web app's rules):** within the yellow band (25%) of a target above zero is yellow; past it is red. A green or yellow number that has moved the wrong way 3 weeks running is red (↘3). **Every yellow or red row needs a Cause and a Fix** before the week can be submitted. A number with no target shows NO TARGET and isn't scored.
+- **Where numbers come from:** auto (Snapshots), feed (the Feed tab, with FeedDetail line items), entered, override (replacing an auto/feed number, reason required), calc. An override beats feed, feed beats auto, and auto beats an entered number. Every entry is kept and shown in the drill-down.
+- **Extra items:** "Anything else worth reporting?" on each page; each needs an explanation, and they're listed on the Team overview.
 - **Auto numbers** (from the sheet's Snapshots and auto values) show a blue *auto* badge. *Replace this number* keeps the automatic one beside yours and asks why you replaced it.
 - **Scorecard:** shows who has reported, how many metrics are on, close or off target, headline numbers against the quarter's weekly average, the constraint (the section furthest from target), and every off-target row with its cause and fix.
 

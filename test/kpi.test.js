@@ -111,7 +111,7 @@ test('a page: values, formulas across pages, status colours, trend, late/missing
   assert.equal(m.P1.status, 'yellow', '90 vs 100 is within 25%'); assert.equal(m.P2.status, 'red', '14 vs 10 is past 12.5');
   assert.ok(Math.abs(m.P3.value - 14 / 90) < 1e-9); assert.equal(m.P3.status, 'red'); assert.equal(m.P4.status, 'info');
   assert.equal(m.P2.note.cause, 'Spam calls'); assert.equal(m.P3.note, null);
-  assert.deepEqual(m.P1.trend.slice(-2).map(t => t.value), [120, 90]);
+  assert.deepEqual(m.P1.trend.slice(-2), [120, 90]);
   const lee = (await call('lee', 'GET', `/kpi/page?owner=${ids.Lee}&week=${WEEK}`)).data;
   const l = Object.fromEntries(lee.sections.flatMap(s => s.metrics).map(x => [x.id, x]));
   assert.equal(l.L1.value, 1200); assert.equal(l.L1.input, 'auto'); assert.equal(l.L1.origin, 'auto'); assert.equal(l.L1.auto_value, 1200);
@@ -154,16 +154,14 @@ test('company scorecard: viewers only; reports in, health, headlines with quarte
   await call('boss', 'PUT', '/kpi/settings', { headlines: 'P1, L1' });
   const d = (await call('viewer', 'GET', `/kpi/dashboard?week=${WEEK}`)).data;
   assert.deepEqual(d.reports.map(r => `${r.name}:${r.state}`), ['Pat:late', 'Lee:missing']);
-  assert.deepEqual(d.health, { green: 2, yellow: 1, red: 3, no_data: 0, info: 2 }, 'L3 has a number but no target: not scored');
+  assert.deepEqual(d.health, { green: 2, yellow: 1, red: 3, no_data: 0, info: 1, no_target: 1 }, 'L3 has a number but no target: not scored');
   assert.equal(d.on_target_pct, 33); assert.equal(d.scored, 6); assert.equal(d.submitted, 1); assert.deepEqual(d.waiting_on, ['Lee']);
   assert.equal(d.need_note, 1, 'L2 red with no cause/fix'); assert.equal(d.kpis.length, 8);
   const lee = d.reports.find(x => x.name === 'Lee'); assert.equal(lee.red, 1); assert.equal(lee.need_note, 1); assert.equal(lee.with_number, 4);
   assert.equal(d.kpis.find(k => k.id === 'L1').origin, 'auto'); assert.ok(d.updated_at);
-  assert.deepEqual(d.headlines.map(h => h.id), ['P1', 'L1']);
-  assert.equal(d.headlines[0].qtr_avg, (120 + 95) / 2, 'Q4 weeks so far: 10/18 and 10/25'); assert.equal(d.quarter, '2026Q4');
-  assert.equal(d.constraint.section, 'Labor', 'Labor: 1 red of 1 scored; Calls: 1 yellow + 2 red'); assert.equal(d.sections[1].section, 'Calls');
-  assert.deepEqual(d.red.map(x => x.id).sort(), ['L2', 'P2', 'P3']);
-  assert.equal(d.red.find(x => x.id === 'P3').note.fix, 'Block numbers');
+  assert.deepEqual(d.kpis.filter(k => k.status === 'red').map(x => x.id).sort(), ['L2', 'P2', 'P3']);
+  assert.equal(d.kpis.find(x => x.id === 'P3').note.fix, 'Block numbers'); assert.equal(d.kpis.find(x => x.id === 'L1').origin, 'auto');
+  assert.equal(d.kpis.find(x => x.id === 'P1').trend.length, 6, 'HISTORY_WEEKS from the sheet');
 });
 
 test('set-up: targets, owner\'s user, settings — by people who can fill in anyone\'s page', async () => {
@@ -198,14 +196,51 @@ test('managers see and fill in every page by default; technicians get no KPIs at
 
 test('an automatic number: shown as auto; replacing it needs a reason; blank goes back to the auto number', async () => {
   let r = await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: 900 } });
-  assert.equal(r.status, 400); assert.match(r.data.error, /why you're replacing.*L1/);
+  assert.equal(r.status, 400); assert.match(r.data.error, /reason for replacing the automatic number.*L1/);
   r = await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: 900 }, reasons: { L1: 'Two jobs were finished twice' } });
   assert.equal(r.status, 200);
   const one = async () => (await call('lee', 'GET', `/kpi/page?owner=${ids.Lee}&week=${WEEK}`)).data.sections.flatMap(x => x.metrics).find(x => x.id === 'L1');
   let m = await one();
-  assert.equal(m.value, 900); assert.equal(m.origin, 'manual'); assert.equal(m.auto_value, 1200); assert.equal(m.reason, 'Two jobs were finished twice');
+  assert.equal(m.value, 900); assert.equal(m.origin, 'override'); assert.equal(m.auto_value, 1200); assert.equal(m.reason, 'Two jobs were finished twice');
   // saving the page again with the same number keeps the reason without asking again
   assert.equal((await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: 900 } })).status, 200);
   await call('lee', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L1: null } });
   m = await one(); assert.equal(m.value, 1200); assert.equal(m.origin, 'auto'); assert.equal(m.reason, null);
+});
+
+test('trend turns a green number red; extras need an explanation; drill-down shows inputs and every entry', async () => {
+  // P1 (Higher, target 80 after set-up test): 4 weeks in a row each lower than the last, all still >= 80 → red, wrong way
+  const W = ['2026-10-04', '2026-10-11', '2026-10-18', '2026-10-25'];
+  db.prepare("UPDATE kpi_owners SET user_id = ? WHERE id = ?").run(ids.pat, ids.Pat);
+  for (const [w, v] of [[W[0], 140], [W[1], 130], [W[2], 120]]) await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: w, values: { P1: v } });
+  await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], values: { P1: 110 } });
+  let pg = (await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${W[3]}`)).data;
+  let p1 = pg.sections.flatMap(x => x.metrics).find(x => x.id === 'P1');
+  assert.equal(p1.status, 'red'); assert.equal(p1.wrong_way, true); assert.ok(p1.note, 'already explained earlier this week, so it can be submitted');
+  await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], values: { P1: 125 } });
+  p1 = (await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${W[3]}`)).data.sections.flatMap(x => x.metrics).find(x => x.id === 'P1');
+  assert.equal(p1.status, 'green'); assert.equal(p1.wrong_way, false);
+  // P2 is Lower with target 10: 11 is within 25% → yellow; a Lower target of 0 has no yellow band
+  await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], values: { P2: 11 } });
+  assert.equal((await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${W[3]}`)).data.sections.flatMap(x => x.metrics).find(x => x.id === 'P2').status, 'yellow');
+  await call('boss', 'PUT', '/kpi/metrics/P2', { target: 0 });
+  assert.equal((await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${W[3]}`)).data.sections.flatMap(x => x.metrics).find(x => x.id === 'P2').status, 'red');
+  await call('boss', 'PUT', '/kpi/metrics/P2', { target: 10 });
+  // extras
+  let r = await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], extras: [{ item: 'Yelp leads', value: '4' }] });
+  assert.equal(r.status, 400); assert.match(r.data.error, /explanation is required/);
+  r = await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], extras: [{ item: 'Yelp leads', value: '4', explanation: 'New listing went live' }] });
+  assert.equal(r.status, 200);
+  assert.equal((await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${W[3]}`)).data.extras[0].item, 'Yelp leads');
+  assert.equal((await call('viewer', 'GET', `/kpi/dashboard?week=${W[3]}`)).data.extras.length, 1);
+  // drill-down: P3 is a formula; its inputs and source; P1's entries this week (two typed numbers)
+  const d3 = (await call('pat', 'GET', `/kpi/metric/P3?week=${W[3]}`)).data;
+  assert.equal(d3.origin, 'calc'); assert.deepEqual(d3.inputs.map(x => x.id), ['P2', 'P1']); assert.equal(d3.by_week.length, 6);
+  const d1 = (await call('pat', 'GET', `/kpi/metric/P1?week=${W[3]}`)).data;
+  assert.deepEqual(d1.history.slice(0, 3).map(h => h.value), [125, 110, 95], 'newest first, including earlier saves and the sheet\'s entry'); assert.equal(d1.history[0].origin, 'manual');
+  // a limited user can open their own KPIs and what their formulas read, nothing else
+  assert.equal((await call('pat', 'GET', `/kpi/metric/L2?week=${W[3]}`)).status, 403);
+  // the page offers the other pages' numbers its formulas use
+  const lee = (await call('lee', 'GET', `/kpi/page?owner=${ids.Lee}&week=${WEEK}`)).data;
+  assert.deepEqual(Object.keys(lee.others).sort(), ['P1', 'P2']);
 });

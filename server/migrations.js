@@ -937,6 +937,37 @@ const MIGRATIONS = [
   db => {
     for (const [c, d] of [['auto_value', 'REAL'], ['auto_at', 'TEXT'], ['auto_source', 'TEXT'], ['reason', 'TEXT']]) addColumn(db, 'kpi_values', c, d);
   },
+  // 30: KPIs — every entry kept (the drill-down's "entries this week"), extra items owners report, and where an auto
+  // number came from (its link, note and line items)
+  db => {
+    for (const [c, d] of [['auto_link', 'TEXT'], ['auto_note', 'TEXT'], ['detail', 'TEXT']]) addColumn(db, 'kpi_values', c, d);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS kpi_value_log (
+        id INTEGER PRIMARY KEY,
+        week TEXT NOT NULL,
+        metric_id TEXT NOT NULL REFERENCES kpi_metrics(id) ON DELETE CASCADE,
+        value REAL,
+        origin TEXT NOT NULL,
+        reason TEXT,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        by_label TEXT,
+        at TEXT NOT NULL,
+        UNIQUE (week, metric_id, at, by_label, origin)
+      );
+      CREATE INDEX IF NOT EXISTS idx_kpi_log_week ON kpi_value_log(week, metric_id);
+      CREATE TABLE IF NOT EXISTS kpi_extras (
+        id INTEGER PRIMARY KEY,
+        week TEXT NOT NULL,
+        owner_id INTEGER NOT NULL REFERENCES kpi_owners(id) ON DELETE CASCADE,
+        item TEXT NOT NULL,
+        value TEXT,
+        explanation TEXT NOT NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        by_label TEXT,
+        at TEXT NOT NULL,
+        UNIQUE (week, owner_id, item, at)
+      );`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
