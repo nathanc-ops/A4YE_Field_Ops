@@ -14,7 +14,18 @@ const XW = require('./xlsx_write');
 const { all, get, run } = D;
 
 const MODEL = 'claude-opus-5-5';
-const MAX_PDF = 20 * 1024 * 1024;   // the API takes 32 MB per request; base64 adds a third
+const MAX_PDF = 20 * 1024 * 1024;   // all of a takeoff's files together: the API takes 32 MB per request; base64 adds a third
+const MAX_FILES = 20;
+// what a file really is, from its first bytes (never trust the name)
+const sniff = buf => buf.subarray(0, 5).toString() === '%PDF-' ? 'application/pdf'
+  : buf[0] === 0x89 && buf.subarray(1, 4).toString() === 'PNG' ? 'image/png'
+  : buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff ? 'image/jpeg'
+  : buf.subarray(0, 4).toString() === 'RIFF' && buf.subarray(8, 12).toString() === 'WEBP' ? 'image/webp'
+  : buf.subarray(0, 4).toString() === 'GIF8' ? 'image/gif' : null;
+const EXT = { 'application/pdf': 'pdf', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+// a takeoff's files: the files column, or the single file older takeoffs kept
+const filesOf = t => { try { const f = JSON.parse(t.files || 'null'); if (Array.isArray(f) && f.length) return f; } catch { /* old row */ }
+  return t.file_path ? [{ path: t.file_path, filename: t.filename || 'plans.pdf', mime: 'application/pdf' }] : []; };
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, '..', 'data', 'uploads');
 const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
 const KINDS = ['commercial', 'residential'];
@@ -138,7 +149,12 @@ ${items || '(empty)'}`;
     try {
       if (!key) throw new Error('No Anthropic API key — an admin adds it in Settings → Integrations');
       const tpl = templates()[t.kind];
-      const pdf = fs.readFileSync(path.join(UPLOAD_DIR, t.file_path)).toString('base64');
+      const files = filesOf(t);
+      if (!files.length) throw new Error('This takeoff has no plan files — add them and run it again');
+      const blocks = files.map(f => { const data = fs.readFileSync(path.join(UPLOAD_DIR, f.path)).toString('base64');
+        return f.mime === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data }, title: f.filename }
+          : { type: 'image', source: { type: 'base64', media_type: f.mime, data } }; });
+      const list = files.length > 1 ? ` The ${files.length} files are: ${files.map((f, i) => `${i + 1}. ${f.filename}${f.mime === 'application/pdf' ? '' : ' (image)'}`).join('; ')}. Read them together as one set (plans, specifications, addenda); a later addendum overrides what it changes, and say which file a count came from in source.` : '';
       const bid = get(db, 'SELECT * FROM bids WHERE id = ?', t.bid_id) || {};
       const client = makeClient(key);
       const stream = client.beta.messages.stream({
@@ -148,13 +164,13 @@ ${items || '(empty)'}`;
         output_config: { effort: 'high', format: { type: 'json_schema', schema: SCHEMA } },
         system: [{ type: 'text', text: systemPrompt(t.kind, tpl), cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf }, title: t.filename || 'Plans' },
-          { type: 'text', text: `Do the ${t.kind} electrical takeoff for ${bid.project_name ? `"${bid.project_name}"` : 'this project'}${t.notes ? `. Estimator's notes: ${t.notes}` : ''}.` },
+          ...blocks,
+          { type: 'text', text: `Do the ${t.kind} electrical takeoff for ${bid.project_name ? `"${bid.project_name}"` : 'this project'}.${list}${t.notes ? ` Estimator's notes: ${t.notes}` : ''}` },
         ] }],
       });
       const msg = await stream.finalMessage();
       if (msg.stop_reason === 'refusal') throw new Error('Claude declined to read this plan set. Try again, or do this one by hand.');
-      if (msg.stop_reason === 'max_tokens') throw new Error('The plan set was too large to finish in one pass — split it (e.g. just the E-sheets) and run each part');
+      if (msg.stop_reason === 'max_tokens') throw new Error('The plan set was too large to finish in one pass — remove files that are not needed (keep the E-sheets) or split it into separate takeoffs');
       const text = msg.content.filter(b => b.type === 'text').map(b => b.text).join('');
       let result; try { result = JSON.parse(text); } catch { throw new Error('Claude returned something that was not a takeoff — run it again'); }
       if (!Array.isArray(result.lines)) throw new Error('The takeoff came back without lines — run it again');
@@ -177,7 +193,8 @@ ${items || '(empty)'}`;
     const lines = (() => { try { return JSON.parse(t.lines || '[]'); } catch { return []; } })();
     const result = (() => { try { return JSON.parse(t.result || '{}'); } catch { return {}; } })();
     const p = price(lines, A, emt);
-    return { id: t.id, bid_id: t.bid_id, kind: t.kind, status: t.status, error: t.error, filename: t.filename, notes: t.notes, model: t.model,
+    const files = filesOf(t).map((f, i) => ({ index: i, filename: f.filename, mime: f.mime, size: f.size || null }));
+    return { id: t.id, bid_id: t.bid_id, kind: t.kind, status: t.status, error: t.error, filename: files.map(f => f.filename).join(', ') || t.filename, files, notes: t.notes, model: t.model,
       input_tokens: t.input_tokens, output_tokens: t.output_tokens, created_at: t.created_at, finished_at: t.finished_at, applied_at: t.applied_at,
       ...result, clarifications: Array.isArray(result.assumptions) ? result.assumptions : [], lines: p.lines, totals: p.totals, estimate: p.estimate, assumptions: A, emt, own_assumptions: own,
       template: { label: tpl.label, instructions: tpl.instructions } };
@@ -185,7 +202,7 @@ ${items || '(empty)'}`;
 
   // ---------------------------------------------------------------- routes
   app.get('/api/estimating/takeoff-settings', only, wrap((req, res) => {
-    res.json({ configured: !!S().anthropic_api_key, model: MODEL, templates: templates(), max_mb: MAX_PDF / 1048576, scopes: M.SCOPES, phases: M.PHASES });
+    res.json({ configured: !!S().anthropic_api_key, model: MODEL, templates: templates(), max_mb: MAX_PDF / 1048576, max_files: MAX_FILES, scopes: M.SCOPES, phases: M.PHASES });
   }));
   app.put('/api/estimating/takeoff-settings', only, wrap((req, res) => {
     let saved = {}; try { saved = JSON.parse(S().takeoff_templates || '{}'); } catch { saved = {}; }
@@ -205,20 +222,52 @@ ${items || '(empty)'}`;
     const b = req.body || {};
     if (!KINDS.includes(b.kind)) throw bad('Choose commercial or residential');
     if (!S().anthropic_api_key) throw bad('Add the Anthropic API key in Settings → Integrations first');
-    const m = /^data:[^;]*;base64,(.*)$/s.exec(String(b.file || ''));
-    const buf = Buffer.from(m ? m[1] : String(b.file || ''), 'base64');
-    if (!buf.length) throw bad('Choose the plan set (PDF)');
-    if (buf.subarray(0, 5).toString() !== '%PDF-') throw bad('That file is not a PDF');
-    if (buf.length > MAX_PDF) throw bad(`That PDF is ${(buf.length / 1048576).toFixed(1)} MB — the limit is ${MAX_PDF / 1048576} MB. Send just the electrical sheets.`);
-    const sub = 'takeoffs';
-    const rel = path.join(sub, `${crypto.randomBytes(12).toString('hex')}.pdf`);
-    fs.mkdirSync(path.join(UPLOAD_DIR, sub), { recursive: true });
-    fs.writeFileSync(path.join(UPLOAD_DIR, rel), buf);
-    const id = Number(run(db, `INSERT INTO takeoffs (bid_id, kind, status, file_path, filename, notes, created_by) VALUES (?,?, 'running', ?,?,?,?)`,
-      bid.id, b.kind, rel, String(b.filename || 'plans.pdf').slice(0, 200), String(b.notes || '').slice(0, 1000) || null, req.user.id).lastInsertRowid);
+    const incoming = Array.isArray(b.files) ? b.files : b.file ? [{ file: b.file, filename: b.filename }] : [];
+    if (!incoming.length) throw bad('Choose the plan set (PDF files or images)');
+    const saved = saveFiles(incoming, []);
+    const id = Number(run(db, `INSERT INTO takeoffs (bid_id, kind, status, file_path, filename, files, notes, created_by) VALUES (?,?, 'running', ?,?,?,?,?)`,
+      bid.id, b.kind, saved[0].path, saved.map(f => f.filename).join(', ').slice(0, 200), JSON.stringify(saved), String(b.notes || '').slice(0, 1000) || null, req.user.id).lastInsertRowid);
     run(db, 'UPDATE bids SET job_kind = ? WHERE id = ?', b.kind, bid.id);
     setImmediate(() => { runTakeoff(id); });
     res.json({ id });
+  }));
+  // check and store uploaded files; `have` are the takeoff's current files (they count toward the limits)
+  function saveFiles(incoming, have) {
+    if (incoming.length + have.length > MAX_FILES) throw bad(`Up to ${MAX_FILES} files per takeoff`);
+    const bufs = incoming.map((f, i) => {
+      const m = /^data:[^;]*;base64,(.*)$/s.exec(String(f.file || ''));
+      const buf = Buffer.from(m ? m[1] : String(f.file || ''), 'base64'), name = String(f.filename || `file ${i + 1}`).slice(0, 200);
+      if (!buf.length) throw bad(`${name} is empty`);
+      const mime = sniff(buf);
+      if (!mime) throw bad(`${name} is not a PDF or an image (PNG, JPEG, WEBP, GIF)`);
+      return { buf, mime, filename: name };
+    });
+    const total = bufs.reduce((s2, x) => s2 + x.buf.length, 0) + have.reduce((s2, f) => s2 + (f.size || 0), 0);
+    if (total > MAX_PDF) throw bad(`Those files come to ${(total / 1048576).toFixed(1)} MB — the limit is ${MAX_PDF / 1048576} MB for all of a takeoff's files together. Leave out sheets that aren't electrical.`);
+    fs.mkdirSync(path.join(UPLOAD_DIR, 'takeoffs'), { recursive: true });
+    return bufs.map(x => { const rel = path.join('takeoffs', `${crypto.randomBytes(12).toString('hex')}.${EXT[x.mime]}`);
+      fs.writeFileSync(path.join(UPLOAD_DIR, rel), x.buf); return { path: rel, filename: x.filename, mime: x.mime, size: x.buf.length }; });
+  }
+  // add files to a takeoff (then run it again to read them)
+  app.post('/api/estimating/takeoffs/:id/files', only, wrap((req, res) => {
+    const t = get(db, 'SELECT * FROM takeoffs WHERE id = ?', +req.params.id); if (!t) throw bad('Not found', 404);
+    if (t.status === 'running') throw bad('Wait for it to finish');
+    const have = filesOf(t).map(f => ({ ...f, size: f.size ?? (() => { try { return fs.statSync(path.join(UPLOAD_DIR, f.path)).size; } catch { return 0; } })() }));
+    const incoming = (req.body || {}).files; if (!Array.isArray(incoming) || !incoming.length) throw bad('Choose the files to add');
+    const all2 = [...have, ...saveFiles(incoming, have)];
+    run(db, 'UPDATE takeoffs SET files = ?, filename = ?, file_path = ? WHERE id = ?', JSON.stringify(all2), all2.map(f => f.filename).join(', ').slice(0, 200), all2[0].path, t.id);
+    res.json({ ok: true, files: all2.length });
+  }));
+  app.delete('/api/estimating/takeoffs/:id/files/:index', only, wrap((req, res) => {
+    const t = get(db, 'SELECT * FROM takeoffs WHERE id = ?', +req.params.id); if (!t) throw bad('Not found', 404);
+    if (t.status === 'running') throw bad('Wait for it to finish');
+    const files = filesOf(t), i = +req.params.index;
+    if (!files[i]) throw bad('No such file', 404);
+    if (files.length === 1) throw bad('A takeoff needs at least one file — delete the takeoff instead');
+    const [gone] = files.splice(i, 1);
+    run(db, 'UPDATE takeoffs SET files = ?, filename = ?, file_path = ? WHERE id = ?', JSON.stringify(files), files.map(f => f.filename).join(', ').slice(0, 200), files[0].path, t.id);
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, gone.path)); } catch { /* already gone */ }
+    res.json({ ok: true });
   }));
   app.post('/api/estimating/takeoffs/:id/rerun', only, wrap((req, res) => {
     const t = get(db, 'SELECT * FROM takeoffs WHERE id = ?', +req.params.id); if (!t) throw bad('Not found', 404);
@@ -267,7 +316,7 @@ ${items || '(empty)'}`;
     const t = get(db, 'SELECT * FROM takeoffs WHERE id = ?', +req.params.id); if (!t) throw bad('Not found', 404);
     if (t.status === 'running') throw bad('Wait for it to finish');
     run(db, 'DELETE FROM takeoffs WHERE id = ?', t.id);
-    try { fs.unlinkSync(path.join(UPLOAD_DIR, t.file_path)); } catch { /* already gone */ }
+    for (const f of filesOf(t)) try { fs.unlinkSync(path.join(UPLOAD_DIR, f.path)); } catch { /* already gone */ }
     res.json({ ok: true });
   }));
   // ---------------------------------------------------------------- export in the quote workbook's layout

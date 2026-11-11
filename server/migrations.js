@@ -1067,6 +1067,8 @@ const MIGRATIONS = [
     addColumn(db, 'takeoffs', 'assumptions', 'TEXT');
     addColumn(db, 'takeoffs', 'proposal', 'TEXT');
   },
+  // 37: a takeoff can read several files (plan sets, specs, addenda, photos)
+  db => { addColumn(db, 'takeoffs', 'files', 'TEXT'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

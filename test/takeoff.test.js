@@ -174,3 +174,32 @@ test('proposal draft: built from the takeoff, saved, standard lists become compa
   assert.equal(again.draft.greeting, 'Hello Pat,'); assert.deepEqual(again.defaults.qualifications, draft.std_qualifications);
   assert.equal((await call('office', 'GET', `/estimating/takeoffs/${id}/proposal`)).status, 403);
 });
+
+test('several files per takeoff: PDFs and images go to Claude together; add, remove, limits', async () => {
+  reply = okReply;
+  const png = 'data:image/png;base64,' + Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG\r\n\x1a\n'), Buffer.alloc(20)]).toString('base64');
+  const specs = 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4\n% made-up specifications\n%%EOF').toString('base64');
+  const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: [{ file: pdf, filename: 'E-sheets.pdf' }, { file: specs, filename: 'Specs.pdf' }, { file: png, filename: 'panel photo.png' }] })).data;
+  let t = await waitDone(id);
+  const content = calls.at(-1).params.messages[0].content;
+  assert.deepEqual(content.map(b => b.type), ['document', 'document', 'image', 'text']);
+  assert.equal(content[1].title, 'Specs.pdf'); assert.equal(content[2].source.media_type, 'image/png');
+  assert.match(content[3].text, /3 files are: 1\. E-sheets\.pdf; 2\. Specs\.pdf; 3\. panel photo\.png \(image\)/);
+  assert.deepEqual(t.files.map(f => f.filename), ['E-sheets.pdf', 'Specs.pdf', 'panel photo.png']);
+  // add an addendum, remove the photo, run again: Claude gets the new set
+  assert.equal((await call('admin', 'POST', `/estimating/takeoffs/${id}/files`, { files: [{ file: specs, filename: 'Addendum 1.pdf' }] })).data.files, 4);
+  assert.equal((await call('admin', 'DELETE', `/estimating/takeoffs/${id}/files/2`)).status, 200);
+  await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`);
+  t = await waitDone(id);
+  assert.deepEqual(t.files.map(f => f.filename), ['E-sheets.pdf', 'Specs.pdf', 'Addendum 1.pdf']);
+  assert.deepEqual(calls.at(-1).params.messages[0].content.map(b => b.title || b.type), ['E-sheets.pdf', 'Specs.pdf', 'Addendum 1.pdf', 'text']);
+  // limits: not a PDF or image; too many; last file can't be removed
+  const txt = 'data:text/plain;base64,' + Buffer.from('hello').toString('base64');
+  const r1 = await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: [{ file: pdf, filename: 'a.pdf' }, { file: txt, filename: 'notes.txt' }] });
+  assert.equal(r1.status, 400); assert.match(r1.data.error, /notes\.txt is not a PDF or an image/);
+  const many = Array.from({ length: 21 }, (_, i) => ({ file: pdf, filename: `s${i}.pdf` }));
+  assert.match((await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: many })).data.error, /Up to 20 files/);
+  const one = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: [{ file: pdf, filename: 'only.pdf' }] })).data.id;
+  await waitDone(one);
+  assert.equal((await call('admin', 'DELETE', `/estimating/takeoffs/${one}/files/0`)).status, 400);
+});
