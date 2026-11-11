@@ -302,6 +302,8 @@ module.exports = function routesExt(app, db, X) {
       (SELECT MAX(order_date) FROM purchase_orders p WHERE p.vendor_id = v.id) last_po_date,
       (SELECT COUNT(*) FROM pricebook pb WHERE pb.vendor_id = v.id AND pb.active = 1) item_count
       FROM vendors v ORDER BY active DESC, name COLLATE NOCASE`);
+    const cs = all(db, 'SELECT * FROM vendor_contacts ORDER BY sort, id');
+    for (const v of rows) v.contacts = cs.filter(c => c.vendor_id === v.id);
     if (req.query.detail && seesBills(req)) {
       const since = yearAgo();
       const bills = all(db, "SELECT * FROM bills WHERE status != 'void'").map(b => A.billTotals(db, b));
@@ -318,6 +320,7 @@ module.exports = function routesExt(app, db, X) {
     const v = mustGet('vendors', req.params.id);
     v.purchase_orders = all(db, `SELECT p.*, j.number job_number FROM purchase_orders p LEFT JOIN jobs j ON j.id = p.job_id WHERE p.vendor_id = ? ORDER BY p.id DESC LIMIT 100`, v.id).map(H.poTotals);
     v.items = all(db, 'SELECT id, code, name, unit_cost, qty_on_hand, reorder_point, active FROM pricebook WHERE vendor_id = ? ORDER BY name COLLATE NOCASE', v.id);
+    v.contacts = all(db, 'SELECT * FROM vendor_contacts WHERE vendor_id = ? ORDER BY sort, id', v.id);
     v.sees_bills = seesBills(req);
     if (v.sees_bills) {
       v.bills = all(db, 'SELECT * FROM bills WHERE vendor_id = ? ORDER BY bill_date DESC, id DESC LIMIT 100', v.id).map(b => { const t = A.billTotals(db, b); delete t.lines; delete t.payments; return t; });
@@ -340,6 +343,42 @@ module.exports = function routesExt(app, db, X) {
     }
     update('vendors', req.params.id, pick(req.body, VENDOR_FIELDS)); res.json({ ok: true });
   }));
+  // ---- vendor contacts: as many people per vendor as needed; the first one shows as the vendor's contact
+  const CONTACT_FIELDS = ['name', 'role', 'email', 'phone', 'gets_pos', 'notes', 'sort'];
+  const cleanContact = b => {
+    const o = pick(b, CONTACT_FIELDS);
+    for (const k of ['name', 'role', 'email', 'phone', 'notes']) if (k in o) o[k] = String(o[k] ?? '').trim().slice(0, k === 'notes' ? 1000 : 200) || null;
+    if ('gets_pos' in o) o.gets_pos = o.gets_pos ? 1 : 0;
+    if (o.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(o.email)) throw bad(`"${o.email}" doesn't look like an email address`);
+    return o;
+  };
+  const syncPrimary = vendorId => {
+    const c = get(db, 'SELECT * FROM vendor_contacts WHERE vendor_id = ? ORDER BY sort, id LIMIT 1', vendorId);
+    run(db, 'UPDATE vendors SET contact = ? WHERE id = ?', c ? c.name : null, vendorId);
+  };
+  app.post('/api/vendors/:id/contacts', office, wrap((req, res) => {
+    const v = mustGet('vendors', req.params.id), o = cleanContact(req.body || {});
+    if (!o.name && !o.email && !o.phone) throw bad('Give the contact a name, email or phone');
+    const sort = (get(db, 'SELECT MAX(sort) m FROM vendor_contacts WHERE vendor_id = ?', v.id).m ?? -1) + 1;
+    const id = insert('vendor_contacts', { ...o, vendor_id: v.id, sort: o.sort ?? sort });
+    syncPrimary(v.id); res.json({ id });
+  }));
+  app.put('/api/vendor-contacts/:id', office, wrap((req, res) => {
+    const c = mustGet('vendor_contacts', req.params.id), o = cleanContact(req.body || {});
+    const after = { ...c, ...o }; if (!after.name && !after.email && !after.phone) throw bad('Give the contact a name, email or phone');
+    update('vendor_contacts', c.id, o); syncPrimary(c.vendor_id); res.json({ ok: true });
+  }));
+  app.delete('/api/vendor-contacts/:id', office, wrap((req, res) => {
+    const c = mustGet('vendor_contacts', req.params.id);
+    run(db, 'DELETE FROM vendor_contacts WHERE id = ?', c.id); syncPrimary(c.vendor_id); res.json({ ok: true });
+  }));
+  // who a PO goes to: contacts marked "gets POs", else the vendor's main email
+  H.poEmails = vendorId => {
+    const list = all(db, "SELECT email FROM vendor_contacts WHERE vendor_id = ? AND gets_pos = 1 AND COALESCE(email, '') != '' ORDER BY sort, id", vendorId).map(r => r.email);
+    if (list.length) return list;
+    const v = get(db, 'SELECT email FROM vendors WHERE id = ?', vendorId); return v && v.email ? [v.email] : [];
+  };
+
   // delete only a vendor nothing points at; anything with history is made inactive instead
   app.delete('/api/vendors/:id', office, wrap((req, res) => {
     const v = mustGet('vendors', req.params.id);
@@ -383,6 +422,7 @@ module.exports = function routesExt(app, db, X) {
       JOIN vendors v ON v.id = p.vendor_id LEFT JOIN jobs j ON j.id = p.job_id WHERE p.id = ?`, req.params.id) || (() => { throw bad('Not found', 404); })());
     po.receipts = all(db, `SELECT r.*, pl.description, u.name user_name FROM po_receipts r JOIN po_lines pl ON pl.id = r.po_line_id LEFT JOIN users u ON u.id = r.user_id WHERE pl.po_id = ? ORDER BY r.id DESC`, po.id);
     po.bills = all(db, 'SELECT * FROM bills WHERE po_id = ? ORDER BY id DESC', po.id).map(b => A.billTotals(db, b));
+    po.to_emails = H.poEmails(po.vendor_id);
     res.json(po);
   }));
   app.post('/api/purchase-orders', office, wrap((req, res) => {

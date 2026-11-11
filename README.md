@@ -141,6 +141,7 @@ Customers, Jobs, Estimates and Invoices: click a column heading to sort (click a
 Its own menu item (for anyone with Purchasing or Accounting; the old Purchasing → Vendors tab opens it). Search, Active / Inactive / All, sortable columns.
 - Each vendor's page: contact details, terms, open POs, purchase orders, bills, and the price book items that list it as preferred. **+ Purchase order** starts a PO with the vendor already picked.
 - Money from bills (we owe, past due, last 12 months' spend) shows only to admins and people with Accounting.
+- **Contacts:** as many people per vendor as you need (counter rep, outside sales, AP…), each with role, email, phone and notes; **Email all** opens one email to everyone. Mark who **Gets POs**: a PO's **✉ Email PO** button opens an email to them with the lines filled in (or to the vendor's main email when nobody is marked). Existing contacts moved into the list automatically.
 - **Delete** works only for a vendor nothing uses; one with POs, bills, items or entries has to be made inactive so that history keeps its vendor. Names must be unique.
 
 ## Time Clock: week at a glance (office, managers, admins)

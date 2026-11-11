@@ -635,11 +635,11 @@ async function vendorForm(v) {
   if (isAdmin()) await loadAccounts();
   formModal({
     title: v.id ? `Edit ${v.name}` : 'New vendor', values: v, wide: true,
-    fields: [{ name: 'name', label: 'Name', required: true }, { name: 'contact', label: 'Contact / counter rep' }, { name: 'phone', label: 'Phone' }, { name: 'email', label: 'Email (POs)', type: 'email' },
+    fields: [{ name: 'name', label: 'Name', required: true }, { name: 'phone', label: 'Main phone' }, { name: 'email', label: 'Main email (POs go here when no contact is marked for POs)', type: 'email' },
       { name: 'address', label: 'Address', full: true }, { name: 'account_number', label: 'Our account #' }, { name: 'terms_days', label: 'Terms (days)', type: 'number', default: 30 },
       ...(isAdmin() ? [{ name: 'default_account_id', label: 'Default expense account', type: 'select', options: acctOptions('cogs', 'expense', 'asset') }] : []),
       { name: 'ply_vendor_id', label: 'Ply vendor ID' }, { name: 'notes', label: 'Notes', type: 'textarea', full: true }, { name: 'active', label: 'Active', type: 'checkbox', default: 1 }],
-    extra: v.id ? '<p class="small" style="margin:8px 0 0"><a href="#" id="delv" style="color:var(--bad)">Delete vendor</a> <span class="muted">(only if nothing uses it — otherwise untick Active)</span></p>' : '',
+    extra: (v.id ? '' : '<p class="small muted" style="margin:8px 0 0">Add people (counter rep, outside sales, AP…) on the vendor\'s page after saving.</p>') + (v.id ? '<p class="small" style="margin:8px 0 0"><a href="#" id="delv" style="color:var(--bad)">Delete vendor</a> <span class="muted">(only if nothing uses it — otherwise untick Active)</span></p>' : ''),
     submit: async d => { if (v.id) await PUT('/vendors/' + v.id, d); else { const r = await POST('/vendors', d); S.vendors = null; toast('Vendor saved'); return go('#/vendors/' + r.id); } S.vendors = null; toast('Vendor saved'); route(); },
   });
   const del = $('#delv'); if (del) del.onclick = async e => { e.preventDefault(); if (!confirm(`Delete ${v.name}?`)) return;
@@ -655,7 +655,7 @@ async function viewVendors() {
   const sort = listSort(params, '#/vendors', { by: 'name', dir: 'asc' }, ['owed', 'spend', 'last_po', 'open_po']);
   const keyOf = { name: v => v.name.toLowerCase(), terms: v => v.terms_days, open_po: v => v.open_po_count, last_po: v => v.last_po_date || '', owed: v => v.owed || 0, spend: v => v.spend_12mo || 0, items: v => v.item_count };
   let rows = all.filter(v => show === 'all' || (show === 'active' ? v.active : !v.active))
-    .filter(v => !q || [v.name, v.contact, v.email, v.phone, v.account_number, v.notes].some(x => String(x || '').toLowerCase().includes(q)));
+    .filter(v => !q || [v.name, v.contact, v.email, v.phone, v.account_number, v.notes, ...(v.contacts || []).flatMap(c => [c.name, c.email, c.phone, c.role])].some(x => String(x || '').toLowerCase().includes(q)));
   const k = keyOf[sort.by] || keyOf.name, s = sort.dir === 'asc' ? 1 : -1;
   rows = rows.sort((a, b) => { const x = k(a), y = k(b); return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y))) * s || a.name.localeCompare(b.name); });
   const keep = { show: params.get('show'), order: params.get('order'), dir: params.get('dir') };
@@ -665,7 +665,7 @@ async function viewVendors() {
     <div class="card" style="margin-top:14px">
       <div class="tabs">${[['active', 'Active'], ['inactive', 'Inactive'], ['all', 'All']].map(([v, l]) => `<button class="${v === show ? 'on' : ''}" data-s="${v}">${l} ${v === 'all' ? all.length : all.filter(x => v === 'active' ? x.active : !x.active).length}</button>`).join('')}</div>
       <form id="srch" class="filters"><input name="q" type="search" placeholder="Search name, contact, phone, email, account #" value="${esc(params.get('q') || '')}"><button class="btn">Search</button>${q ? `<a class="btn" href="#/vendors${qs({ show: keep.show })}">Clear</a>` : ''}</form>
-      ${table([{ label: 'Vendor', sort: 'name', html: v => `<b>${esc(v.name)}</b>${v.active ? '' : ' <span class="pill">Inactive</span>'}${v.contact ? `<div class="small muted">${esc(v.contact)}</div>` : ''}` },
+      ${table([{ label: 'Vendor', sort: 'name', html: v => `<b>${esc(v.name)}</b>${v.active ? '' : ' <span class="pill">Inactive</span>'}${(v.contacts || []).length ? `<div class="small muted">${esc(v.contacts[0].name || v.contacts[0].email || '')}${v.contacts.length > 1 ? ` +${v.contacts.length - 1} more` : ''}</div>` : ''}` },
         { label: 'Phone', html: v => v.phone ? `<a href="tel:${esc(v.phone)}">${esc(v.phone)}</a>` : '' }, { label: 'Email', html: v => v.email ? `<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : '' },
         { label: 'Account #', key: 'account_number' }, { label: 'Terms', sort: 'terms', get: v => `Net ${v.terms_days}` },
         { label: 'Items', num: 1, sort: 'items', key: 'item_count' }, { label: 'Open POs', num: 1, sort: 'open_po', get: v => v.open_po_count || '' }, { label: 'Last PO', sort: 'last_po', get: v => v.last_po_date ? fmtDate(v.last_po_date) : '' },
@@ -678,11 +678,18 @@ async function viewVendors() {
 async function viewVendor(id) {
   const v = await GET('/vendors/' + id);
   $('#view').innerHTML = setTop(esc(v.name), `<a class="btn" href="#/vendors">‹ Vendors</a><button class="btn" id="editv">Edit</button><a class="btn primary" href="#/purchasing/po/new?vendor_id=${v.id}">+ Purchase order</a>`,
-    `${v.active ? '' : '<span class="pill">Inactive</span> '}${v.contact ? esc(v.contact) + ' · ' : ''}${v.phone ? `<a href="tel:${esc(v.phone)}">${esc(v.phone)}</a>` : ''}${v.email ? ` · <a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : ''}`) + `
+    `${v.active ? '' : '<span class="pill">Inactive</span> '}${v.phone ? `<a href="tel:${esc(v.phone)}">${esc(v.phone)}</a>` : ''}${v.email ? ` · <a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : ''}`) + `
     <div class="grid g4">${kpi('Terms', `Net ${v.terms_days}`, v.account_number ? `Our account # ${esc(v.account_number)}` : '')}
       ${kpi('Open POs', v.purchase_orders.filter(p => ['draft', 'submitted', 'partial'].includes(p.status)).length, `${v.purchase_orders.length} total`)}
       ${v.sees_bills ? kpi('We owe', money(v.owed)) + kpi('Spent · last 12 months', money0(v.spend_12mo), 'from entered bills') : kpi('Price book items', v.items.length)}</div>
     ${v.address || v.notes || v.ply_vendor_id ? `<div class="card" style="margin-top:14px">${v.address ? `<div>${esc(v.address)}</div>` : ''}${v.ply_vendor_id ? `<div class="small muted">Ply vendor ID ${esc(v.ply_vendor_id)}</div>` : ''}${v.notes ? `<div style="white-space:pre-wrap;margin-top:6px">${esc(v.notes)}</div>` : ''}</div>` : ''}
+    <div class="card" style="margin-top:14px"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">Contacts</h2>
+      <div class="row" style="gap:6px">${v.contacts.some(c => c.email) ? `<a class="btn sm" href="mailto:${v.contacts.filter(c => c.email).map(c => encodeURIComponent(c.email)).join(',')}">✉ Email all</a>` : ''}<button class="btn sm primary" id="addc">+ Contact</button></div></div>
+      ${table([{ label: 'Name', html: c => `<b>${esc(c.name || '—')}</b>${c.role ? `<div class="small muted">${esc(c.role)}</div>` : ''}` },
+        { label: 'Email', html: c => c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : '' }, { label: 'Phone', html: c => c.phone ? `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>` : '' },
+        { label: 'POs', html: c => c.gets_pos ? '<span class="pill info">✉ Gets POs</span>' : '' }, { label: 'Notes', html: c => `<span class="small">${esc(c.notes || '')}</span>` }],
+        v.contacts, { onClick: c => vendorContactForm(v, c), empty: 'No contacts yet — add the counter rep, outside sales, accounts payable…' })}
+      <p class="small muted" style="margin:6px 0 0">${v.contacts.some(c => c.gets_pos && c.email) ? 'Email PO on a purchase order goes to everyone marked “Gets POs”.' : v.email ? `Email PO goes to the main email (${esc(v.email)}) until a contact is marked “Gets POs”.` : 'Mark a contact “Gets POs” (with an email) to email purchase orders from the PO page.'}</p></div>
     <div class="grid g2" style="margin-top:14px">
       <div class="card"><h2>Purchase orders</h2>${table([{ label: 'PO', html: p => `<b>${esc(p.number)}</b>` }, { label: 'Job', get: p => p.job_number || 'Shop stock' }, { label: 'Ordered', get: p => fmtDate(p.order_date) },
         { label: 'Status', html: p => pill(p.status) }, { label: 'Total', num: 1, get: p => money(p.total) }], v.purchase_orders, { onClick: p => go('#/purchasing/po/' + p.id), empty: 'No purchase orders yet' })}</div>
@@ -695,6 +702,16 @@ async function viewVendor(id) {
         v.items, { empty: 'No price book items list this vendor as preferred' })}</div>
     </div>`;
   $('#editv').onclick = () => vendorForm(v);
+  $('#addc').onclick = () => vendorContactForm(v, {});
+}
+function vendorContactForm(v, c) {
+  const m = formModal({ title: c.id ? `Edit contact · ${v.name}` : `New contact · ${v.name}`, values: c.id ? c : { gets_pos: v.contacts.some(x => x.gets_pos) ? 0 : 1 },
+    fields: [{ name: 'name', label: 'Name' }, { name: 'role', label: 'Role (counter, outside sales, AP…)' }, { name: 'email', label: 'Email', type: 'email' }, { name: 'phone', label: 'Phone' },
+      { name: 'gets_pos', label: 'Gets purchase orders', type: 'checkbox' }, { name: 'notes', label: 'Notes', type: 'textarea', full: true }],
+    extra: c.id ? '<p class="small" style="margin:8px 0 0"><a href="#" id="delc" style="color:var(--bad)">Remove contact</a></p>' : '',
+    submit: async d => { if (c.id) await PUT('/vendor-contacts/' + c.id, d); else await POST(`/vendors/${v.id}/contacts`, d); toast('Contact saved'); route(); } });
+  const del = $('#delc', m.el); if (del) del.onclick = async e => { e.preventDefault(); if (!confirm(`Remove ${c.name || c.email}?`)) return;
+    await act(() => DEL('/vendor-contacts/' + c.id), 'Removed'); m.close(); route(); };
 }
 
 async function viewPO(id) {
@@ -715,7 +732,7 @@ async function viewPO(id) {
       ${plyOn && po.status !== 'cancelled' ? `<button class="btn" id="ply">${po.ply_id ? 'Re-send to Ply' : 'Send to Ply'}</button>` : ''}
       ${['submitted', 'partial', 'draft'].includes(po.status) ? '<button class="btn" id="recv">Receive…</button>' : ''}
       ${isAdmin() && ['partial', 'received'].includes(po.status) && !po.billed ? '<button class="btn" id="bill">Enter vendor bill</button>' : ''}
-      <button class="btn" onclick="print()">Print</button>`,
+      <button class="btn" onclick="print()">Print</button>${(po.to_emails || []).length ? `<a class="btn" title="Opens your email to ${esc(po.to_emails.join(', '))}" href="mailto:${po.to_emails.map(encodeURIComponent).join(',')}?subject=${encodeURIComponent(`PO ${po.number}${po.job_number ? ' · ' + po.job_number : ''} · ${S.settings.company_name || ''}`)}&body=${encodeURIComponent(`Please see PO ${po.number}${po.job_number ? ` for job ${po.job_number}` : ''}.\n\n` + po.lines.map(l => `${l.qty} × ${l.description}${l.sku ? ' (' + l.sku + ')' : ''}`).join('\n'))}">✉ Email PO</a>` : ''}`,
     po.job_id ? `For job <a href="#/jobs/${po.job_id}">${esc(po.job_number || '')}</a>` : 'Shop / truck stock') + `
     <form id="pof" class="stack"><div class="card"><div class="form-grid">
       ${fieldHtml({ name: 'vendor_id', label: 'Vendor', type: 'select', options: vendors.filter(v => v.active || v.id === po.vendor_id).map(v => [v.id, v.name]), required: true }, po.vendor_id)}

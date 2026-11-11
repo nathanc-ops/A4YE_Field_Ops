@@ -55,3 +55,32 @@ test('office without accounting sees vendors but not the bill money; techs see n
   assert.equal(d.sees_bills, false); assert.equal(d.bills, undefined);
   assert.equal((await call('tech', 'GET', '/vendors')).status, 403);
 });
+
+test('several contacts per vendor; the PO goes to the ones marked for POs', async () => {
+  const id = (await call('admin', 'POST', '/vendors', { name: 'Contact Test Supply', email: 'orders@example.com' })).data.id;
+  const c1 = (await call('admin', 'POST', `/vendors/${id}/contacts`, { name: 'Counter Rep', role: 'Counter', phone: '555-0101' })).data.id;
+  await call('office', 'POST', `/vendors/${id}/contacts`, { name: 'Outside Sales', email: 'sales@example.com', gets_pos: 1 });
+  await call('admin', 'POST', `/vendors/${id}/contacts`, { name: 'AP Dept', email: 'ap@example.com' });
+  assert.equal((await call('admin', 'POST', `/vendors/${id}/contacts`, { role: 'nobody' })).status, 400);
+  assert.equal((await call('admin', 'POST', `/vendors/${id}/contacts`, { name: 'x', email: 'not-an-email' })).status, 400);
+  let v = (await call('admin', 'GET', `/vendors/${id}`)).data;
+  assert.deepEqual(v.contacts.map(c => c.name), ['Counter Rep', 'Outside Sales', 'AP Dept']);
+  assert.equal(v.contact, 'Counter Rep', 'first contact shows as the vendor contact');
+  const po = Number(db.prepare("INSERT INTO purchase_orders (number, vendor_id) VALUES ('PO-CT', ?)").run(id).lastInsertRowid);
+  assert.deepEqual((await call('admin', 'GET', `/purchase-orders/${po}`)).data.to_emails, ['sales@example.com']);
+  await call('admin', 'PUT', `/vendor-contacts/${v.contacts[1].id}`, { gets_pos: 0 });
+  assert.deepEqual((await call('admin', 'GET', `/purchase-orders/${po}`)).data.to_emails, ['orders@example.com'], 'falls back to the main email');
+  await call('admin', 'DELETE', `/vendor-contacts/${c1}`);
+  v = (await call('admin', 'GET', `/vendors/${id}`)).data;
+  assert.equal(v.contacts.length, 2); assert.equal(v.contact, 'Outside Sales');
+  assert.equal((await call('tech', 'POST', `/vendors/${id}/contacts`, { name: 'x' })).status, 403);
+});
+
+test('migration 34 copies an existing vendor contact into the contact list', () => {
+  const M = require('../server/migrations');
+  const fresh = D.open(':memory:');
+  const vid = Number(fresh.prepare("INSERT INTO vendors (name, contact, email, phone) VALUES ('Old Way', 'Jo', 'jo@example.com', '555')").run().lastInsertRowid);
+  fresh.exec('DROP TABLE vendor_contacts'); fresh.exec('UPDATE schema_version SET version = 33');
+  M.migrate(fresh);
+  assert.deepEqual({ ...fresh.prepare('SELECT name, email, phone, gets_pos FROM vendor_contacts WHERE vendor_id = ?').get(vid) }, { name: 'Jo', email: 'jo@example.com', phone: '555', gets_pos: 1 });
+});

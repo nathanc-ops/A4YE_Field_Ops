@@ -1019,6 +1019,25 @@ const MIGRATIONS = [
       PRIMARY KEY (bid_id, gc_id)
     );`);
   },
+  // 34: several contacts per vendor (counter rep, outside sales, AP...). Existing contact/email/phone become the first one.
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS vendor_contacts (
+      id INTEGER PRIMARY KEY,
+      vendor_id INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+      name TEXT,
+      role TEXT,
+      email TEXT,
+      phone TEXT,
+      gets_pos INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      sort INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_vendor_contacts ON vendor_contacts(vendor_id);
+    INSERT INTO vendor_contacts (vendor_id, name, email, phone, gets_pos)
+      SELECT id, NULLIF(TRIM(contact), ''), NULLIF(TRIM(email), ''), NULLIF(TRIM(phone), ''), CASE WHEN NULLIF(TRIM(email), '') IS NULL THEN 0 ELSE 1 END
+      FROM vendors WHERE COALESCE(TRIM(contact), '') != '' OR COALESCE(TRIM(email), '') != '';`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

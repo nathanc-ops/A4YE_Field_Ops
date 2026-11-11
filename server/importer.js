@@ -588,7 +588,10 @@ const IMPORTERS = {
         account_number: clip(r.account_number, 80), terms_days: r.terms ? terms(r.terms) ?? undefined : undefined, notes: clip(r.notes, 2000) };
       const existing = get(db, 'SELECT * FROM vendors WHERE lower(name) = ?', r.name.toLowerCase());
       if (existing) { if (update(db, 'vendors', existing.id, Object.fromEntries(Object.entries(data).filter(([k]) => existing[k] == null || existing[k] === '')))) ctx.updated++; }
-      else ctx.made('vendor', insert(db, 'vendors', Object.fromEntries(Object.entries(data).filter(([, v]) => v != null))));
+      else {
+        const vid = ctx.made('vendor', insert(db, 'vendors', Object.fromEntries(Object.entries(data).filter(([, v]) => v != null))));
+        if (data.contact || data.email) insert(db, 'vendor_contacts', { vendor_id: vid, name: data.contact || null, email: data.email || null, phone: data.phone || null, gets_pos: data.email ? 1 : 0 });
+      }
     });
   },
 
