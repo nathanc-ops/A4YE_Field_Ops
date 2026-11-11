@@ -49,7 +49,7 @@ Prefer the company's flat-rate price book items when one fits.`,
 
 const SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['project_name', 'scope_summary', 'plans_basis', 'sheets_reviewed', 'lines', 'assumptions', 'exclusions', 'questions'],
+  required: ['project_name', 'scope_summary', 'plans_basis', 'sheets_reviewed', 'lines', 'scope_checklist', 'assumptions', 'exclusions', 'questions'],
   properties: {
     project_name: { type: 'string' },
     scope_summary: { type: 'string', description: 'One or two sentences on the electrical scope, for the proposal letter' },
@@ -68,8 +68,8 @@ const SCHEMA = {
         qty: { type: 'number' },
         unit: { type: 'string', description: 'EA, LF, LOT...' },
         pricebook_code: { type: 'string', description: 'Exact code of the matching price book item, or empty' },
-        neca_hours: { type: 'number', description: 'Labor hours per unit; 0 when a price book item covers it' },
-        material_unit: { type: 'number', description: 'Material cost per unit in USD when no price book item matches; 0 if unknown' },
+        neca_hours: { type: 'number', description: 'NECA normal labor hours per unit. Always give it for installed work, even when a price book item matches (the price book wins if it has hours)' },
+        material_unit: { type: 'number', description: 'Material cost per unit in USD at current contractor pricing. Always give your best estimate; 0 only for labor-only items (owner-furnished, testing, removal)' },
         high_repetition: { type: 'boolean', description: 'Large quantity of identical items where the crew gets faster (gets the high-repetition factor)' },
         source: { type: 'string', description: 'Sheet / page the count came from' },
         confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
@@ -78,6 +78,9 @@ const SCHEMA = {
     assumptions: { type: 'array', items: { type: 'string' } },
     exclusions: { type: 'array', items: { type: 'string' } },
     questions: { type: 'array', items: { type: 'string' }, description: 'RFIs: things the plans leave unclear' },
+    scope_checklist: { type: 'array', description: 'One entry per category in the completeness checklist', items: { type: 'object', additionalProperties: false,
+      required: ['category', 'status', 'note'], properties: {
+        category: { type: 'string' }, status: { type: 'string', enum: ['counted', 'not_shown', 'excluded', 'allowance'] }, note: { type: 'string' } } } },
   },
 };
 
@@ -90,7 +93,7 @@ module.exports = function takeoff(app, db, { wrap, bad }) {
   function templates() {
     let saved = {}; try { saved = JSON.parse(S().takeoff_templates || '{}'); } catch { saved = {}; }
     return Object.fromEntries(KINDS.map(k => { const x = saved[k] || {};
-      return [k, { label: DEFAULT_TEMPLATES[k].label, instructions: x.instructions || DEFAULT_TEMPLATES[k].instructions,
+      return [k, { label: DEFAULT_TEMPLATES[k].label, instructions: x.instructions || DEFAULT_TEMPLATES[k].instructions, effort: ['high', 'xhigh', 'max'].includes(x.effort) ? x.effort : 'xhigh',
         assumptions: M.cleanAssumptions(x.assumptions, M.DEFAULTS[k]), emt: M.cleanEmt(x.emt) }]; }));
   }
   // this takeoff's assumptions: the job type's template plus anything changed for this estimate
@@ -126,8 +129,19 @@ ${tpl.instructions}
 How to report:
 - One line per countable item and size. Give the plan tag when there is one, and the sheet or page the count came from.
 - Put each line under a cost code from the list below (phase_code, 4 digits). Leave it empty rather than guess a code that is not on the list.
-- When an item in the price book below matches, put its exact code in pricebook_code and set neca_hours and material_unit to 0; the company's own cost and labor are used.
-- When nothing matches, leave pricebook_code empty, give a realistic labor unit in neca_hours (hours per unit) and, if you can, a material cost per unit in material_unit; otherwise 0. These are flagged for the estimator to check.
+- When an item in the price book below matches, put its exact code in pricebook_code. Still fill in neca_hours and material_unit with your own estimate: the company's price and hours are used where the price book has them, yours fill any gap.
+- When nothing matches, leave pricebook_code empty and still price the line: a realistic NECA normal labor unit in neca_hours and your best current contractor material cost per unit in material_unit. Never leave a line at 0 to mean "unknown" — an unpriced line adds nothing to the bid. These lines are flagged for the estimator to check. Use 0 material only for labor-only work (owner-furnished items, removal, testing).
+- Price the job the way a complete commercial electrical bid is built. Underbidding by leaving things out is the most expensive mistake. Besides the devices and fixtures, carry every one of these that the work needs, as its own lines:
+  · branch raceway (EMT by size in LF, or MC cable in LF where allowed) and branch conductors (#12/#10 THHN in LF, roughly 2–3 conductors plus ground per circuit run; homerun lengths from the plan scale);
+  · outlet, device and junction boxes with rings and plates, one per device or fixture plus pull boxes; supports, hangers, strut and anchors;
+  · feeders: conduit and conductors as separate lines, run length from the plan scale, plus terminations;
+  · panels, breakers (count the new breakers on the panel schedules), disconnects, transformers, grounding and bonding;
+  · equipment connections (whips, disconnects, final connections) for every mechanical, plumbing and owner item on the schedules;
+  · lighting controls, emergency/exit and their circuits; fire alarm and low-voltage rough-in when in scope;
+  · demolition and safe-off when shown; firestopping and sleeves; temporary power and lighting when the job needs it;
+  · testing, labeling, panel schedules, as-builts and closeout (P7), and permit and inspection fees as a LOT line when the EC normally carries them.
+  If the plans don't show enough to count one of these, carry a reasonable allowance line (confidence low, note "allowance") rather than leaving it out, and say so in assumptions.
+- scope_checklist: one entry for each category above (branch raceway, branch wire, boxes & supports, feeders, distribution, equipment connections, lighting & controls, fire alarm / low voltage, demolition, firestopping, temporary power, testing & closeout, permits) saying whether you counted it, it isn't shown, it's excluded, or you carried an allowance.
 - Put every line on a scope tab (distribution, lighting, power, fire_alarm, data, demo) and a phase (P1 Demolition, P2 Rough-In, P3 Gear & Feeders, P4 Trim/Fixtures & Devices, P5 Equipment Connections, P6 Systems, P7 Closeout).
 - EMT conduit: one line per size, footage in LF, using the price book's EMT-<size> code when it has one. Couplings, connectors, straps and locknuts are added automatically from the footage, so do not list them.
 - Mark high_repetition true only for a large quantity of identical items installed the same way (e.g. 200 identical troffers).
@@ -161,7 +175,7 @@ ${items || '(empty)'}`;
         model: MODEL, max_tokens: 64000,
         betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
         thinking: { type: 'adaptive' },
-        output_config: { effort: 'high', format: { type: 'json_schema', schema: SCHEMA } },
+        output_config: { effort: ['high', 'xhigh', 'max'].includes(tpl.effort) ? tpl.effort : 'xhigh', format: { type: 'json_schema', schema: SCHEMA } },
         system: [{ type: 'text', text: systemPrompt(t.kind, tpl), cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: [
           ...blocks,
@@ -209,7 +223,7 @@ ${items || '(empty)'}`;
     const b = (req.body || {}).templates || {};
     for (const k of KINDS) if (b[k]) {
       const x = b[k], cur = saved[k] || {};
-      saved[k] = { instructions: x.instructions != null ? String(x.instructions).slice(0, 4000) : cur.instructions,
+      saved[k] = { instructions: x.instructions != null ? String(x.instructions).slice(0, 4000) : cur.instructions, effort: ['high', 'xhigh', 'max'].includes(x.effort) ? x.effort : cur.effort,
         assumptions: x.assumptions ? M.cleanAssumptions(x.assumptions, M.cleanAssumptions(cur.assumptions, M.DEFAULTS[k])) : cur.assumptions,
         emt: x.emt ? M.cleanEmt(x.emt, M.cleanEmt(cur.emt)) : cur.emt };
     }

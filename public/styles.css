@@ -690,3 +690,10 @@ th.sortable .sarrow { font-size: 10px; }
   html:has(.pl-doc), html:has(.pl-doc) body, html:has(.pl-doc) .app, html:has(.pl-doc) .main { background: #fff !important; color-scheme: light !important; }
 }
 @page { background: #fff; }
+
+/* ===== plan file picker ===== */
+.fdrop { border: 2px dashed var(--border); border-radius: 10px; padding: 14px; text-align: center; cursor: pointer; }
+.fdrop:hover, .fdrop:focus-visible, .fdrop.on { border-color: var(--series-1); background: var(--surface-2); }
+.fdrop .btn { margin-left: 4px; pointer-events: none; }
+ul.fl { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+ul.fl li { display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }

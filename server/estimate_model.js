@@ -95,9 +95,10 @@ function priceLines(lines, A, emt, { pricebook, codes }) {
   const one = (l, i) => {
     const qty = Number(l.qty) || 0;
     const item = l.pricebook_code ? pricebook.get(String(l.pricebook_code).toLowerCase()) : null;
-    const material_unit = l.material_override != null ? Number(l.material_override) : item ? Number(item.unit_cost) || 0 : Number(l.material_unit) || 0;
-    const hours_unit = l.hours_override != null ? Number(l.hours_override) : item && Number(item.labor_hours) > 0 ? Number(item.labor_hours) : Number(l.neca_hours) || 0;
-    const priced_from = l.derived ? 'price book' : l.material_override != null || l.hours_override != null ? 'edited' : item ? 'price book' : (Number(l.material_unit) || Number(l.neca_hours)) ? 'AI suggestion' : 'not priced';
+    const pbCost = item && Number(item.unit_cost) > 0, pbHrs = item && Number(item.labor_hours) > 0;
+    const material_unit = l.material_override != null ? Number(l.material_override) : pbCost ? Number(item.unit_cost) : Number(l.material_unit) || 0;
+    const hours_unit = l.hours_override != null ? Number(l.hours_override) : pbHrs ? Number(item.labor_hours) : Number(l.neca_hours) || 0;
+    const priced_from = l.derived ? 'price book' : l.material_override != null || l.hours_override != null ? 'edited' : pbCost ? 'price book' : (Number(l.material_unit) || Number(l.neca_hours)) ? 'AI suggestion' : 'not priced';
     const factor = factorFor(l, A);
     const adj_hours = r4(hours_unit * factor), labor_unit = r2(adj_hours * R.blended);
     const scope = SCOPE_KEYS.includes(l.scope) ? l.scope : 'power';
@@ -187,6 +188,20 @@ function buildUp(priced, A) {
   const extraTools = extraLabor * A.small_tools_pct / 100, extraPerDiem = A.hours_day ? extraHours / A.availability / A.hours_day * R.travelled * A.per_diem : 0;
   const exposure = (extraLabor + extraTools + extraPerDiem) * (1 + A.contingency_pct / 100) * (1 + A.op_pct / 100);
   const peakWeeklyCrew = weeks ? Math.ceil(earned / (weeks * perWorkerWeek)) : 0;
+  // why the number may be low: what each cause is worth, marked up the way the bid is
+  const mk = (1 + A.contingency_pct / 100) * (1 + A.op_pct / 100);
+  const noMat = inc.filter(l => !l.derived && !l.material_unit && l.qty > 0 && !/^(01|50)/.test(String(l.phase_code || '')));
+  const noHrs = inc.filter(l => !l.derived && !l.hours_unit && l.qty > 0);
+  const lowConf = inc.filter(l => !l.derived && l.confidence === 'low');
+  const aiPriced = inc.filter(l => l.priced_from === 'AI suggestion');
+  const checks = {
+    productivity_factor: A.productivity, productivity_cost: r2((neca - earned) * R.blended * mk),
+    no_material: noMat.length, no_material_lines: noMat.slice(0, 20).map(l => l.description),
+    no_hours: noHrs.length, no_hours_lines: noHrs.slice(0, 20).map(l => l.description),
+    low_confidence: lowConf.length, low_confidence_value: r2(lowConf.reduce((s, l) => s + l.ext_cost, 0) * mk),
+    ai_priced: aiPriced.length, ai_priced_value: r2(aiPriced.reduce((s, l) => s + l.ext_cost, 0) * mk),
+    blended_rate: R.blended, burdened_note: 'cost rate (wage x burden), not a billing rate',
+  };
   return {
     rates: R, scopes, phases,
     subtotal: { hours: earned, neca_hours: neca, material, labor: estLabor, total: r2(material + estLabor) },
@@ -197,7 +212,7 @@ function buildUp(priced, A) {
       op_pct: A.op_pct, op: base.op, before_tax: r2(base.direct + base.contingency + base.op), tax_pct: A.tax_pct, tax: base.tax, total: base.total },
     productivity: { neca_hours: neca, bid_hours: earned, removed: r2(extraHours), factor_achieved: neca ? r4(earned / neca) : null,
       extra_labor: r2(extraLabor), exposure: r2(exposure), exposure_share: base.total ? r4(exposure / base.total) : null, op_left: r2(base.op - exposure) },
-    options: [base, ...alt],
+    options: [base, ...alt], checks,
   };
 }
 

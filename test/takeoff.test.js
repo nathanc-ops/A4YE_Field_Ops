@@ -203,3 +203,28 @@ test('several files per takeoff: PDFs and images go to Claude together; add, rem
   await waitDone(one);
   assert.equal((await call('admin', 'DELETE', `/estimating/takeoffs/${one}/files/0`)).status, 400);
 });
+
+test('underbidding guards: complete-scope rules and coverage in the request; a $0 price book item does not zero a line; effort per template', async () => {
+  db.prepare("INSERT INTO pricebook (code, name, kind, unit, unit_cost, unit_price, labor_hours) VALUES ('BOX-4SQ', '4\" square box', 'material', 'ea', 0, 0, 0)").run();
+  reply = () => ({ model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: {}, content: [{ type: 'text', text: JSON.stringify({ ...takeoffJson,
+    scope_checklist: [{ category: 'Branch wire', status: 'counted', note: '' }, { category: 'Firestopping', status: 'not_shown', note: 'no penetrations shown' }],
+    lines: [{ phase_code: '0870', scope: 'power', phase: 'P2', area: '', tag: '', description: '4" square box with ring', qty: 50, unit: 'EA', pricebook_code: 'BOX-4SQ', neca_hours: 0.3, material_unit: 4.5, high_repetition: false, source: 'E2.1', confidence: 'medium', notes: '' }] }) }] });
+  await call('admin', 'PUT', '/estimating/takeoff-settings', { templates: { commercial: { effort: 'max' } } });
+  const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', file: pdf })).data;
+  const t = await waitDone(id);
+  const p = calls.at(-1).params;
+  assert.equal(p.output_config.effort, 'max');
+  assert.match(p.system[0].text, /Never leave a line at 0/); assert.match(p.system[0].text, /branch conductors/); assert.match(p.system[0].text, /scope_checklist/);
+  assert.ok(Takeoff.SCHEMA.required.includes('scope_checklist'));
+  const box = t.lines[0];
+  assert.equal(box.material_unit, 4.5, "Claude's price fills the price book's blank cost"); assert.equal(box.hours_unit, 0.3); assert.equal(box.priced_from, 'AI suggestion');
+  assert.equal(t.scope_checklist[1].status, 'not_shown');
+  let C = t.estimate.checks;
+  assert.equal(C.no_material, 0);
+  const t2 = (await call('admin', 'PUT', `/estimating/takeoffs/${id}`, { assumptions: { ...t.assumptions, productivity: 0.75 } })).data;
+  C = t2.estimate.checks;
+  assert.equal(C.productivity_factor, 0.75);
+  assert.ok(Math.abs(C.productivity_cost - 50 * 0.3 * 0.25 * t2.estimate.rates.blended * (1 + t2.assumptions.contingency_pct / 100) * (1 + t2.assumptions.op_pct / 100)) < 0.05, 'the 0.75 factor is shown in dollars, marked up');
+  assert.equal((await call('admin', 'GET', '/estimating/takeoff-settings')).data.templates.commercial.effort, 'max');
+  await call('admin', 'PUT', '/estimating/takeoff-settings', { templates: { commercial: { effort: 'xhigh' } } });
+});

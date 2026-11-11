@@ -110,15 +110,16 @@ function estEdit(b, d) {
   const sent = new Set((b ? b.gcs : []).map(g => g.id));
   const gcBoxes = `<div class="f full"><span>Sent to (general contractors)</span><div class="egcs">${d.all_gcs.filter(g => g.active || sent.has(g.id)).map(g =>
     `<label class="check"><input type="checkbox" name="gc" value="${g.id}" ${sent.has(g.id) ? 'checked' : ''}> ${esc(g.name)}</label>`).join('') || '<span class="muted small">No contractors yet — add them under Contractors.</span>'}</div></div>`;
-  const plans = `<div class="f full" style="margin-top:8px"><span>Plans (PDF) — Claude does the takeoff${b && b.takeoff_count ? ` · <a href="#" id="etos">${b.takeoff_count} takeoff${b.takeoff_count === 1 ? '' : 's'} on this bid</a>` : ''}</span>
-    <input type="file" id="eplans" multiple accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif"><div id="eplanlist" class="small"></div>
-    <span class="small muted">Optional. Pick one or more files (plan sets, specifications, addenda, photos), up to 20 and 20 MB together. Pick the job type above; the takeoff runs after you save (a few minutes for a big set). You review every line before it's used.</span></div>`;
+  const plans = `<div class="f full" style="margin-top:8px"><span>Plans — Claude does the takeoff${b && b.takeoff_count ? ` · <a href="#" id="etos">${b.takeoff_count} takeoff${b.takeoff_count === 1 ? '' : 's'} on this bid</a>` : ''}</span>
+    <div id="eplans"></div>
+    <span class="small muted">Optional. Pick the job type above; the takeoff runs after you save (a few minutes for a big set). You review every line before it's used.</span></div>`;
+  let fc = null;
   const m = formModal({ title: b ? `Bid ${b.bid_number || ''} · ${b.project_name}` : 'New bid', fields, wide: true,
     values: b || { bid_number: d.next_number, status: 'estimating' },
     extra: gcBoxes + plans + (b ? `<p class="small muted" style="margin:8px 0 0">${b.checked_in_at ? `Notes last changed ${fmtDT(b.checked_in_at)}. ` : ''}<a href="#" id="edel" style="color:var(--bad)">Delete this bid</a></p>` : ''),
     submit: async (o, form) => {
       o.gc_ids = $$('[name=gc]:checked', form).map(x => +x.value);
-      const files = [...$('#eplans', form).files];
+      const files = fc ? fc.files() : [];
       if (files.length && !o.job_kind) throw new Error('Pick the job type (commercial or residential) for the takeoff');
       planCheck(files);
       let id = b && b.id;
@@ -126,7 +127,7 @@ function estEdit(b, d) {
       if (files.length) { const t = await startTakeoff(id, o.job_kind, files); if (t) return go('#/estimating/takeoff/' + t.id); }
       viewEstimating();
     } });
-  $('#eplans', m.el).onchange = e => { $('#eplanlist', m.el).innerHTML = planListHtml([...e.target.files]); };
+  fc = fileCollector($('#eplans', m.el));
   const tos = $('#etos', m.el); if (tos) tos.onclick = async e => { e.preventDefault(); const list = await GET(`/estimating/bids/${b.id}/takeoffs`); m.close(); if (list[0]) go('#/estimating/takeoff/' + list[0].id); };
   const del = $('#edel', m.el);
   if (del) del.onclick = async e => { e.preventDefault(); if (!confirm(`Delete ${b.project_name}?`)) return; await act(() => DEL(`/estimating/bids/${b.id}`), 'Deleted'); m.close(); viewEstimating(); };
@@ -170,6 +171,32 @@ function planListHtml(files, haveBytes = 0) {
   return `<ul style="margin:6px 0">${files.map(f => `<li>${esc(f.name)} <span class="muted">${mb(f.size)}</span>${planOk(f) ? '' : ' <span class="pill bad">not a PDF or image</span>'}</li>`).join('')}</ul>
     <span class="${total > PLAN_MAX_MB * 1048576 ? 'pill bad' : 'muted'}">${files.length} file(s), ${mb(total)} together${total > PLAN_MAX_MB * 1048576 ? ` — over the ${PLAN_MAX_MB} MB limit` : ''}</span>`;
 }
+// pick files in as many goes as you like (any folder), or drag them in; each pick adds to the list
+function fileCollector(root, { haveCount = 0, haveBytes = 0 } = {}) {
+  const files = [];
+  root.innerHTML = `<div class="fdrop" tabindex="0" role="button" aria-label="Add plan files"><b>Drop plan files here</b> or <span class="btn sm">Choose files…</span>
+      <div class="small muted">PDF plan sets, specifications, addenda, photos. Select several at once (Ctrl/⌘ or Shift-click), or pick again to add more from another folder.</div>
+      <input type="file" multiple hidden accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif"></div><div class="flist small"></div>`;
+  const drop = $('.fdrop', root), inp = $('input', root), list = $('.flist', root);
+  const render = () => {
+    if (!files.length) { list.innerHTML = ''; return; }
+    const total = files.reduce((s, f) => s + f.size, 0) + haveBytes, over = total > PLAN_MAX_MB * 1048576 || files.length + haveCount > PLAN_MAX_FILES;
+    list.innerHTML = `<ul class="fl">${files.map((f, i) => `<li><span>${/pdf$/i.test(f.name) || f.type === 'application/pdf' ? '📄' : '🖼'} ${esc(f.name)} <span class="muted">${mb(f.size)}</span>${planOk(f) ? '' : ' <span class="pill bad">not a PDF or image</span>'}</span>
+      <button type="button" class="btn sm" data-fx="${i}" aria-label="Remove ${esc(f.name)}">✕</button></li>`).join('')}</ul>
+      <span class="${over ? 'pill bad' : 'muted'}">${files.length + haveCount} file(s), ${mb(total)} of ${PLAN_MAX_MB} MB${over ? ' — over the limit' : ''}</span>
+      <button type="button" class="btn sm" data-fclear style="margin-left:6px">Clear</button>`;
+    $$('[data-fx]', list).forEach(x => x.onclick = () => { files.splice(+x.dataset.fx, 1); render(); });
+    $('[data-fclear]', list).onclick = () => { files.length = 0; render(); };
+  };
+  const add = fl => { for (const f of fl) if (!files.some(g => g.name === f.name && g.size === f.size)) files.push(f); render(); };
+  drop.onclick = e => { if (e.target !== inp) inp.click(); };
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } };
+  inp.onchange = () => { add([...inp.files]); inp.value = ''; };
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
+  drop.ondragleave = () => drop.classList.remove('on');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('on'); add([...e.dataTransfer.files]); };
+  return { files: () => files.slice(), clear: () => { files.length = 0; render(); } };
+}
 function planCheck(files, have = { count: 0, bytes: 0 }) {
   const badF = files.find(f => !planOk(f)); if (badF) throw new Error(`${badF.name} is not a PDF or an image`);
   if (files.length + have.count > PLAN_MAX_FILES) throw new Error(`Up to ${PLAN_MAX_FILES} files per takeoff`);
@@ -187,16 +214,16 @@ function planFilesCard(t, id) {
   return `<div class="card"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">Plan files (${have.length})</h2><span class="small muted">${bytes ? `${mb(bytes)} of ${PLAN_MAX_MB} MB` : ''}</span></div>
     ${table([{ label: 'File', html: f => `${f.mime === 'application/pdf' ? '📄' : '🖼'} ${esc(f.filename)}` }, { label: 'Size', num: 1, get: f => f.size ? mb(f.size) : '' },
       { label: '', html: f => have.length > 1 ? `<button class="btn sm" data-frm="${f.index}" aria-label="Remove ${esc(f.filename)}">Remove</button>` : '' }], have, { empty: 'No files' })}
-    <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><input type="file" id="toaddf" multiple accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/gif"><button class="btn" id="toaddfgo">Add files</button>
-      <button class="btn primary" id="torerun2">Run the takeoff again with these files</button></div><div id="toaddlist" class="small"></div>
+    <div id="toaddf" style="margin-top:10px"></div>
+    <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn" id="toaddfgo">Add these files</button><button class="btn primary" id="torerun2">Run the takeoff again with all files</button></div>
     <p class="small muted">Add specifications, addenda or photos of sheets, then run it again: Claude reads every file as one set, and a later addendum overrides what it changes. Running again replaces the line edits on this takeoff.</p></div>`;
 }
 function wirePlanFiles(t, id) {
   const have = t.files || [], bytes = have.reduce((s, f) => s + (f.size || 0), 0);
-  const inp = $('#toaddf'); if (!inp) return;
-  inp.onchange = () => { $('#toaddlist').innerHTML = planListHtml([...inp.files], bytes); };
+  const box = $('#toaddf'); if (!box) return;
+  const fc = fileCollector(box, { haveCount: have.length, haveBytes: bytes });
   $('#toaddfgo').onclick = async () => {
-    const files = [...inp.files]; if (!files.length) return toast('Choose the files to add', true);
+    const files = fc.files(); if (!files.length) return toast('Choose the files to add', true);
     try { planCheck(files, { count: have.length, bytes }); } catch (e) { return toast(e.message, true); }
     const payload = await Promise.all(files.map(readFile));
     await act(() => POST(`/estimating/takeoffs/${id}/files`, { files: payload }), `${files.length} file(s) added`);
@@ -251,6 +278,8 @@ async function viewTakeoff(id) {
     else if (tab === 'files') { body.innerHTML = planFilesCard(t, id); wirePlanFiles(t, id); }
     else if (tab === 'notes') body.innerHTML = `<div class="grid g2">${[['Questions for the GC (RFIs)', t.questions], ['Assumptions', t.clarifications], ['Exclusions', t.exclusions], ['Sheets reviewed', t.sheets_reviewed]]
       .map(([h, list]) => `<div class="card"><h2>${h}</h2>${(list || []).length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<div class="empty">None</div>'}</div>`).join('')}</div>
+      ${(t.scope_checklist || []).length ? `<div class="card" style="margin-top:14px"><h2>Scope coverage</h2><p class="small muted">What Claude says it carried for each part of a complete bid. Check anything “not shown” against the plans before you bid.</p>
+        ${table([{ label: 'Category', key: 'category' }, { label: 'Status', html: c => `<span class="pill ${c.status === 'counted' ? 'good' : c.status === 'allowance' ? 'warn' : c.status === 'excluded' ? '' : 'bad'}">${esc(label(c.status))}</span>` }, { label: 'Note', key: 'note' }], t.scope_checklist)}</div>` : ''}
       <div class="card" style="margin-top:14px"><h2>Plans basis</h2><p>${esc(t.plans_basis || '—')}</p><h2>Scope</h2><p>${esc(t.scope_summary || '—')}</p></div>`;
     else body.innerHTML = linesHtml(t);
     if (tab === 'lines') wireLines(t, id, bid);
@@ -347,6 +376,7 @@ function estimateSummaryHtml(t) {
       <p>${E.schedule.weeks} week(s) at ${A.days_week} × ${A.hours_day}, ${num(A.availability * 100, 0)}% availability · ${num(E.schedule.man_days, 1)} field man-days · ${E.schedule.net_days} working days.</p>
       <h3>Schedule options (same duration)</h3>${table([{ label: 'Option', key: 'label' }, { label: 'Paid hrs', num: 1, get: o => num(o.paid_hours, 0) }, { label: 'OT hrs', num: 1, get: o => num(o.ot_hours, 0) }, { label: 'Crew', num: 1, key: 'crew' },
         { label: 'Total', num: 1, get: o => money0(o.total) }, { label: 'vs base', num: 1, html: o => o.add == null ? '<span class="pill">Base</span>' : `<span class="pill ${o.add > 0 ? 'warn' : 'good'}">${o.add > 0 ? '+' : ''}${money0(o.add)}</span>` }], E.options)}</div>
+    ${whyLowHtml(t)}
     <div class="card"><h2>Labor productivity — the bet</h2>
       <p class="small muted">Hours are bid at ${num(A.productivity, 2)} × NECA normal. If the crew only performs at NECA normal:</p>
       <div class="table-wrap"><table class="tobuild"><tbody>${line('Hours at NECA normal', num(P.neca_hours, 1))}${line('Hours as bid', num(P.bid_hours, 1))}${line('Hours removed by the productivity factor', num(P.removed, 1))}
@@ -354,8 +384,22 @@ function estimateSummaryHtml(t) {
       ${line('O&P left if the full downside happens', `<span class="${P.op_left < 0 ? 'bad' : ''}">${money(P.op_left)}</span>`)}</tbody></table></div></div>
   </div>`;
 }
+// what each thing that pulls the number down is worth, so a low takeoff can be traced
+function whyLowHtml(t) {
+  const C = t.estimate.checks || {}, A = t.assumptions, cov = (t.scope_checklist || []).filter(c => c.status === 'not_shown');
+  const rows = [
+    C.productivity_factor < 1 && [`Labor is bid at ${num(C.productivity_factor, 2)} × NECA normal`, `${money0(C.productivity_cost)} less than at NECA normal, marked up`, 'Assumptions → productivity factor 1.00 bids NECA normal'],
+    C.no_material && [`${C.no_material} line(s) carry no material`, (C.no_material_lines || []).slice(0, 4).join('; ') + (C.no_material > 4 ? '…' : ''), 'Type a material/unit on the Lines tab, or run again (Claude now prices every line)'],
+    C.no_hours && [`${C.no_hours} line(s) carry no labor`, (C.no_hours_lines || []).slice(0, 4).join('; ') + (C.no_hours > 4 ? '…' : ''), 'Type hrs/unit on the Lines tab'],
+    cov.length && [`${cov.length} scope categor${cov.length === 1 ? 'y' : 'ies'} not found on the plans`, cov.map(c => c.category).join(', '), 'RFIs & notes → Scope coverage; add lines or allowances'],
+    C.low_confidence && [`${C.low_confidence} low-confidence count(s)`, `${money0(C.low_confidence_value)} of the bid rests on them`, 'Check the counts against the sheets'],
+    [`Labor cost rate ${money(C.blended_rate)}/h`, `${C.burdened_note}; overhead & profit (${num(A.op_pct, 2)}%) and contingency are added after`, 'Assumptions → crew wages and burden'],
+  ].filter(Boolean);
+  return `<div class="card"><h2>Why this price may be low</h2><p class="small muted">The things that most often make a takeoff come in under a hand estimate, and what each is worth here.</p>
+    <div class="table-wrap"><table class="tobuild"><tbody>${rows.map(([a, b, c]) => `<tr><td><b>${esc(a)}</b><div class="small muted">${esc(b)}</div></td><td class="small">${esc(c)}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
 // Cover & Assumptions editor: used for a job type's template and for one estimate
-function assumptionsModal({ title, A, emt, instructions, save, reset, custom }) {
+function assumptionsModal({ title, A, emt, instructions, effort, save, reset, custom }) {
   const n = (name, lab, v, step = 'any') => `<label class="f"><span>${lab}</span><input name="${name}" type="number" step="${step}" value="${esc(v)}"></label>`;
   const crewRow = (c, i) => `<tr data-c="${i}"><td><input data-ck="cls" value="${esc(c.cls)}"></td><td><input data-ck="base" type="number" step="any" value="${esc(c.base)}" style="width:80px"></td>
     <td><input data-ck="mix" type="number" step="any" value="${esc(c.mix)}" style="width:70px"></td><td><input data-ck="local" type="number" step="any" value="${esc(c.local)}" style="width:70px"></td><td><button type="button" class="btn sm" data-crm="${i}" aria-label="Remove">✕</button></td></tr>`;
@@ -375,7 +419,8 @@ function assumptionsModal({ title, A, emt, instructions, save, reset, custom }) 
       <h3>EMT fittings from footage</h3><div class="form-grid"><label class="check"><input type="checkbox" name="emt_derive" ${emt.derive ? 'checked' : ''}> Add couplings, connectors and straps automatically</label>
         ${n('emt_couplings_per_100', 'Couplings per 100 LF', emt.couplings_per_100)}${n('emt_connectors_per_100', 'Connectors per 100 LF', emt.connectors_per_100)}${n('emt_straps_per_100', 'Straps per 100 LF', emt.straps_per_100)}${n('emt_locknuts_per_connector', 'Locknuts per connector', emt.locknuts_per_connector)}
         <label class="f"><span>Fitting type</span><select name="emt_fitting"><option value="SS" ${emt.fitting === 'SS' ? 'selected' : ''}>Set screw (dry interior)</option><option value="COMP" ${emt.fitting === 'COMP' ? 'selected' : ''}>Compression, raintight</option></select></label></div>
-      ${instructions != null ? `<h3>What Claude counts for this job type</h3><textarea name="instructions" rows="6" style="width:100%">${esc(instructions)}</textarea>` : ''}
+      ${instructions != null ? `<h3>What Claude counts for this job type</h3><textarea name="instructions" rows="6" style="width:100%">${esc(instructions)}</textarea>
+        <label class="f" style="max-width:360px;margin-top:8px"><span>How hard Claude works on the takeoff</span><select name="effort">${[['high', 'High — faster, cheaper'], ['xhigh', 'Extra high (default)'], ['max', 'Max — slowest, most thorough, costs the most']].map(([v, l]) => `<option value="${v}" ${v === (effort || 'xhigh') ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
       <div class="actions">${reset ? '<button type="button" class="btn" id="asreset">Use the template</button>' : ''}<button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`, { wide: true });
   $('[data-x]', m.el).onclick = m.close;
   const wireCrew = () => $$('[data-crm]', m.el).forEach(b => b.onclick = () => { b.closest('tr').remove(); });
@@ -390,7 +435,7 @@ function assumptionsModal({ title, A, emt, instructions, save, reset, custom }) 
     if (Math.abs(mix - 100) > 0.5 && !confirm(`The crew mix adds up to ${num(mix, 1)}%, not 100%. Rates are weighted by the mix either way. Save anyway?`)) return;
     const e2 = { derive: f.emt_derive.checked, fitting: f.emt_fitting.value, couplings_per_100: f.emt_couplings_per_100.value, connectors_per_100: f.emt_connectors_per_100.value,
       straps_per_100: f.emt_straps_per_100.value, locknuts_per_connector: f.emt_locknuts_per_connector.value };
-    await save(out, e2, f.instructions ? f.instructions.value : undefined); m.close();
+    await save(out, e2, f.instructions ? f.instructions.value : undefined, f.effort ? f.effort.value : undefined); m.close();
   };
 }
 async function takeoffTemplates() {
@@ -402,8 +447,8 @@ async function takeoffTemplates() {
     <div class="actions"><button class="btn" data-x>Close</button></div>`);
   $('[data-x]', m.el).onclick = m.close;
   $$('[data-tk]', m.el).forEach(b => b.onclick = () => { const k = b.dataset.tk, tpl = s.templates[k]; m.close();
-    assumptionsModal({ title: `${tpl.label} template`, A: tpl.assumptions, emt: tpl.emt, instructions: tpl.instructions,
-      save: async (A, emt, instructions) => { await act(() => PUT('/estimating/takeoff-settings', { templates: { [k]: { assumptions: A, emt, instructions } } }), 'Template saved'); } }); });
+    assumptionsModal({ title: `${tpl.label} template`, A: tpl.assumptions, emt: tpl.emt, instructions: tpl.instructions, effort: tpl.effort,
+      save: async (A, emt, instructions, effort) => { await act(() => PUT('/estimating/takeoff-settings', { templates: { [k]: { assumptions: A, emt, instructions, effort } } }), 'Template saved'); } }); });
 }
 const blendRate = A => { const mix = A.crew.reduce((s, c) => s + c.mix, 0) || 1; return A.crew.reduce((s, c) => s + c.base * A.burden * c.mix, 0) / mix; };
 async function priceListImport() {
