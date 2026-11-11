@@ -249,3 +249,44 @@ test('estimate-specific instructions: sent to Claude as their own block, editabl
   await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`); await waitDone(id);
   assert.equal(calls.at(-1).params.messages[0].content.filter(b => b.type === 'text').length, 1);
 });
+
+test('commercial proposal template: Word import, standard text saved, signature kept off /api/me, proposal data', async () => {
+  const { zip } = require('./_xlsx');
+  const P = (t, list = false) => `<w:p>${list ? '<w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>' : ''}<w:r><w:t xml:space="preserve">${t}</w:t></w:r></w:p>`;
+  const TR = cells => `<w:tr>${cells.map(c => `<w:tc><w:p><w:r><w:t>${c}</w:t></w:r></w:p></w:tc>`).join('')}</w:tr>`;
+  const png = Buffer.concat([Buffer.from([0x89]), Buffer.from('PNG\r\n\x1a\n'), Buffer.alloc(16)]);
+  const doc = `<?xml version="1.0"?><w:document xmlns:w="w" xmlns:r="r"><w:body>
+    ${P('Re: Test Cafe – Pricing Proposal')}${P('Hello Pat,')}${P('The total amount of our bid is $12,345.00')}${P('Pricing is valid for 30 days from submission.')}
+    ${P('Our team at Test Electric remains committed to quality.')}${P('Inclusions')}${P('Lighting')}<w:tbl>${TR(['Tag', 'Description', 'Qty', 'Unit'])}${TR(['A', 'Troffer', '4', 'EA'])}</w:tbl>
+    ${P('General Conditions &amp; Clarifications')}${P('All work per the NEC.', true)}${P('Plates black per General Note A, Sheet E1.0.', true)}
+    ${P('Exclusions')}${P('Permit fees.', true)}${P('Clarifications &amp; Assumptions')}${P('Utility work by the utility.', true)}
+    <w:tbl>${TR(['Unit prices for change orders'])}${TR(['Foreman', '$72/', 'hr'])}${TR(['Labor', '$60/', 'hr'])}</w:tbl>
+    ${P('Proposal Qualifications')}${P('Freight included.', true)}${P('Terms and Acceptance')}${P('Warranty: One year on labor and material.', true)}
+    ${P('To proceed with this proposal, please sign below.')}${P('Acknowledgment and Acceptance:')}
+    <w:p><w:r><w:drawing><a:blip r:embed="rId7"/></w:drawing></w:r></w:p>${P('Sincerely,')}${P('Sam Signer')}${P('Estimator')}${P('(555) 555-0100')}${P('sam@example.com')}
+  </w:body></w:document>`;
+  const docx = zip({ 'word/document.xml': doc, 'word/_rels/document.xml.rels': '<Relationships><Relationship Id="rId7" Type="image" Target="media/image1.png"/></Relationships>', 'word/media/image1.png': png.toString('latin1') });
+  const r = (await call('admin', 'POST', '/estimating/proposal-template/import', { file: docx.toString('base64') })).data;
+  assert.equal(r.total_line, 'The total amount of our bid is'); assert.equal(r.validity, 'Pricing is valid for 30 days from submission.');
+  assert.deepEqual(r.conditions, ['All work per the NEC.']); assert.equal(r.set_aside[0].text, 'Plates black per General Note A, Sheet E1.0.');
+  assert.deepEqual(r.unit_rates, [{ label: 'Foreman', rate: '$72/ hr' }, { label: 'Labor', rate: '$60/ hr' }]);
+  assert.deepEqual(r.terms, ['Warranty: One year on labor and material.']);
+  assert.deepEqual(r.signer, { name: 'Sam Signer', title: 'Estimator', phone: '(555) 555-0100', email: 'sam@example.com' });
+  assert.match(r.signature || '', /^data:image\/png;base64,/);
+  assert.equal((await call('admin', 'POST', '/estimating/proposal-template/import', { file: Buffer.from('not a zip at all').toString('base64') })).status, 400);
+  // save it; bad signature refused; never sent with /api/me
+  assert.equal((await call('admin', 'PUT', '/estimating/proposal-template', { std: { ...r, signature: 'data:text/html;base64,PGI+' } })).status, 400);
+  const saved = (await call('admin', 'PUT', '/estimating/proposal-template', { std: r })).data;
+  assert.deepEqual(saved.terms, r.terms); assert.ok(saved.signature);
+  assert.equal((await call('admin', 'GET', '/me')).data.settings.proposal_commercial, undefined);
+  assert.equal((await call('office', 'GET', '/estimating/proposal-template')).status, 403);
+  // a commercial estimate's proposal comes with the commercial layout, the standard text and the signer
+  reply = () => ({ model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: {}, content: [{ type: 'text', text: JSON.stringify({ ...takeoffJson,
+    inclusion_notes: [{ scope: 'lighting', note: 'Furnish and install per the fixture schedule, Sheet E1.0 (made-up).' }] }) }] });
+  const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', file: pdf })).data;
+  await waitDone(id);
+  const p = (await call('admin', 'GET', `/estimating/takeoffs/${id}/proposal`)).data;
+  assert.equal(p.layout, 'commercial'); assert.deepEqual(p.std.unit_rates, r.unit_rates); assert.equal(p.me.name, 'Owner');
+  assert.equal(p.inclusion_notes[0].scope, 'lighting'); assert.ok(p.takeoff.lines.every(l => 'phase_code' in l));
+  assert.ok(Takeoff.SCHEMA.required.includes('inclusion_notes'));
+});

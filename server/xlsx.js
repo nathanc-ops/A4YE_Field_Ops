@@ -34,7 +34,7 @@ function unzip(buf) {
       throw new Error(`Unsupported compression in ${name}`);
     });
   }
-  return { has: n => files.has(n), text: n => { const f = files.get(n); return f ? f().toString('utf8') : null; } };
+  return { has: n => files.has(n), text: n => { const f = files.get(n); return f ? f().toString('utf8') : null; }, file: n => { const f = files.get(n); return f ? f() : null; } };
 }
 
 const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };

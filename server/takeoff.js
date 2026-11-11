@@ -49,7 +49,7 @@ Prefer the company's flat-rate price book items when one fits.`,
 
 const SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['project_name', 'scope_summary', 'plans_basis', 'sheets_reviewed', 'lines', 'scope_checklist', 'assumptions', 'exclusions', 'questions'],
+  required: ['project_name', 'scope_summary', 'plans_basis', 'sheets_reviewed', 'lines', 'scope_checklist', 'inclusion_notes', 'assumptions', 'exclusions', 'questions'],
   properties: {
     project_name: { type: 'string' },
     scope_summary: { type: 'string', description: 'One or two sentences on the electrical scope, for the proposal letter' },
@@ -78,6 +78,8 @@ const SCHEMA = {
     assumptions: { type: 'array', items: { type: 'string' } },
     exclusions: { type: 'array', items: { type: 'string' } },
     questions: { type: 'array', items: { type: 'string' }, description: 'RFIs: things the plans leave unclear' },
+    inclusion_notes: { type: 'array', description: 'For the proposal: one line per scope you counted saying what it covers and per which sheets/schedules', items: { type: 'object', additionalProperties: false,
+      required: ['scope', 'note'], properties: { scope: { type: 'string', enum: [...M.SCOPE_KEYS, 'equipment_connections'] }, note: { type: 'string' } } } },
     scope_checklist: { type: 'array', description: 'One entry per category in the completeness checklist', items: { type: 'object', additionalProperties: false,
       required: ['category', 'status', 'note'], properties: {
         category: { type: 'string' }, status: { type: 'string', enum: ['counted', 'not_shown', 'excluded', 'allowance'] }, note: { type: 'string' } } } },
@@ -141,6 +143,7 @@ How to report:
   · demolition and safe-off when shown; firestopping and sleeves; temporary power and lighting when the job needs it;
   · testing, labeling, panel schedules, as-builts and closeout (P7), and permit and inspection fees as a LOT line when the EC normally carries them.
   If the plans don't show enough to count one of these, carry a reasonable allowance line (confidence low, note "allowance") rather than leaving it out, and say so in assumptions.
+- inclusion_notes: for the proposal letter, one short line per scope you counted (plus equipment_connections when there are any), saying what it covers and per which sheets or schedules, e.g. "Furnish and install per the Light Fixture Schedule and Lighting Controls Diagram, Sheet E1.0." or "Final electrical connection only, per the Electrical Equipment Schedule, Sheet E2.0. Equipment furnished and set by others."
 - scope_checklist: one entry for each category above (branch raceway, branch wire, boxes & supports, feeders, distribution, equipment connections, lighting & controls, fire alarm / low voltage, demolition, firestopping, temporary power, testing & closeout, permits) saying whether you counted it, it isn't shown, it's excluded, or you carried an allowance.
 - Put every line on a scope tab (distribution, lighting, power, fire_alarm, data, demo) and a phase (P1 Demolition, P2 Rough-In, P3 Gear & Feeders, P4 Trim/Fixtures & Devices, P5 Equipment Connections, P6 Systems, P7 Closeout).
 - EMT conduit: one line per size, footage in LF, using the price book's EMT-<size> code when it has one. Couplings, connectors, straps and locknuts are added automatically from the footage, so do not list them.
@@ -487,6 +490,45 @@ ${items || '(empty)'}`;
     res.json(out);
   }));
 
+  // ---------------------------------------------------------------- commercial proposal: the company's standard text
+  const STD_KEYS = ['total_line', 'validity', 'closing', 'acceptance', 'acceptance_title', 'unit_rates_title'];
+  const LIST_KEYS = ['conditions', 'exclusions', 'clarifications', 'qualifications', 'terms'];
+  function proposalStd() {
+    const s = S(); let v = {}; try { v = JSON.parse(s.proposal_commercial || '{}'); } catch { v = {}; }
+    const list = k => { try { return JSON.parse(s[`proposal_${k}`] || '[]'); } catch { return []; } };
+    return {
+      total_line: v.total_line || 'The total amount of our bid is', validity: v.validity || 'Pricing is valid for 30 days from submission.',
+      closing: v.closing || '', acceptance: v.acceptance || 'To proceed with this proposal, please sign below and return a copy to us.',
+      acceptance_title: v.acceptance_title || 'Acknowledgment and Acceptance', unit_rates_title: v.unit_rates_title || 'Unit prices for change orders',
+      conditions: v.conditions || list('conditions'), exclusions: v.exclusions || list('exclusions'),
+      clarifications: v.clarifications || ['Final equipment locations shall be coordinated with equipment suppliers.', 'Utility company work is by the serving utility.', 'Final circuiting is subject to approved shop drawings.'],
+      qualifications: v.qualifications || list('qualifications'), terms: v.terms || [], unit_rates: v.unit_rates || [],
+      signer: v.signer || null, signature: v.signature || null, imported_at: v.imported_at || null,
+    };
+  }
+  app.get('/api/estimating/proposal-template', only, wrap((req, res) => res.json(proposalStd())));
+  app.post('/api/estimating/proposal-template/import', only, wrap((req, res) => {
+    const b = req.body || {}; if (!b.file) throw bad('Choose the Word template (.docx)');
+    const buf = Buffer.from(String(b.file).replace(/^data:[^,]*,/, ''), 'base64');
+    try { res.json(require('./docx_template').parse(buf)); }
+    catch (e) { throw bad(/zip|xlsx|Word/i.test(e.message) ? 'That is not a Word .docx file (an old .doc has to be saved as .docx first)' : e.message); }
+  }));
+  app.put('/api/estimating/proposal-template', only, wrap((req, res) => {
+    const b = (req.body || {}).std || {}, out = {};
+    for (const k of STD_KEYS) if (b[k] != null) out[k] = String(b[k]).trim().slice(0, 1000);
+    for (const k of LIST_KEYS) if (Array.isArray(b[k])) out[k] = b[k].map(x => String(x).trim()).filter(Boolean).slice(0, 60).map(x => x.slice(0, 1000));
+    if (Array.isArray(b.unit_rates)) out.unit_rates = b.unit_rates.filter(r => r && r.label).slice(0, 12).map(r => ({ label: String(r.label).slice(0, 60), rate: String(r.rate || '').slice(0, 40) }));
+    if (b.signer) out.signer = Object.fromEntries(['name', 'title', 'phone', 'email'].map(k => [k, String(b.signer[k] || '').slice(0, 120)]));
+    if (b.signature) {
+      if (!/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(b.signature)) throw bad('The signature has to be a PNG, JPEG, GIF or WEBP image');
+      if (b.signature.length > 800 * 1024) throw bad('That signature image is too large (keep it under 500 KB)');
+      out.signature = b.signature;
+    }
+    out.imported_at = b.imported_at || proposalStd().imported_at || null;
+    run(db, "INSERT INTO settings (key, value) VALUES ('proposal_commercial', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", JSON.stringify(out));
+    res.json(proposalStd());
+  }));
+
   // ---------------------------------------------------------------- proposal letter (draft kept with the takeoff)
   app.get('/api/estimating/takeoffs/:id/proposal', only, wrap((req, res) => {
     const t = get(db, 'SELECT * FROM takeoffs WHERE id = ?', +req.params.id); if (!t) throw bad('Not found', 404);
@@ -498,8 +540,11 @@ ${items || '(empty)'}`;
       sheets_reviewed: o.sheets_reviewed, exclusions: o.exclusions, questions: o.questions,
       clarifications: (() => { try { return JSON.parse(t.result || '{}').assumptions || []; } catch { return []; } })(),
       total: o.estimate.build.total, tax_pct: o.assumptions.tax_pct,
-      lines: o.lines.filter(l => l.include && !l.derived).map(l => ({ scope: l.scope, tag: l.tag || l.source || '', description: l.description, qty: l.qty, unit: l.unit })) },
+      lines: o.lines.filter(l => l.include && !l.derived).map(l => ({ scope: l.scope, phase_code: l.phase_code || '', tag: l.tag || '', source: l.source || '', description: l.description, qty: l.qty, unit: l.unit })) },
       company: { name: s.company_name, address: s.company_address, phone: s.company_phone, email: s.company_email, website: s.company_website, logo: '/brand/a4y-mark.png' },
+      layout: t.kind === 'commercial' ? 'commercial' : 'letter', std: proposalStd(),
+      me: (() => { const u = get(db, 'SELECT name, title, phone, email FROM users WHERE id = ?', req.user.id) || {}; return { name: u.name || '', title: u.title || '', phone: u.phone || '', email: u.email || '' }; })(),
+      inclusion_notes: (() => { try { return JSON.parse(t.result || '{}').inclusion_notes || []; } catch { return []; } })(),
       defaults: Object.fromEntries(['conditions', 'exclusions', 'qualifications'].map(k => { try { return [k, JSON.parse(s[`proposal_${k}`] || '[]')]; } catch { return [k, []]; } })) });
   }));
   app.put('/api/estimating/takeoffs/:id/proposal', only, wrap((req, res) => {

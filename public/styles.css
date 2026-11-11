@@ -697,3 +697,20 @@ th.sortable .sarrow { font-size: 10px; }
 .fdrop .btn { margin-left: 4px; pointer-events: none; }
 ul.fl { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
 ul.fl li { display: flex; justify-content: space-between; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+/* ===== commercial proposal (letterhead repeats on every printed page) ===== */
+table.pl-run { width: 100%; border-collapse: collapse; background: #fff; color: #111; }
+table.pl-run > thead > tr > td { padding: 40px 48px 0; } table.pl-run > tbody > tr > td { padding: 0; }
+table.pl-run .pl-head { margin-bottom: 10px; }
+.pl-c { padding-top: 6px !important; }
+.pl-total { text-align: center; font-size: 14px; margin: 12px 0 !important; }
+table.pl-rates { margin: 10px auto 14px; border-collapse: collapse; font-size: 13px; }
+table.pl-rates caption { font-size: 14px; padding-bottom: 4px; color: #111; }
+table.pl-rates td { padding: 2px 14px; color: #111; }
+.pl-accept { margin: 18px 0 10px; } .pl-acc-t { text-align: center; font-size: 14px; }
+.pl-sign { display: flex; align-items: flex-end; gap: 10px; margin: 10px 0; } .pl-sign span { width: 130px; text-decoration: underline; } .pl-sign i { flex: 1; border-bottom: 1px solid #111; height: 18px; }
+.pl-sinc { margin-top: 26px; font-size: 12.5px; line-height: 1.35; } .pl-sig { max-height: 54px; max-width: 220px; display: block; }
+@media print {
+  table.pl-run > thead > tr > td { padding: 0 0 6px; }
+  table.pl-run > thead { display: table-header-group; }
+  .pl-keep { break-inside: avoid; } .pl-tbl tr, .pl-c h3 { break-inside: avoid; } .pl-c h3 { break-after: avoid; }
+}

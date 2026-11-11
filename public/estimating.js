@@ -479,78 +479,193 @@ async function priceListImport() {
 }
 
 // ---------------------------------------------------------------- proposal letter
+// Commercial jobs use the company's commercial proposal template (letterhead on every page, one total line, inclusions by
+// system, change-order unit rates, terms and acceptance, signature). Other jobs use the bid letter (red base-bid banners).
 const PROP_SCOPE = { distribution: 'Distribution', lighting: 'Lighting', power: 'Power', fire_alarm: 'Fire Alarm', data: 'Data & Telecom', demo: 'Demolition' };
-function proposalFromTakeoff(p) {
-  const T = p.takeoff, gc = p.gcs[0] || '', project = (p.bid && p.bid.project_name) || T.project_name || 'the project';
+const COMM_SECTIONS = ['Lighting', 'Branch Power Devices', 'Distribution', 'Foodservice Equipment Connections', 'Mechanical Equipment Connections', 'Equipment Connections', 'Fire Alarm', 'Data / Telecom / Low Voltage', 'Demolition'];
+const isCommodity = code => /^0[89]/.test(code) || /^06[34]0$/.test(code);   // raceway, conductors, feeder conduit and wire
+function commercialSections(T, notes, showCommodity) {
+  const note = k => (notes.find(n => n.scope === k) || {}).note || '';
+  const sec = l => {
+    const c = String(l.phase_code || '');
+    if (/^13/.test(c)) return c === '1320' ? 'Foodservice Equipment Connections' : c === '1310' ? 'Mechanical Equipment Connections' : 'Equipment Connections';
+    return { lighting: 'Lighting', power: 'Branch Power Devices', distribution: 'Distribution', fire_alarm: 'Fire Alarm', data: 'Data / Telecom / Low Voltage', demo: 'Demolition' }[l.scope] || 'Branch Power Devices';
+  };
+  const noteFor = title => /Equipment Connections/.test(title) ? note('equipment_connections')
+    : note({ Lighting: 'lighting', 'Branch Power Devices': 'power', Distribution: 'distribution', 'Fire Alarm': 'fire_alarm', 'Data / Telecom / Low Voltage': 'data', Demolition: 'demo' }[title]);
+  const lines = T.lines.filter(l => showCommodity || !isCommodity(String(l.phase_code || '')));
+  return COMM_SECTIONS.map(title => ({ title, note: noteFor(title), rows: lines.filter(l => sec(l) === title).map(l => ({ tag: l.tag || '—', description: l.description, qty: l.qty, unit: l.unit })) }))
+    .filter(s => s.rows.length);
+}
+function proposalFromTakeoff(p, opts = {}) {
+  const T = p.takeoff, gc = p.gcs[0] || '', project = (p.bid && p.bid.project_name) || T.project_name || 'the project', std = p.std || {};
+  const closing = `Our team at ${p.company.name || 'our company'} remains committed to delivering high-quality workmanship, adhering to project timelines, and ensuring all installations meet code and project requirements.`;
+  const total = Math.round(T.total * 100) / 100;
+  if (p.layout === 'commercial') {
+    const taxLine = T.tax_pct > 0 ? 'Idaho sales tax on materials is included.' : 'Taxes excluded unless specifically required.';
+    const quals = std.qualifications && std.qualifications.length ? std.qualifications.map(q => /tax/i.test(q) ? taxLine : q) : [];
+    if (!quals.some(q => /tax/i.test(q))) quals.push(taxLine);
+    return {
+      layout: 'commercial', date: new Date().toLocaleDateString('en-US'), re: `${project} – Pricing Proposal`, gc, greeting: 'Hello,',
+      intro: `Thank you for the opportunity to provide ${gc || 'you'} with a pricing proposal for the ${project}.`, basis: '',
+      total_line: std.total_line || 'The total amount of our bid is', total, validity: std.validity || 'Pricing is valid for 30 days from submission.',
+      closing: std.closing || closing, show_commodity: !!opts.showCommodity,
+      sections: commercialSections(T, p.inclusion_notes || [], !!opts.showCommodity),
+      conditions: [...(std.conditions || [])], exclusions: [...new Set([...(T.exclusions || []), ...(std.exclusions || [])])],
+      clarifications: [...new Set([...(std.clarifications || []), ...(T.clarifications || [])])],
+      unit_rates_title: std.unit_rates_title || 'Unit prices for change orders', unit_rates: (std.unit_rates || []).map(r => ({ ...r })),
+      qualifications: quals, terms: [...(std.terms || [])], acceptance: std.acceptance || 'To proceed with this proposal, please sign below and return a copy to us.',
+      acceptance_title: std.acceptance_title || 'Acknowledgment and Acceptance', signer: { ...(std.signer && std.signer.name ? std.signer : p.me) }, use_signature: !!std.signature,
+    };
+  }
   const scopes = EST_SCOPES.map(([k]) => k).filter(k => T.lines.some(l => l.scope === k));
   return {
-    date: new Date().toLocaleDateString('en-US'), re: `${project} – Electrical Proposal`, gc, greeting: 'Hello,',
+    layout: 'letter', date: new Date().toLocaleDateString('en-US'), re: `${project} – Electrical Proposal`, gc, greeting: 'Hello,',
     intro: `Thank you for the opportunity to provide ${gc || 'you'} with a pricing proposal for the ${project}.${T.scope_summary ? ' ' + T.scope_summary : ''}`,
     basis: T.plans_basis ? `This proposal is based on ${T.plans_basis.replace(/\.$/, '')}. No addenda had been received at the time of this proposal.` : '',
     pricing: T.tax_pct > 0 ? 'Our base bid is shown below. It includes Idaho sales tax on materials.' : 'Our base bid is shown below.',
-    bids: [{ label: 'ELECTRICAL BASE BID', amount: Math.round(T.total * 100) / 100 }], credit: null,
-    validity: 'Pricing is valid for 30 days from submission.',
-    closing: `Our team at ${p.company.name || 'our company'} remains committed to delivering high-quality workmanship, adhering to project timelines, and ensuring all installations meet code and project requirements.`,
-    sections: scopes.map(k => ({ title: PROP_SCOPE[k], note: '', rows: T.lines.filter(l => l.scope === k).map(l => ({ tag: l.tag || '—', description: l.description, qty: l.qty, unit: l.unit })) })),
+    bids: [{ label: 'ELECTRICAL BASE BID', amount: total }], credit: null,
+    validity: 'Pricing is valid for 30 days from submission.', closing,
+    sections: scopes.map(k => ({ title: PROP_SCOPE[k], note: '', rows: T.lines.filter(l => l.scope === k).map(l => ({ tag: l.tag || l.source || '—', description: l.description, qty: l.qty, unit: l.unit })) })),
     conditions: [...p.defaults.conditions], exclusions: [...new Set([...(T.exclusions || []), ...p.defaults.exclusions])], clarifications: [...(T.clarifications || [])], qualifications: [...p.defaults.qualifications],
   };
 }
 async function viewProposal(id) {
   const p = await GET(`/estimating/takeoffs/${id}/proposal`);
-  let d = p.draft || proposalFromTakeoff(p);
-  const C = p.company;
-  const lh = () => `<div class="pl-head"><div><div class="pl-co">${esc(C.name || '')}</div>${(C.address || '').split(/\n|,\s*(?=[A-Z][a-z]+,?\s+[A-Z]{2}\b)/).map(x => `<div>${esc(x)}</div>`).join('')}${C.phone ? `<div>${esc(C.phone)}</div>` : ''}${C.website ? `<div><u>${esc(C.website)}</u></div>` : ''}<div>${esc(d.date)}</div></div>
+  let d = p.draft && (p.draft.layout || 'letter') === p.layout ? p.draft : proposalFromTakeoff(p);
+  const C = p.company, comm = d.layout === 'commercial', std = p.std || {};
+  const addr = (C.address || '').split(/\n|,\s*(?=[A-Z][a-z]+,?\s+[A-Z]{2}\b)/).map(x => `<div>${esc(x)}</div>`).join('');
+  const lh = () => `<div class="pl-head"><div><div class="pl-co">${esc(C.name || '')}</div>${addr}${C.phone ? `<div>${esc(C.phone)}</div>` : ''}${C.website ? `<div><u>${esc(C.website)}</u></div>` : ''}<div>${esc(d.date)}</div></div>
     ${C.logo ? `<img src="${esc(C.logo)}" alt="" class="pl-logo">` : ''}</div>`;
   const list = a => (a || []).filter(Boolean).length ? `<ul>${a.filter(Boolean).map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
-  const preview = () => `<div class="pl-page">${lh()}
+  const labelled = a => (a || []).filter(Boolean).length ? `<ul>${a.filter(Boolean).map(x => { const m = /^([^:]{2,30}):\s*(.*)$/.exec(x); return `<li>${m ? `<b>${esc(m[1])}:</b> ${esc(m[2])}` : esc(x)}</li>`; }).join('')}</ul>` : '';
+  const incl = () => d.sections.map((s, i) => `<h3>${i + 1}. ${esc(s.title)}</h3>${s.note ? `<p class="pl-note">${esc(s.note)}</p>` : ''}
+    <table class="pl-tbl"><thead><tr><th>Tag</th><th>Description</th><th>Qty</th><th>Unit</th></tr></thead><tbody>${s.rows.map(r => `<tr><td>${esc(r.tag)}</td><td>${esc(r.description)}</td><td>${esc(Number(r.qty).toLocaleString('en-US'))}</td><td>${esc(r.unit)}</td></tr>`).join('')}</tbody></table>`).join('');
+  const letterPreview = () => `<div class="pl-page">${lh()}
       <p>Re: &nbsp;${esc(d.re)}</p><p>${esc(d.greeting)}</p>${[d.intro, d.basis, d.pricing].filter(Boolean).map(x => `<p>${esc(x)}</p>`).join('')}
       ${d.bids.map(b => `<div class="pl-bid">${esc(b.label)}: ${money(b.amount)}</div>`).join('')}
       ${d.credit && d.credit.amount ? `<div class="pl-bid sm">${esc(d.credit.label || 'Credit')}: (${money(Math.abs(d.credit.amount))})</div>` : ''}
       <p>${esc(d.validity)}</p><p>${esc(d.closing)}</p></div>
-    <div class="pl-page pl-break">${lh()}<h2>Inclusions</h2>
-      ${d.sections.map((s, i) => `<h3>${i + 1}. ${esc(s.title)}</h3>${s.note ? `<p class="pl-note">${esc(s.note)}</p>` : ''}
-        <table class="pl-tbl"><thead><tr><th>Tag</th><th>Description</th><th>Qty</th><th>Unit</th></tr></thead><tbody>${s.rows.map(r => `<tr><td>${esc(r.tag)}</td><td>${esc(r.description)}</td><td>${esc(Number(r.qty).toLocaleString('en-US'))}</td><td>${esc(r.unit)}</td></tr>`).join('')}</tbody></table>`).join('')}
+    <div class="pl-page pl-break">${lh()}<h2>Inclusions</h2>${incl()}
       ${d.conditions.filter(Boolean).length ? `<h2>General Conditions & Clarifications</h2>${list(d.conditions)}` : ''}
       ${d.exclusions.filter(Boolean).length ? `<h2>Exclusions</h2>${list(d.exclusions)}` : ''}
       ${d.clarifications.filter(Boolean).length ? `<h2>Clarifications & Assumptions</h2>${list(d.clarifications)}` : ''}
       ${d.qualifications.filter(Boolean).length ? `<h2>Proposal Qualifications</h2>${list(d.qualifications)}` : ''}</div>`;
+  // the letterhead sits in a table header so the browser repeats it at the top of every printed page
+  const commPreview = () => `<table class="pl-run"><thead><tr><td>${lh()}</td></tr></thead><tbody><tr><td><div class="pl-page pl-c">
+      <p><u>Re: &nbsp;${esc(d.re)}</u></p><p>${esc(d.greeting)}</p>${[d.intro, d.basis].filter(Boolean).map(x => `<p>${esc(x)}</p>`).join('')}
+      <p class="pl-total">${esc(d.total_line)} <b>${money(d.total)}</b></p>
+      <p>${esc(d.validity)}</p><p>${esc(d.closing)}</p>
+      <h2>Inclusions</h2>${incl()}
+      ${d.conditions.filter(Boolean).length ? `<h2>General Conditions & Clarifications</h2>${list(d.conditions)}` : ''}
+      ${d.exclusions.filter(Boolean).length ? `<h2>Exclusions</h2>${list(d.exclusions)}` : ''}
+      ${d.clarifications.filter(Boolean).length || d.unit_rates.length ? `<h2>Clarifications & Assumptions</h2>${list(d.clarifications)}` : ''}
+      ${d.unit_rates.filter(r => r.label).length ? `<table class="pl-rates"><caption>${esc(d.unit_rates_title)}</caption><tbody>${d.unit_rates.filter(r => r.label).map(r => `<tr><td>${esc(r.label)}</td><td>${esc(r.rate)}</td></tr>`).join('')}</tbody></table>` : ''}
+      ${d.qualifications.filter(Boolean).length ? `<h2>Proposal Qualifications</h2>${list(d.qualifications)}` : ''}
+      <div class="pl-keep">${d.terms.filter(Boolean).length ? `<h2>Terms and Acceptance</h2>${labelled(d.terms)}` : ''}
+      ${d.acceptance ? `<p style="margin-top:14px">${esc(d.acceptance)}</p>` : ''}
+      <div class="pl-accept"><p class="pl-acc-t"><u>${esc(d.acceptance_title)}:</u></p>
+        <div class="pl-sign"><span>Client Name</span><i></i></div><div class="pl-sign"><span>Client Signature:</span><i></i></div><div class="pl-sign"><span>Date:</span><i></i></div></div>
+      <div class="pl-sinc"><p>Sincerely,</p>${d.use_signature && std.signature ? `<img src="${esc(std.signature)}" alt="" class="pl-sig">` : '<div style="height:36px"></div>'}
+        ${['name', 'title', 'phone', 'email'].map(k => d.signer && d.signer[k] ? `<div>${esc(d.signer[k])}</div>` : '').join('')}</div></div>
+    </div></td></tr></tbody></table>`;
+  const preview = () => comm ? commPreview() : letterPreview();
   const ta = (k, rows = 3) => `<textarea data-pk="${k}" rows="${rows}">${esc(d[k] || '')}</textarea>`;
   const lines = k => `<textarea data-pl="${k}" rows="5" title="One per line">${esc((d[k] || []).join('\n'))}</textarea>`;
-  $('#view').innerHTML = setTop('Proposal letter', `<a class="btn" href="#/estimating/takeoff/${id}">‹ Estimate</a><button class="btn" id="plreset">Rebuild from estimate</button><button class="btn" id="plsave">Save draft</button><button class="btn primary" onclick="print()">Print / Save as PDF</button>`,
+  const amounts = comm ? `<label class="f full"><span>Total line</span><div class="row" style="gap:6px"><input data-pk="total_line" value="${esc(d.total_line)}" style="flex:1"><input data-pk="total" type="number" step="0.01" value="${esc(d.total)}" style="width:150px"></div></label>`
+    : `<h3>Bid amounts</h3><div id="plbids">${d.bids.map((b, i) => `<div class="row" style="gap:6px;margin-bottom:6px"><input data-bl="${i}" value="${esc(b.label)}" style="flex:1"><input data-ba="${i}" type="number" step="0.01" value="${esc(b.amount)}" style="width:140px"><button type="button" class="btn sm" data-brm="${i}" aria-label="Remove">✕</button></div>`).join('')}</div>
+      <div class="row" style="gap:6px"><button type="button" class="btn sm" id="pladdbid">+ Base bid</button><label class="small">Award credit <input id="plcredit" type="number" step="0.01" value="${esc(d.credit ? d.credit.amount : '')}" style="width:120px" placeholder="none"></label></div>`;
+  $('#view').innerHTML = setTop(comm ? 'Commercial proposal' : 'Proposal letter', `<a class="btn" href="#/estimating/takeoff/${id}">‹ Estimate</a>${comm ? '<button class="btn" id="plstd">Standard text & template</button>' : ''}<button class="btn" id="plreset">Rebuild from estimate</button><button class="btn" id="plsave">Save draft</button><button class="btn primary" onclick="print()">Print / Save as PDF</button>`,
     `${esc(p.bid.project_name || '')}${p.gcs.length ? ' · to ' + esc(p.gcs.join(', ')) : ''}`) + `
+    ${comm && !std.imported_at && !(std.terms || []).length ? `<div class="alert info no-print">Import your commercial proposal Word template once (Standard text & template → Import from Word) to fill in your terms, change-order rates, standard lists and signature.</div>` : ''}
     <div class="pl-wrap"><div class="card no-print pl-edit">
       <div class="form-grid"><label class="f"><span>Date</span><input data-pk="date" value="${esc(d.date)}"></label><label class="f"><span>Greeting</span><input data-pk="greeting" value="${esc(d.greeting)}"></label>
         <label class="f full"><span>Re:</span><input data-pk="re" value="${esc(d.re)}"></label></div>
-      <label class="f full"><span>Opening</span>${ta('intro', 4)}</label><label class="f full"><span>Plans basis</span>${ta('basis', 3)}</label><label class="f full"><span>Pricing sentence</span>${ta('pricing', 2)}</label>
-      <h3>Bid amounts</h3><div id="plbids">${d.bids.map((b, i) => `<div class="row" style="gap:6px;margin-bottom:6px"><input data-bl="${i}" value="${esc(b.label)}" style="flex:1"><input data-ba="${i}" type="number" step="0.01" value="${esc(b.amount)}" style="width:140px"><button type="button" class="btn sm" data-brm="${i}" aria-label="Remove">✕</button></div>`).join('')}</div>
-      <div class="row" style="gap:6px"><button type="button" class="btn sm" id="pladdbid">+ Base bid</button><label class="small">Award credit <input id="plcredit" type="number" step="0.01" value="${esc(d.credit ? d.credit.amount : '')}" style="width:120px" placeholder="none"></label></div>
+      <label class="f full"><span>Opening</span>${ta('intro', 3)}</label><label class="f full"><span>Plans basis (optional)</span>${ta('basis', 2)}</label>${comm ? '' : `<label class="f full"><span>Pricing sentence</span>${ta('pricing', 2)}</label>`}
+      ${amounts}
       <label class="f full"><span>Validity</span>${ta('validity', 1)}</label><label class="f full"><span>Closing</span>${ta('closing', 3)}</label>
-      <h3>Inclusions</h3><p class="small muted">One row per line: Tag | Description | Qty | Unit</p>
-      ${d.sections.map((s, i) => `<div class="pl-sec"><input data-st="${i}" value="${esc(s.title)}"><input data-sn="${i}" value="${esc(s.note)}" placeholder="Note under the heading (sheets, details)"><textarea data-sr="${i}" rows="5">${esc(s.rows.map(r => [r.tag, r.description, r.qty, r.unit].join(' | ')).join('\n'))}</textarea></div>`).join('')}
+      <h3>Inclusions</h3>${comm ? `<label class="check"><input type="checkbox" id="plcomm" ${d.show_commodity ? 'checked' : ''}> Show raceway, wire and feeder lines</label>` : ''}<p class="small muted">One row per line: Tag | Description | Qty | Unit</p>
+      ${d.sections.map((s, i) => `<div class="pl-sec"><input data-st="${i}" value="${esc(s.title)}"><input data-sn="${i}" value="${esc(s.note)}" placeholder="Note under the heading (what it covers, per which sheets)"><textarea data-sr="${i}" rows="5">${esc(s.rows.map(r => [r.tag, r.description, r.qty, r.unit].join(' | ')).join('\n'))}</textarea></div>`).join('')}
       <h3>Lists (one per line)</h3>
       <label class="f full"><span>General conditions & clarifications</span>${lines('conditions')}</label><label class="f full"><span>Exclusions</span>${lines('exclusions')}</label>
-      <label class="f full"><span>Clarifications & assumptions</span>${lines('clarifications')}</label><label class="f full"><span>Proposal qualifications</span>${lines('qualifications')}</label>
-      <label class="check"><input type="checkbox" id="pldef"> Save the conditions, exclusions and qualifications as my standard lists</label>
+      <label class="f full"><span>Clarifications & assumptions</span>${lines('clarifications')}</label>
+      ${comm ? `<label class="f full"><span>${esc(d.unit_rates_title)} (Label | rate, one per line)</span><textarea id="plrates" rows="3">${esc(d.unit_rates.map(r => `${r.label} | ${r.rate}`).join('\n'))}</textarea></label>` : ''}
+      <label class="f full"><span>Proposal qualifications</span>${lines('qualifications')}</label>
+      ${comm ? `<label class="f full"><span>Terms and acceptance</span>${lines('terms')}</label><label class="f full"><span>Acceptance sentence</span>${ta('acceptance', 2)}</label>
+        <h3>Signed by</h3><div class="form-grid">${['name', 'title', 'phone', 'email'].map(k => `<label class="f"><span>${label(k)}</span><input data-sg="${k}" value="${esc((d.signer || {})[k] || '')}"></label>`).join('')}</div>
+        <label class="check"><input type="checkbox" id="plsig" ${d.use_signature ? 'checked' : ''} ${std.signature ? '' : 'disabled'}> Include the signature image${std.signature ? '' : ' (none saved yet)'}</label>` : `<label class="check"><input type="checkbox" id="pldef"> Save the conditions, exclusions and qualifications as my standard lists</label>`}
       ${(p.takeoff.questions || []).length ? `<div class="alert info" style="margin-top:10px"><b>Open RFIs from the takeoff</b> (not printed): <ul>${p.takeoff.questions.map(q => `<li>${esc(q)}</li>`).join('')}</ul></div>` : ''}
     </div><div class="pl-doc" id="pldoc">${preview()}</div></div>`;
   const read = () => {
     const v = k => { const el = $(`[data-pk="${k}"]`); return el ? el.value : d[k]; };
-    const L = k => $(`[data-pl="${k}"]`).value.split('\n').map(x => x.trim()).filter(Boolean);
-    const credit = $('#plcredit').value;
-    return { ...d, ...Object.fromEntries(['date', 're', 'greeting', 'intro', 'basis', 'pricing', 'validity', 'closing'].map(k => [k, v(k)])),
-      bids: $$('[data-bl]').map(el => ({ label: el.value, amount: Number($(`[data-ba="${el.dataset.bl}"]`).value) || 0 })),
-      credit: credit ? { label: 'Combined Award Credit', amount: Number(credit) } : null,
+    const L = k => $(`[data-pl="${k}"]`) ? $(`[data-pl="${k}"]`).value.split('\n').map(x => x.trim()).filter(Boolean) : d[k];
+    const base = { ...d, ...Object.fromEntries(['date', 're', 'greeting', 'intro', 'basis', 'pricing', 'validity', 'closing', 'total_line', 'acceptance'].map(k => [k, v(k)])),
       sections: d.sections.map((s, i) => ({ title: $(`[data-st="${i}"]`).value, note: $(`[data-sn="${i}"]`).value,
         rows: $(`[data-sr="${i}"]`).value.split('\n').filter(x => x.trim()).map(x => { const [tag, description, qty, unit] = x.split('|').map(y => (y || '').trim()); return { tag, description, qty: Number(String(qty).replace(/,/g, '')) || qty || '', unit }; }) })),
       conditions: L('conditions'), exclusions: L('exclusions'), clarifications: L('clarifications'), qualifications: L('qualifications') };
+    if (comm) return { ...base, total: Number(v('total')) || 0, terms: L('terms'),
+      unit_rates: $('#plrates').value.split('\n').map(x => x.split('|').map(y => y.trim())).filter(x => x[0]).map(([label, rate]) => ({ label, rate: rate || '' })),
+      signer: Object.fromEntries(['name', 'title', 'phone', 'email'].map(k => [k, $(`[data-sg="${k}"]`).value])), use_signature: $('#plsig').checked, show_commodity: $('#plcomm').checked };
+    const credit = $('#plcredit').value;
+    return { ...base, bids: $$('[data-bl]').map(el => ({ label: el.value, amount: Number($(`[data-ba="${el.dataset.bl}"]`).value) || 0 })), credit: credit ? { label: 'Combined Award Credit', amount: Number(credit) } : null };
   };
   const refresh = () => { d = read(); $('#pldoc').innerHTML = preview(); };
   $$('.pl-edit input, .pl-edit textarea').forEach(el => el.addEventListener('input', refresh));
-  $('#pladdbid').onclick = () => { d = read(); d.bids.push({ label: 'ALTERNATE', amount: 0 }); viewProposalDraft(id, d); };
-  $$('[data-brm]').forEach(b => b.onclick = () => { d = read(); d.bids.splice(+b.dataset.brm, 1); viewProposalDraft(id, d); });
-  $('#plsave').onclick = async () => { d = read(); const save_defaults = $('#pldef').checked;
+  if (comm) {
+    $('#plsig').onchange = refresh;
+    $('#plcomm').onchange = async e => { d = read(); d.sections = commercialSections(p.takeoff, p.inclusion_notes || [], e.target.checked); d.show_commodity = e.target.checked; await viewProposalDraft(id, d); };
+    $('#plstd').onclick = () => proposalStdModal(std, () => viewProposal(id));
+  } else {
+    $('#pladdbid').onclick = () => { d = read(); d.bids.push({ label: 'ALTERNATE', amount: 0 }); viewProposalDraft(id, d); };
+    $$('[data-brm]').forEach(b => b.onclick = () => { d = read(); d.bids.splice(+b.dataset.brm, 1); viewProposalDraft(id, d); });
+  }
+  $('#plsave').onclick = async () => { d = read(); const save_defaults = !comm && $('#pldef').checked;
     await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: { ...d, std_conditions: d.conditions, std_exclusions: d.exclusions, std_qualifications: d.qualifications }, save_defaults }), save_defaults ? 'Saved, and the lists are now your standard' : 'Draft saved'); };
-  $('#plreset').onclick = async () => { if (!confirm('Rebuild the letter from the estimate? Your edits to this draft are lost.')) return; await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: null })); viewProposal(id); };
+  $('#plreset').onclick = async () => { if (!confirm('Rebuild the proposal from the estimate and the standard text? Your edits to this draft are lost.')) return; await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: null })); viewProposal(id); };
 }
 // re-render the editor with an unsaved draft (adding or removing a bid line)
 async function viewProposalDraft(id, d) { await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: d })); viewProposal(id); }
+// the company's commercial proposal text: import it from the Word template, review, save (kept in the database)
+function proposalStdModal(std, done) {
+  let s = { ...std, signer: { ...(std.signer || {}) } }, aside = [];
+  const L = k => (s[k] || []).join('\n');
+  const render = () => {
+    m.el.querySelector('.modal').innerHTML = `<h2>Commercial proposal — standard text</h2>
+      <p class="small muted">Used to start every commercial proposal; each proposal can still be edited. Kept in your database, not in the app's code.${s.imported_at ? ` Imported ${fmtDT(s.imported_at)}.` : ''}</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><input type="file" id="psfile" accept=".docx"><button class="btn" id="psimp">Import from Word (.docx)</button></div>
+      ${aside.length ? `<div class="alert info" style="margin-top:8px"><b>Set aside as job-specific</b> (they name sheets, notes, spec sections or panels). Copy any you want into a list below:<ul class="small">${aside.map(a => `<li>[${esc(a.list)}] ${esc(a.text)}</li>`).join('')}</ul></div>` : ''}
+      <form id="psf"><div class="form-grid">
+        <label class="f full"><span>Total line (the amount goes after it)</span><input name="total_line" value="${esc(s.total_line || '')}"></label>
+        <label class="f full"><span>Validity</span><input name="validity" value="${esc(s.validity || '')}"></label>
+        <label class="f full"><span>Closing</span><textarea name="closing" rows="2">${esc(s.closing || '')}</textarea></label>
+        ${['conditions', 'exclusions', 'clarifications', 'qualifications', 'terms'].map(k => `<label class="f full"><span>${{ conditions: 'General conditions & clarifications', exclusions: 'Exclusions', clarifications: 'Clarifications & assumptions', qualifications: 'Proposal qualifications', terms: 'Terms and acceptance (“Label: text” prints the label in bold)' }[k]} — one per line</span><textarea name="${k}" rows="4">${esc(L(k))}</textarea></label>`).join('')}
+        <label class="f full"><span>Unit prices for change orders (Label | rate)</span><textarea name="unit_rates" rows="3">${esc((s.unit_rates || []).map(r => `${r.label} | ${r.rate}`).join('\n'))}</textarea></label>
+        <label class="f full"><span>Acceptance sentence</span><textarea name="acceptance" rows="2">${esc(s.acceptance || '')}</textarea></label>
+        ${['name', 'title', 'phone', 'email'].map(k => `<label class="f"><span>Signer ${k}</span><input name="sg_${k}" value="${esc((s.signer || {})[k] || '')}" placeholder="blank = whoever prints it"></label>`).join('')}
+        <div class="f full"><span>Signature image</span><div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">${s.signature ? `<img src="${esc(s.signature)}" alt="Saved signature" style="max-height:48px;background:#fff;padding:4px;border-radius:4px">` : '<span class="muted small">none</span>'}
+          <input type="file" id="pssig" accept="image/png,image/jpeg,image/gif,image/webp">${s.signature ? '<button type="button" class="btn sm" id="pssigx">Remove</button>' : ''}</div></div>
+      </div><div class="actions"><button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Save standard text</button></div></form>`;
+    const f = $('#psf', m.el);
+    const pull = () => { for (const k of ['total_line', 'validity', 'closing', 'acceptance']) s[k] = f[k].value;
+      for (const k of ['conditions', 'exclusions', 'clarifications', 'qualifications', 'terms']) s[k] = f[k].value.split('\n').map(x => x.trim()).filter(Boolean);
+      s.unit_rates = f.unit_rates.value.split('\n').map(x => x.split('|').map(y => y.trim())).filter(x => x[0]).map(([label, rate]) => ({ label, rate: rate || '' }));
+      s.signer = Object.fromEntries(['name', 'title', 'phone', 'email'].map(k => [k, f[`sg_${k}`].value])); };
+    $('[data-x]', m.el).onclick = m.close;
+    $('#psimp', m.el).onclick = async () => {
+      const file = $('#psfile', m.el).files[0]; if (!file) return toast('Choose the .docx template', true);
+      const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(file); });
+      const r = await act(() => POST('/estimating/proposal-template/import', { file: data }), 'Template read — check it, then save').catch(() => null); if (!r) return;
+      aside = r.set_aside || [];
+      s = { ...s, ...Object.fromEntries(Object.entries(r).filter(([k, v]) => k !== 'set_aside' && (Array.isArray(v) ? v.length : v))), signer: r.signer && r.signer.name ? r.signer : s.signer, imported_at: new Date().toISOString() };
+      render();
+    };
+    $('#pssig', m.el).onchange = async e => { const file = e.target.files[0]; if (!file) return; pull();
+      if (file.size > 500 * 1024) return toast('Keep the signature image under 500 KB', true);
+      s.signature = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(file); }); render(); };
+    if ($('#pssigx', m.el)) $('#pssigx', m.el).onclick = () => { pull(); s.signature = null; render(); };
+    f.onsubmit = async e => { e.preventDefault(); pull();
+      await act(() => PUT('/estimating/proposal-template', { std: { ...s, signature: s.signature || '' } }), 'Standard text saved'); m.close(); done(); };
+  };
+  const m = modal('<div></div>', { wide: true });
+  render();
+}

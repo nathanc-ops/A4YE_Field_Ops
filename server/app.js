@@ -192,6 +192,7 @@ function createApp(db) {
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
+    delete s.proposal_commercial; // signature + standard text: served only to estimators by /api/estimating/proposal-template
     if (user.role === 'tech') for (const k of Object.keys(s)) if (k.startsWith('ply_') || k.startsWith('default_') && k.endsWith('_account')) delete s[k];
     return s;
   }
