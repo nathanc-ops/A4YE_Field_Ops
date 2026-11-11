@@ -127,6 +127,22 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 
 `PUBLIC_URL` controls the links in emails, so set it to the address customers can actually reach.
 
+## Weekly KPIs (🎯 KPIs)
+
+The A4YE KPI Dashboard sheet, inside Field Ops, with the same people and rules.
+- **Setting it up:** admins import it once under **KPIs → Import from sheet**. Download the Google Sheet as .xlsx first. The import reads only the Metrics, Settings, Values, Notes and Submissions tabs.
+- **Each person fills in their own page.** The import links each page to a Field Ops user by the sheet's `EMAIL_<Name>` settings, and the link can be changed under **KPIs → Targets & set-up**.
+- **Permissions:**
+  - People with **"KPIs: see everyone's numbers"** (the sheet's `MASTER_VIEWERS`) also see every page and the company **Scorecard**.
+  - People with **"KPIs: fill in or correct anyone's page, set targets"** (the sheet's `ADMINS`) can enter any page and edit targets.
+  - The import gives both permissions to matching users; they can also be switched per person under **Team**. Admins have both.
+- **The week** runs Sunday–Saturday. Pages are due the set number of days after the Saturday (3 = Tuesday 11:59 PM, company time zone). They show as submitted, submitted late, or missing.
+- **Rows:**
+  - *Manual* and *auto* rows are typed in. The sheet's auto pulls from Housecall Pro, Ply and the time clock are not connected here.
+  - *Calc* rows work out their formula, including from other pages (`B14/(B4/7)`, `N6*OT_RATE`).
+- **Status:** within the yellow band (25%) of target is *close*; past it is *off target*. Every off-target row needs a Cause and a Fix before the week can be submitted.
+- **Scorecard:** shows who has reported, how many metrics are on, close or off target, headline numbers against the quarter's weekly average, the constraint (the section furthest from target), and every off-target row with its cause and fix.
+
 ## Phone notifications
 
 Techs get a phone notice when they're put on a job or visit, when its time changes, or when they're taken off it or it's cancelled.

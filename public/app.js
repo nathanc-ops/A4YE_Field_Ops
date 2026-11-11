@@ -203,11 +203,12 @@ const NAV = [
   { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
   { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin', 'office'], perm: 'accounting' },
   { href: '#/team', label: 'Team', icon: '👷', roles: ['admin'] },
+  { href: '#/kpi', label: 'KPIs', icon: '🎯', show: () => S.user.kpi || isAdmin() },
   { href: '#/notifications', label: 'Notifications', icon: '🔔' },
   { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'office'] },
 ];
 function renderShell() {
-  const nav = NAV.filter(n => (!n.roles || n.roles.includes(S.user.role)) && (!n.perm || [].concat(n.perm).some(can)));
+  const nav = NAV.filter(n => (!n.roles || n.roles.includes(S.user.role)) && (!n.perm || [].concat(n.perm).some(can)) && (!n.show || n.show()));
   $('#root').innerHTML = `<div class="app">
     <nav class="side" id="side"><div class="brand">${S.settings.logo_url ? `<img class="logo" src="${esc(S.settings.logo_url)}" alt="${esc(S.settings.company_name || '')}">` : `<span class="bolt">⚡</span> <span>${esc(S.settings.company_name || 'Field Ops')}</span>`}</div>
       ${nav.map(n => n.sect ? `<div class="sect">${esc(n.sect)}</div>` : `<a href="${n.href}" data-nav>${n.icon} &nbsp;${esc(n.label)}</a>`).join('')}
@@ -223,7 +224,7 @@ function setTop(title, actions = '', sub = '') {
 
 // ============================================================ router
 const ROUTES = [
-  [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
+  [/^\/kpi$/, () => viewKpi()], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
   [/^\/purchasing$/, () => viewPurchasing()], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
   [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],

@@ -872,6 +872,63 @@ const MIGRATIONS = [
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );`);
   },
+  // 27: weekly KPIs — owners (a person's page), metric definitions, weekly values, cause/fix notes, submissions
+  db => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS kpi_owners (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        sort INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS kpi_metrics (
+        id TEXT PRIMARY KEY,
+        owner_id INTEGER NOT NULL REFERENCES kpi_owners(id),
+        section TEXT NOT NULL DEFAULT '',
+        metric TEXT NOT NULL,
+        unit TEXT NOT NULL DEFAULT '#',
+        better TEXT NOT NULL DEFAULT 'Info' CHECK (better IN ('Higher','Lower','Info')),
+        target REAL,
+        input TEXT NOT NULL DEFAULT 'manual' CHECK (input IN ('manual','calc','auto')),
+        rule TEXT,
+        source TEXT,
+        how TEXT,
+        target_note TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        sort INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS kpi_values (
+        week TEXT NOT NULL,
+        metric_id TEXT NOT NULL REFERENCES kpi_metrics(id) ON DELETE CASCADE,
+        value REAL,
+        origin TEXT NOT NULL DEFAULT 'manual',
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        by_label TEXT,
+        at TEXT NOT NULL,
+        PRIMARY KEY (week, metric_id)
+      );
+      CREATE TABLE IF NOT EXISTS kpi_notes (
+        id INTEGER PRIMARY KEY,
+        week TEXT NOT NULL,
+        metric_id TEXT NOT NULL REFERENCES kpi_metrics(id) ON DELETE CASCADE,
+        cause TEXT NOT NULL DEFAULT '',
+        fix TEXT NOT NULL DEFAULT '',
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        by_label TEXT,
+        at TEXT NOT NULL,
+        UNIQUE (week, metric_id, at, cause)
+      );
+      CREATE INDEX IF NOT EXISTS idx_kpi_notes_week ON kpi_notes(week, metric_id);
+      CREATE TABLE IF NOT EXISTS kpi_submissions (
+        id INTEGER PRIMARY KEY,
+        week TEXT NOT NULL,
+        owner_id INTEGER NOT NULL REFERENCES kpi_owners(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        by_label TEXT,
+        at TEXT NOT NULL,
+        UNIQUE (week, owner_id, at, by_label)
+      );`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

@@ -23,12 +23,16 @@ const PERMS = [
   { key: 'field_estimates', label: 'Build estimates and change orders in the field', roles: ['tech'] },
   { key: 'daily_logs', label: 'Write daily logs on commercial projects', roles: ['tech'] },
   { key: 'any_project', label: 'Clock in on any open commercial project (not just assigned ones)', roles: ['tech'] },
+  // weekly KPIs: everyone fills in their own page; these two widen it (the KPI sheet's MASTER_VIEWERS and ADMINS)
+  { key: 'kpi_view_all', label: "KPIs: see everyone's numbers and the company scorecard", roles: ['office', 'tech'], off: true },
+  { key: 'kpi_edit_all', label: "KPIs: fill in or correct anyone's page, set targets", roles: ['office', 'tech'], off: true },
 ];
+const OFF_BY_DEFAULT = new Set(PERMS.filter(p => p.off).map(p => p.key));
 const KEYS = PERMS.map(p => p.key);
 
 function defaults(role, settings = {}) {
   if (role === 'admin') return Object.fromEntries(KEYS.map(k => [k, true]));
-  if (role === 'office') return Object.fromEntries(KEYS.map(k => [k, k !== 'accounting']));
+  if (role === 'office') return Object.fromEntries(KEYS.map(k => [k, k !== 'accounting' && !OFF_BY_DEFAULT.has(k)]));
   return { // tech: the company-wide field settings are the starting point
     field_estimates: settings.tech_estimates !== '0', see_costs: settings.tech_see_costs === '1',
     daily_logs: true, any_project: settings.project_clock_any !== '0',

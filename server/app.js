@@ -195,7 +195,10 @@ function createApp(db) {
     if (user.role === 'tech') for (const k of Object.keys(s)) if (k.startsWith('ply_') || k.startsWith('default_') && k.endsWith('_account')) delete s[k];
     return s;
   }
-  app.get('/api/me', (req, res) => { const { permissions, ...user } = req.user; res.json({ user: { ...user, perms: req.perms }, settings: publicSettings(req.user) }); });
+  app.get('/api/me', (req, res) => {
+    const { permissions, ...user } = req.user;
+    res.json({ user: { ...user, perms: req.perms, kpi: app.locals.kpiAccess ? app.locals.kpiAccess(req.user).any : false }, settings: publicSettings(req.user) });
+  });
   app.get('/api/permissions', admin, (req, res) => {
     const s = D.settings(db);
     res.json({ list: P.PERMS, defaults: { office: P.defaults('office', s), tech: P.defaults('tech', s), admin: P.defaults('admin', s) } });
@@ -1171,6 +1174,7 @@ function createApp(db) {
   require('./appt_confirm')(app, db, { wrap, bad, mustGet, H });
   require('./email_templates').routes(app, db, { wrap, bad, admin });
   Push.routes(app, db, { wrap, bad, admin });
+  require('./kpi')(app, db, { wrap, bad, admin });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');
