@@ -497,8 +497,9 @@ async function viewDispatch(date, seg) {
 async function viewMyDay2() {
   const t = todayStr();
   $('#view').innerHTML = setTop(`Hi, ${esc(S.user.name.split(' ')[0])}`, '', new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })) +
-    `<div id="clock"></div><div class="card" style="margin-top:14px"><h2>Today's visits</h2><div id="today"></div></div>
+    `<div id="pushnag"></div><div id="clock"></div><div class="card" style="margin-top:14px"><h2>Today's visits</h2><div id="today"></div></div>
      <div class="card" style="margin-top:14px"><h2>Coming up</h2><div id="soon"></div></div><div id="mypicks"></div>`;
+  pushNag($('#pushnag'));
   await clockCard($('#clock'));
   const [today, soon, picks] = await Promise.all([
     GET('/appointments' + qs({ from: dayISO(t), to: dayISO(addDaysStr(t, 1)) })),

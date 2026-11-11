@@ -4,7 +4,8 @@
 // failing silently (or being rejected by Apple for a missing purpose string).
 //  - Camera: job photos ("Take photo" on a job)
 //  - Photo library: picking existing photos for a job
-//  - Location: the clock-in/clock-out stamp and "on my way"
+//  - Location: the clock-in/clock-out stamp
+//  - Notifications: new jobs and schedule changes
 // Safe to run again; it only adds what's missing.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -33,7 +34,8 @@ if (fs.existsSync(plist)) {
 
 // ---------- Android: permissions the web view needs for the camera and location
 const manifest = path.join(root, 'android/app/src/main/AndroidManifest.xml');
-const PERMS = ['android.permission.CAMERA', 'android.permission.ACCESS_COARSE_LOCATION', 'android.permission.ACCESS_FINE_LOCATION'];
+// POST_NOTIFICATIONS: Android 13+ asks before an app may show notifications ("you're on a new job")
+const PERMS = ['android.permission.CAMERA', 'android.permission.ACCESS_COARSE_LOCATION', 'android.permission.ACCESS_FINE_LOCATION', 'android.permission.POST_NOTIFICATIONS'];
 if (fs.existsSync(manifest)) {
   let s = fs.readFileSync(manifest, 'utf8'), n = 0;
   for (const p of PERMS) {

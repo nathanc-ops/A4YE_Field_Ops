@@ -104,6 +104,26 @@ For each new version, raise `versionCode` (and `versionName`) in `android/app/bu
 
 To ship a new native build, raise *Version* or *Build* in Xcode (General tab).
 
+## Push notifications (new jobs, time changes)
+
+Techs get a notice on their phone when they are put on a job or visit, a visit's time changes, they're taken off, or it is cancelled.
+The person making the change isn't notified.
+
+- **Browser and Home Screen app: nothing to set up.** Each person turns it on once, from **My Day** (the banner) or **Settings → Notifications on this device**.
+  - **iPhone:** works only from the Home Screen app (iOS 16.4 or later). In Safari it can't be turned on; the app says so.
+- **App Store iPhone app** needs an Apple push key, made once:
+  1. In the Apple Developer site: **Certificates, IDs & Profiles → Keys → +**. Tick *Apple Push Notifications service (APNs)*, then download the `.p8` file (it can only be downloaded once). Note its **Key ID** and your **Team ID** (top right of the developer site).
+  2. In Field Ops: **Settings → Push notifications → Apple (APNs) key**. Open the `.p8` in Notepad and paste everything. Enter the Key ID and Team ID, then save.
+  3. In Xcode: **App target → Signing & Capabilities → + Capability → Push Notifications**.
+  4. Leave *Builds* on **App Store / TestFlight**. Pick *Run from Xcode* only while testing a build run straight from Xcode.
+- **Google Play Android app** needs Firebase (free):
+  1. At console.firebase.google.com, create a project. Add an **Android app** with package `com.all4youelectrical.fieldops`.
+  2. Download **google-services.json** into `mobile/android/app/`, then rebuild. It is git-ignored; keep a copy in your password manager.
+  3. **Project settings → Service accounts → Generate new private key**. In Field Ops: **Settings → Push notifications → Firebase**, paste the whole file and save. Don't email it or put it in chat.
+
+Settings → Push notifications also lists who has notifications on, and the last 25 notices with whether they were delivered.
+A phone whose app was deleted is dropped automatically the next time a notice to it bounces.
+
 ## Inside the native app (worth testing before submitting)
 
 These work in the browser, but phone app web views handle them differently. Check each one on a real phone:

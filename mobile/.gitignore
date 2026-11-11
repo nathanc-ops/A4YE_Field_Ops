@@ -6,3 +6,6 @@ keystore.properties
 *.p12
 *.mobileprovision
 *.p8
+# Firebase app config (download it again from the Firebase console when needed)
+google-services.json
+GoogleService-Info.plist

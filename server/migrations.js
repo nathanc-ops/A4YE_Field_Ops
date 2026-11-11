@@ -844,6 +844,34 @@ const MIGRATIONS = [
   db => {
     for (const [c, d] of [['confirmed_at', 'TEXT'], ['confirmed_to', 'TEXT'], ['confirmed_start', 'TEXT'], ['confirmed_end', 'TEXT'], ['confirm_count', 'INTEGER NOT NULL DEFAULT 0']]) addColumn(db, 'appointments', c, d);
   },
+  // 26: push notifications — each phone/browser that has said yes, and what was sent
+  db => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS push_devices (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('web','apns','fcm')),
+        token TEXT NOT NULL UNIQUE,
+        keys TEXT,
+        platform TEXT,
+        user_agent TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_ok_at TEXT,
+        last_error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_push_devices_user ON push_devices(user_id);
+      CREATE TABLE IF NOT EXISTS push_log (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        body TEXT,
+        url TEXT,
+        devices INTEGER NOT NULL DEFAULT 0,
+        sent INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

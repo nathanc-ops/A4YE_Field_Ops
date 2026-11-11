@@ -5,6 +5,7 @@ const D = require('./db');
 const C = require('./calc');
 const A = require('./accounting');
 const Ply = require('./ply');
+const Push = require('./push');
 
 const { all, get, run, tx } = D;
 const r2 = C.r2;
@@ -29,13 +30,28 @@ module.exports = function routesExt(app, db, X) {
       // confirmed by email, then moved: the customer still has the old time
       needs_reconfirm: !!a.confirmed_at && (a.confirmed_start !== a.start || a.confirmed_end !== a.end) && !['done', 'cancelled'].includes(a.status) }));
 
-  function setApptTechs(apptId, jobId, ids) {
+  const crewOf = apptId => all(db, 'SELECT user_id FROM appointment_techs WHERE appointment_id = ?', apptId).map(r => r.user_id);
+  // a visit still ahead (or under way), not finished or cancelled: worth a phone notice
+  const live = apptId => { const a = get(db, 'SELECT status, end FROM appointments WHERE id = ?', apptId); return a && !['done', 'cancelled'].includes(a.status) && Date.parse(a.end) > Date.now(); };
+  // opts.silent: the caller works out the notices itself (splitting a multi-day visit makes new rows for the same crew)
+  function setApptTechs(apptId, jobId, ids, opts = {}) {
     if (!Array.isArray(ids)) return;
+    const before = crewOf(apptId), now = [...new Set(ids.map(Number))];
     run(db, 'DELETE FROM appointment_techs WHERE appointment_id = ?', apptId);
-    for (const uid of ids) {
+    for (const uid of now) {
       run(db, 'INSERT OR IGNORE INTO appointment_techs (appointment_id, user_id) VALUES (?,?)', apptId, uid);
       if (jobId) run(db, 'INSERT OR IGNORE INTO job_techs (job_id, user_id) VALUES (?,?)', jobId, uid); // crew on the job
     }
+    if (opts.silent || !live(apptId)) return;
+    for (const uid of now) if (!before.includes(uid)) Push.queue({ type: 'assigned', user_id: uid, appt_id: apptId, job_id: jobId });
+    for (const uid of before) if (!now.includes(uid)) Push.queue({ type: 'removed', user_id: uid, appt_id: apptId, job_id: jobId });
+  }
+  // time moved / cancelled: tell the crew who were already on it (anyone just added gets "assigned" instead)
+  function noticeChanges(a, crewBefore) {
+    const b = get(db, 'SELECT * FROM appointments WHERE id = ?', a.id); if (!b) return;
+    const crew = crewOf(a.id).filter(u => crewBefore.includes(u));
+    if (b.status === 'cancelled' && a.status !== 'cancelled') { for (const uid of crew) Push.queue({ type: 'cancelled', user_id: uid, appt_id: a.id, job_id: a.job_id }); return; }
+    if ((b.start !== a.start || b.end !== a.end) && live(a.id)) for (const uid of crew) Push.queue({ type: 'moved', user_id: uid, appt_id: a.id, job_id: a.job_id });
   }
   // Keep the job's summary window (first start / last end) in line with its appointments.
   function syncJobSchedule(jobId) {
@@ -53,7 +69,10 @@ module.exports = function routesExt(app, db, X) {
     if (appts.length > 1) return syncJobSchedule(jobId); // multi-visit jobs are scheduled per visit
     end = end || new Date(new Date(start).getTime() + 2 * 3600e3).toISOString();
     let id;
-    if (appts.length) { id = appts[0].id; run(db, 'UPDATE appointments SET start = ?, end = ? WHERE id = ?', start, end, id); }
+    if (appts.length) {
+      id = appts[0].id; const old = get(db, 'SELECT * FROM appointments WHERE id = ?', id), crew = crewOf(id);
+      run(db, 'UPDATE appointments SET start = ?, end = ? WHERE id = ?', start, end, id); noticeChanges(old, crew);
+    }
     else id = insert('appointments', { job_id: jobId, start, end });
     if (Array.isArray(techIds)) setApptTechs(id, jobId, techIds);
     syncJobSchedule(jobId);
@@ -113,8 +132,10 @@ module.exports = function routesExt(app, db, X) {
     const data = pick(req.body, ['start', 'end', 'status', 'notes']);
     for (const k of ['start', 'end']) if (data[k]) data[k] = new Date(data[k]).toISOString();
     checkTimes(data.start || a.start, data.end || a.end);
+    const crewBefore = crewOf(a.id);
     update('appointments', a.id, data);
     setApptTechs(a.id, a.job_id, req.body.tech_ids);
+    noticeChanges(a, crewBefore);
     if (data.status === 'dispatched' && a.job_id) run(db, "UPDATE jobs SET status = 'dispatched' WHERE id = ? AND status IN ('scheduled','unscheduled')", a.job_id);
     syncJobSchedule(a.job_id);
     res.json({ ok: true, conflicts: conflicts(a.id) });
@@ -138,7 +159,8 @@ module.exports = function routesExt(app, db, X) {
       if (get(db, 'SELECT 1 x FROM time_entries WHERE appointment_id = ? AND clock_in >= ? AND clock_in < ?', a.id, dayFrom, dayTo)) throw bad('Someone already clocked time on that day');
     }
     if (!hasBefore && !hasAfter) {  // a single-day visit: just change it
-      update('appointments', a.id, { start, end }); setApptTechs(a.id, a.job_id, crew); syncJobSchedule(a.job_id);
+      const before = crewOf(a.id);
+      update('appointments', a.id, { start, end }); setApptTechs(a.id, a.job_id, crew); noticeChanges(a, before); syncJobSchedule(a.job_id);
       return res.json({ id: a.id, ids: [a.id], conflicts: conflicts(a.id) });
     }
     const beforeEnd = hasBefore ? iso(b.before_end, 'before_end') : null, afterStart = hasAfter ? iso(b.after_start, 'after_start') : null;
@@ -155,10 +177,19 @@ module.exports = function routesExt(app, db, X) {
     if (hasAfter) segs.push({ start: afterStart, end: a.end, crew: oldCrew, keep: true });
     // the original row becomes the first piece (time entries and history already point at it); the rest are new rows
     const ids = segs.map((seg, i) => {
-      if (i === 0) { update('appointments', a.id, { start: seg.start, end: seg.end, ...told(seg) }); setApptTechs(a.id, a.job_id, seg.crew); return a.id; }
+      if (i === 0) { update('appointments', a.id, { start: seg.start, end: seg.end, ...told(seg) }); setApptTechs(a.id, a.job_id, seg.crew, { silent: true }); return a.id; }
       const id = insert('appointments', { ...base, start: seg.start, end: seg.end, ...told(seg) });
-      setApptTechs(id, a.job_id, seg.crew); return id;
+      setApptTechs(id, a.job_id, seg.crew, { silent: true }); return id;
     });
+    // notices for the one day that changed: added, taken off, or its hours moved
+    const di = segs.findIndex(x => x.day);
+    if (di >= 0 && live(ids[di])) {
+      for (const uid of crew) {
+        const type = !oldCrew.includes(uid) ? 'assigned' : b.times_changed ? 'moved' : null;
+        if (type) Push.queue({ type, user_id: uid, appt_id: ids[di], job_id: a.job_id });
+      }
+      for (const uid of oldCrew) if (!crew.includes(uid)) Push.queue({ type: 'removed', user_id: uid, appt_id: ids[di], job_id: a.job_id });
+    }
     // clocked time follows the piece of the visit it happened in
     for (const t of all(db, 'SELECT id, clock_in FROM time_entries WHERE appointment_id = ?', a.id)) {
       let k = 0; segs.forEach((seg, i) => { if (Date.parse(seg.start) <= Date.parse(t.clock_in)) k = i; });
@@ -171,6 +202,8 @@ module.exports = function routesExt(app, db, X) {
   }));
   app.delete('/api/appointments/:id', office, wrap((req, res) => {
     const a = mustGet('appointments', req.params.id);
+    // the visit is gone by the time the notice goes out, so its wording is made now
+    if (live(a.id)) { const msg = Push.message({ type: 'cancelled', appt_id: a.id }); for (const uid of crewOf(a.id)) Push.queue({ type: 'cancelled', user_id: uid, appt_id: a.id, job_id: a.job_id, msg }); }
     run(db, 'DELETE FROM appointments WHERE id = ?', a.id); syncJobSchedule(a.job_id); res.json({ ok: true });
   }));
   // Overlaps for any tech on this appointment (double-booking warning, not a hard stop).

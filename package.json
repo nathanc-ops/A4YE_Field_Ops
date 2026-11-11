@@ -21,7 +21,8 @@
   "homepage": "https://github.com/nathanc-ops/A4YE_Field_Ops#readme",
   "dependencies": {
     "express": "^4.22.3",
-    "nodemailer": "^6.10.1"
+    "nodemailer": "^6.10.1",
+    "web-push": "3.6.7"
   },
   "private": true,
   "engines": {

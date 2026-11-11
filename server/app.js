@@ -165,6 +165,8 @@ function createApp(db) {
 
   // everything below requires sign-in
   app.use('/api', auth);
+  const Push = require('./push');
+  app.use('/api', Push.middleware); // notices go out after a change is saved
   // Per-employee permissions for office staff: one rule table (perms.js) decides which area a request belongs to.
   const COST_KEYS = new Set(['unit_cost', 'est_cost', 'est_margin_pct', 'hourly_cost', 'hourly_wage', 'burden_pct', 'labor_cost', 'materials_cost', 'material_cost',
     'other_cost', 'total_cost', 'cost_to_date', 'estimated_cost', 'projected_profit', 'projected_margin_pct', 'profit', 'margin_pct', 'budget_cost', 'budget_material',
@@ -186,7 +188,7 @@ function createApp(db) {
     next();
   });
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
@@ -371,8 +373,12 @@ function createApp(db) {
   const fixTechs = j => ({ ...j, tech_ids: j.tech_ids ? String(j.tech_ids).split(',').map(Number) : [] });
   function setTechs(jobId, ids) {
     if (!Array.isArray(ids)) return;
+    const before = new Set(all(db, 'SELECT user_id FROM job_techs WHERE job_id = ?', jobId).map(r => r.user_id));
     run(db, 'DELETE FROM job_techs WHERE job_id = ?', jobId);
     for (const uid of ids) run(db, 'INSERT OR IGNORE INTO job_techs (job_id, user_id) VALUES (?,?)', jobId, uid);
+    // put on a job: a phone notice (dropped if the same change also puts them on a visit, which says more)
+    const j = get(db, 'SELECT status FROM jobs WHERE id = ?', jobId);
+    if (j && !['completed', 'cancelled', 'invoiced', 'closed'].includes(j.status)) for (const uid of new Set(ids.map(Number))) if (!before.has(uid)) Push.queue({ type: 'job', user_id: uid, job_id: jobId });
   }
   app.get('/api/jobs', wrap((req, res) => {
     const where = [], p = [];
@@ -1164,6 +1170,7 @@ function createApp(db) {
   require('./routes_ext')(app, db, { wrap, bad, insert, update, mustGet, pick, today, addDays, office, admin, role, baseUrl, H, jobSelect, fixTechs, loadedRate });
   require('./appt_confirm')(app, db, { wrap, bad, mustGet, H });
   require('./email_templates').routes(app, db, { wrap, bad, admin });
+  Push.routes(app, db, { wrap, bad, admin });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');

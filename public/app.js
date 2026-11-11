@@ -265,6 +265,7 @@ async function boot() {
     applyBrand();
     await Promise.all([loadUsers(true), loadCostCodes(true)]);
     renderShell(); route();
+    if (typeof refreshPush === 'function') refreshPush();
   } catch { /* api() already handled 401 */ }
 }
 
@@ -1490,7 +1491,9 @@ async function viewSettings() {
   $('#view').innerHTML = setTop('Settings') + `<div class="grid g2"><div class="card"><h2>Company</h2><form id="sf"><div class="form-grid">${fields.map(f => fieldHtml(f, s[f.name])).join('')}</div>
       ${isAdmin() ? '<div class="row" style="margin-top:12px"><button class="btn primary">Save settings</button></div>' : '<p class="muted">Only admins can change settings.</p>'}</form></div>
     <div class="stack"><div class="card"><h2>Change my password</h2><form id="pw" class="stack">${fieldHtml({ name: 'current', label: 'Current password', type: 'password', required: true })}${fieldHtml({ name: 'next', label: 'New password (8+)', type: 'password', required: true })}<button class="btn">Change password</button></form></div>
+    <div class="card"><h2>Notifications on this device</h2><div id="pushme"><div class="muted small">Loading…</div></div></div>
     <div class="card"><h2>Email</h2><div id="emailsetup"><div class="muted small">Loading…</div></div></div>
+    ${isAdmin() ? '<div class="card"><h2>Push notifications</h2><div id="pushadmin"><div class="muted small">Loading…</div></div></div>' : ''}
     ${isAdmin() ? '<div class="card"><h2>Email templates</h2><div id="mailtpls"><div class="muted small">Loading…</div></div></div>' : ''}
     ${isAdmin() ? '<div class="card"><h2>Job numbers</h2><div id="jobnums"><div class="muted small">Loading…</div></div></div>' : ''}
     <div class="card"><h2>Appearance</h2><p class="small muted">Applies to this device only.</p><div class="seg">${[['dark', 'Dark (default)'], ['light', 'Light'], ['system', 'Match device']].map(([k, l]) => `<button type="button" data-theme="${k}" class="${themePref() === k ? 'on' : ''}">${l}</button>`).join('')}</div></div></div></div>
@@ -1499,6 +1502,8 @@ async function viewSettings() {
   emailSetup($('#emailsetup'));
   if ($('#jobnums')) jobNumberSetup($('#jobnums'));
   if ($('#mailtpls')) emailTemplates($('#mailtpls'));
+  pushCard($('#pushme'));
+  if ($('#pushadmin')) pushAdmin($('#pushadmin'));
   if (isAdmin()) $('#sf').onsubmit = async e => { e.preventDefault(); S.settings = await act(() => PUT('/settings', readForm(e.target, fields)), 'Settings saved'); renderShell(); route(); };
   else $$('#sf input, #sf textarea').forEach(i => i.disabled = true);
   $('#pw').onsubmit = async e => { e.preventDefault(); await act(() => POST('/me/password', { current: e.target.current.value, next: e.target.next.value }), 'Password changed'); e.target.reset(); };
