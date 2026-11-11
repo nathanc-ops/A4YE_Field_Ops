@@ -203,6 +203,7 @@ const NAV = [
   { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'manager', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
   { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin', 'manager', 'office'], perm: 'accounting' },
   { href: '#/team', label: 'Team', icon: '👷', roles: ['admin'] },
+  { href: '#/estimating', label: 'Estimating', icon: '📐', roles: ['admin', 'manager'] },
   { href: '#/kpi', label: 'KPIs', icon: '🎯', roles: ['admin', 'manager', 'office'], show: () => S.user.kpi || isAdmin() },
   { href: '#/notifications', label: 'Notifications', icon: '🔔' },
   { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'manager', 'office'] },
@@ -224,7 +225,7 @@ function setTop(title, actions = '', sub = '') {
 
 // ============================================================ router
 const ROUTES = [
-  [/^\/kpi$/, () => viewKpi()], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
+  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
   [/^\/purchasing$/, () => viewPurchasing()], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
   [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],

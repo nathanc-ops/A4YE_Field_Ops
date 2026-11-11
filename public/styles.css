@@ -607,3 +607,23 @@ table.items .lk-job .lk-q { width: 100%; }
   .kbar > .muted { display: none; } .kbar .msg { order: 3; flex-basis: 100%; min-width: 0; } .kbar .msg:empty { display: none; } .kbar .btn { flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) { .kfade, .kring .arc, #kdrawer, .kstat, .kcard { animation: none !important; transition: none !important; } }
+
+/* ===== Estimating dashboard ===== */
+.ebars { display: grid; gap: 6px; }
+.ebar { display: grid; grid-template-columns: minmax(80px, 30%) 1fr auto; align-items: center; gap: 8px; font-size: 13px; padding: 2px 0; }
+.ebar:hover { background: var(--surface-2); border-radius: 6px; }
+.ebl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.ebt { height: 14px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.ebf { display: block; height: 100%; background: var(--series-1); border-radius: 0 4px 4px 0; }
+.ebv { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 60px; text-align: right; }
+.elist { display: grid; gap: 6px; }
+.eli { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); flex-wrap: wrap; }
+.eli:hover { text-decoration: none; background: var(--surface-2); }
+.egcs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; margin-top: 4px; }
+#elog tr.est-awarded td:first-child { box-shadow: inset 4px 0 var(--good); }
+#elog tr.est-waiting td:first-child { box-shadow: inset 4px 0 var(--warn); }
+#elog tr.est-lost td:first-child { box-shadow: inset 4px 0 var(--bad); }
+#elog tr.est-in_progress td:first-child { box-shadow: inset 4px 0 var(--accent); }
+#elog tr.est-estimating td:first-child { box-shadow: inset 4px 0 var(--info); }
+#elog tr.est-no_bid td { color: var(--muted); }
+#elog td:last-child { max-width: 320px; }

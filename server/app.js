@@ -1175,6 +1175,7 @@ function createApp(db) {
   require('./email_templates').routes(app, db, { wrap, bad, admin });
   Push.routes(app, db, { wrap, bad, admin });
   require('./kpi')(app, db, { wrap, bad, admin });
+  require('./estimating')(app, db, { wrap, bad });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');

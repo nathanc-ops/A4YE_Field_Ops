@@ -988,6 +988,37 @@ const MIGRATIONS = [
       JOIN import_batches b ON b.id = r.batch_id AND b.undone_at IS NULL
       WHERE i.job_id IS NOT NULL AND i.status NOT IN ('void', 'draft'))`);
   },
+  // 33: estimating dashboard (commercial bid log)
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS bid_gcs (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+      active INTEGER NOT NULL DEFAULT 1,
+      sort INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS bids (
+      id INTEGER PRIMARY KEY,
+      bid_number TEXT UNIQUE,
+      project_name TEXT NOT NULL,
+      due_date TEXT,
+      due_time TEXT,
+      submitted_date TEXT,
+      bid_value REAL,
+      status TEXT NOT NULL DEFAULT 'estimating' CHECK (status IN ('estimating','waiting','in_progress','awarded','lost','no_bid')),
+      notes TEXT,
+      checked_in_at TEXT,
+      job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS bid_gc_links (
+      bid_id INTEGER NOT NULL REFERENCES bids(id) ON DELETE CASCADE,
+      gc_id INTEGER NOT NULL REFERENCES bid_gcs(id) ON DELETE CASCADE,
+      PRIMARY KEY (bid_id, gc_id)
+    );`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
