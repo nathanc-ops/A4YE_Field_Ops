@@ -34,7 +34,7 @@ const EST_TO_CO = { draft: 'Draft', sent: 'Submitted', viewed: 'Submitted', appr
 module.exports = function workbookRoutes(app, db, X) {
   const { wrap, bad, insert, update, mustGet, pick, P, baseUrl } = X;
   const s = () => D.settings(db);
-  const isOffice = u => u.role === 'admin' || u.role === 'office';
+  const isOffice = u => u.role !== 'tech';
   const project = (req, id, { write = false } = {}) => {
     const j = mustGet('jobs', id);
     if (!j.is_project) throw bad('That job is not set up as a commercial project');
@@ -395,7 +395,7 @@ module.exports = function workbookRoutes(app, db, X) {
   // craft class for the Manpower Loading split (the Labor Log's Class column): the job's foreman, else the employee's title
   const CLASSES = ['Foreman', 'Journeyman', 'Apprentice', 'Office'];
   const classOf = (u, job) => u.user_id === job.foreman_id || /foreman|super/i.test(u.title || '') ? 'Foreman' : /apprent/i.test(u.title || '') ? 'Apprentice'
-    : (u.role === 'office' || u.role === 'admin') && !/journey|electric|wireman|master/i.test(u.title || '') ? 'Office' : 'Journeyman';
+    : u.role !== 'tech' && !/journey|electric|wireman|master/i.test(u.title || '') ? 'Office' : 'Journeyman';
   // overtime the way payroll counts it: hours past the weekly threshold (Mon–Sun, all jobs) are OT, in clock-in order
   function overtimeByEntry(userIds) {
     const out = new Map(); if (!userIds.length) return out;

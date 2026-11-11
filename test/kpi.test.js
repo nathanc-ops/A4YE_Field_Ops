@@ -31,7 +31,7 @@ function workbook() {
       ['L3', 'Lee', 'Labor', 'Overtime cost ($)', '$', 'Lower', '', 'calc', 'L2*OT_RATE', 'Calculated', 'OT × rate', '', 'Y'],
       ['L4', 'Lee', 'Revenue', 'Revenue per call ($)', '$', 'Higher', 10, 'calc', 'L1/(P1-P2)', 'Calculated', 'Revenue ÷ answered calls', 'Cross-page formula', 'Y']]),
     Settings: tab([['Key', 'Value', 'What it does'], ['TIMEZONE', 'America/Boise'], ['BAND', 0.25], ['OT_RATE', 50], ['DUE_DAYS_AFTER_WEEK_END', 3], ['DUE_TIME', '23:59'],
-      ['HISTORY_WEEKS', 6], ['ADMINS', 'boss@x.com'], ['MASTER_VIEWERS', 'viewer@x.com, boss@x.com, nobody@x.com'], ['EMAIL_Pat', 'pat@x.com'], ['EMAIL_Lee', 'LEE@x.com'],
+      ['HISTORY_WEEKS', 6], ['ADMINS', 'boss@x.com'], ['MASTER_VIEWERS', 'viewer@x.com, boss@x.com, nobody@x.com, tech@x.com'], ['EMAIL_Pat', 'pat@x.com'], ['EMAIL_Lee', 'LEE@x.com'],
       ['TIMECLOCK_SHEET_ID', 'not-read']]),
     Values: tab([['Week', 'ID', 'Value', 'Origin', 'Source', 'Entered by', 'Entered at', 'Reason'],
       [WEEK, 'P1', 90, 'manual', '', 'pat@x.com', '2026-10-27 09:15'], [WEEK, 'P2', 14, 'manual', '', 'pat@x.com', '2026-10-27 09:15'],
@@ -49,7 +49,7 @@ before(async () => {
   base = `http://127.0.0.1:${server.address().port}`;
   tok.admin = (await call(null, 'POST', '/setup', { name: 'Owner Admin', email: 'owner@x.com', password: 'longenough' })).data.token;
   await call('admin', 'PUT', '/settings', { timezone: 'America/Boise' });
-  for (const [k, name, role] of [['pat', 'Pat Sales', 'office'], ['lee', 'Lee Field', 'tech'], ['boss', 'Boss Manager', 'office'], ['viewer', 'Vi Ewer', 'office'], ['other', 'Other Office', 'office']]) {
+  for (const [k, name, role] of [['pat', 'Pat Sales', 'office'], ['lee', 'Lee Field', 'office'], ['boss', 'Boss Manager', 'office'], ['viewer', 'Vi Ewer', 'office'], ['other', 'Other Office', 'office'], ['mgr', 'Mia Manager', 'manager'], ['tech', 'Tom Tech', 'tech']]) {
     ids[k] = (await call('admin', 'POST', '/users', { name, email: `${k}@x.com`, password: 'password123', role })).data.id;
     tok[k] = (await call(null, 'POST', '/login', { email: `${k}@x.com`, password: 'password123' })).data.token;
   }
@@ -70,10 +70,11 @@ test('import: preview first; then metrics, settings, owners by email, the sheet\
   assert.equal(p.metrics, 9);
   assert.deepEqual(p.owners.map(o => [o.name, o.user && o.user.name]), [['Pat', 'Pat Sales'], ['Lee', 'Lee Field']]);
   assert.deepEqual(p.grants.filter(g => g.user).map(g => `${g.user.name}:${g.perm}`).sort(), ['Boss Manager:kpi_edit_all', 'Boss Manager:kpi_view_all', 'Vi Ewer:kpi_view_all']);
+  assert.equal(p.grants.find(g => g.email === 'tech@x.com').tech, 'Tom Tech', 'a technician is reported, not given KPI access');
   assert.equal((await call('admin', 'GET', '/kpi/page?owner=1&week=' + WEEK)).status, 404, 'nothing until it is imported');
   const r = (await call('admin', 'POST', '/import/kpi-workbook', { file: workbook() })).data;
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.deepEqual(r.unmatched_emails, ['nobody@x.com']); assert.deepEqual(r.permissions_for.sort(), ['Boss Manager', 'Vi Ewer']);
+  assert.deepEqual(r.unmatched_emails, ['nobody@x.com']); assert.deepEqual(r.skipped_technicians, ['Tom Tech']); assert.deepEqual(r.permissions_for.sort(), ['Boss Manager', 'Vi Ewer']);
   assert.equal(r.values, 4, 'unknown metric ID and non-Sunday week skipped'); assert.equal(r.notes, 1); assert.equal(r.submissions, 1);
   assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'kpi_ot_rate'").get().value, '50');
   // times in the sheet are Boise wall-clock: 09:15 MDT = 15:15 UTC
@@ -87,7 +88,7 @@ test('import: preview first; then metrics, settings, owners by email, the sheet\
 
 test('who sees what: owners their own page, viewers everyone, others nothing', async () => {
   const me = async k => (await call(k, 'GET', '/me')).data.user.kpi;
-  assert.deepEqual(await Promise.all(['admin', 'pat', 'lee', 'boss', 'viewer', 'other'].map(me)), [true, true, true, true, true, false]);
+  assert.deepEqual(await Promise.all(['admin', 'pat', 'lee', 'boss', 'viewer', 'other', 'mgr', 'tech'].map(me)), [true, true, true, true, true, false, true, false]);
   ids.Pat = db.prepare("SELECT id FROM kpi_owners WHERE name = 'Pat'").get().id; ids.Lee = db.prepare("SELECT id FROM kpi_owners WHERE name = 'Lee'").get().id;
   assert.deepEqual((await call('pat', 'GET', '/kpi/me')).data.owners.map(o => o.name), ['Pat']);
   assert.deepEqual((await call('viewer', 'GET', '/kpi/me')).data.owners.map(o => o.name), ['Pat', 'Lee']);
@@ -164,4 +165,24 @@ test('set-up: targets, owner\'s user, settings — by people who can fill in any
   assert.equal((await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${WEEK}`)).status, 403);
   const s = (await call('boss', 'GET', '/kpi/setup')).data;
   assert.equal(s.metrics.find(m => m.id === 'P1').target, 80); assert.equal(s.settings.ot_rate, 50);
+});
+
+test('managers see and fill in every page by default; technicians get no KPIs at all', async () => {
+  const m = (await call('mgr', 'GET', '/kpi/me')).data;
+  assert.equal(m.view_all, true); assert.equal(m.edit_all, true); assert.deepEqual(m.owners.map(o => o.name), ['Pat', 'Lee']);
+  assert.equal((await call('mgr', 'GET', `/kpi/dashboard?week=${WEEK}`)).status, 200);
+  assert.equal((await call('mgr', 'PUT', '/kpi/page', { owner: ids.Lee, week: WEEK, values: { L2: 2 } })).status, 200);
+  // the admin can switch a manager's KPI view off
+  await call('admin', 'PUT', `/users/${ids.mgr}`, { perms: { kpi_view_all: false, kpi_edit_all: false } });
+  assert.equal((await call('mgr', 'GET', `/kpi/dashboard?week=${WEEK}`)).status, 403);
+  // technicians: nothing, even when an admin tries to link one to a page
+  const t = (await call('tech', 'GET', '/kpi/me')).data;
+  assert.equal(t.view_all, false); assert.deepEqual(t.owners, []);
+  assert.equal((await call('tech', 'GET', `/kpi/page?owner=${ids.Lee}&week=${WEEK}`)).status, 403);
+  const r = await call('admin', 'PUT', `/kpi/owners/${ids.Lee}`, { user_id: ids.tech });
+  assert.equal(r.status, 400); assert.match(r.data.error, /technician/);
+  assert.ok(!(await call('admin', 'GET', '/kpi/setup')).data.users.some(u => u.id === ids.tech), 'not offered in the list');
+  const perms = (await call('admin', 'GET', '/permissions')).data;
+  assert.ok(!perms.list.find(p => p.key === 'kpi_view_all').roles.includes('tech'));
+  assert.equal(perms.defaults.manager.accounting, true); assert.equal(perms.defaults.office.kpi_view_all, false);
 });

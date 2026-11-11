@@ -184,28 +184,28 @@ async function renderAuth() {
 const NAV = [
   { sect: 'Field' },
   { href: '#/my-day', label: 'My Day', icon: '☀', roles: ['tech'] },
-  { href: '#/dashboard', label: 'Dashboard', icon: '▦', roles: ['admin', 'office'] },
+  { href: '#/dashboard', label: 'Dashboard', icon: '▦', roles: ['admin', 'manager', 'office'] },
   { href: '#/schedule', label: 'Schedule & Dispatch', icon: '🗓' },
   { href: '#/jobs', label: 'Jobs', icon: '🔧' },
   { href: '#/time', label: 'Time Clock', icon: '⏱' },
   { href: '#/picklists', label: 'Pick Lists', icon: '🧺', roles: ['tech'] },
   { href: '#/permits', label: 'Permits & Inspections', icon: '📋' },
-  { sect: 'Sales & Billing', roles: ['admin', 'office'] },
-  { href: '#/customers', label: 'Customers', icon: '👥', roles: ['admin', 'office'] },
-  { href: '#/estimates', label: 'Estimates', icon: '📝', roles: ['admin', 'office'], perm: 'estimates' },
+  { sect: 'Sales & Billing', roles: ['admin', 'manager', 'office'] },
+  { href: '#/customers', label: 'Customers', icon: '👥', roles: ['admin', 'manager', 'office'] },
+  { href: '#/estimates', label: 'Estimates', icon: '📝', roles: ['admin', 'manager', 'office'], perm: 'estimates' },
   { href: '#/estimates', label: 'My Estimates', icon: '📝', roles: ['tech'], perm: 'field_estimates' },
-  { href: '#/invoices', label: 'Invoices', icon: '💵', roles: ['admin', 'office'], perm: 'invoices' },
-  { href: '#/agreements', label: 'Service Agreements', icon: '🔁', roles: ['admin', 'office'] },
-  { sect: 'Back Office', roles: ['admin', 'office'] },
-  { href: '#/purchasing', label: 'Purchasing & Pick Lists', icon: '🚚', roles: ['admin', 'office'], perm: 'purchasing' },
-  { href: '#/pricebook', label: 'Price Book & Inventory', icon: '📦', roles: ['admin', 'office'] },
-  { href: '#/expenses', label: 'Expenses', icon: '🧾', roles: ['admin', 'office'], perm: 'expenses' },
-  { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
-  { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin', 'office'], perm: 'accounting' },
+  { href: '#/invoices', label: 'Invoices', icon: '💵', roles: ['admin', 'manager', 'office'], perm: 'invoices' },
+  { href: '#/agreements', label: 'Service Agreements', icon: '🔁', roles: ['admin', 'manager', 'office'] },
+  { sect: 'Back Office', roles: ['admin', 'manager', 'office'] },
+  { href: '#/purchasing', label: 'Purchasing & Pick Lists', icon: '🚚', roles: ['admin', 'manager', 'office'], perm: 'purchasing' },
+  { href: '#/pricebook', label: 'Price Book & Inventory', icon: '📦', roles: ['admin', 'manager', 'office'] },
+  { href: '#/expenses', label: 'Expenses', icon: '🧾', roles: ['admin', 'manager', 'office'], perm: 'expenses' },
+  { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'manager', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
+  { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin', 'manager', 'office'], perm: 'accounting' },
   { href: '#/team', label: 'Team', icon: '👷', roles: ['admin'] },
-  { href: '#/kpi', label: 'KPIs', icon: '🎯', show: () => S.user.kpi || isAdmin() },
+  { href: '#/kpi', label: 'KPIs', icon: '🎯', roles: ['admin', 'manager', 'office'], show: () => S.user.kpi || isAdmin() },
   { href: '#/notifications', label: 'Notifications', icon: '🔔' },
-  { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'office'] },
+  { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'manager', 'office'] },
 ];
 function renderShell() {
   const nav = NAV.filter(n => (!n.roles || n.roles.includes(S.user.role)) && (!n.perm || [].concat(n.perm).some(can)) && (!n.show || n.show()));
@@ -1453,13 +1453,13 @@ async function userForm(u) {
     if (role === 'admin') return '<p class="small muted">Admins can do everything, including Team, Settings and Import. Use the Office role to limit what someone can do.</p>';
     const list = P.list.filter(p => p.roles.includes(role)), def = P.defaults[role];
     const cur = role === role0 && u.perms ? u.perms : def;
-    return `<p class="small muted">Ticked = allowed. Starts from the ${role === 'tech' ? 'Technician' : 'Office'} defaults; <a href="#" id="permreset">reset to defaults</a>. Team, Settings and Import are always admin-only.</p>
+    return `<p class="small muted">Ticked = allowed. Starts from the ${role === 'tech' ? 'Technician' : role === 'manager' ? 'Manager' : 'Office'} defaults; <a href="#" id="permreset">reset to defaults</a>. Team, Settings and Import are always admin-only.</p>
       <div class="permgrid">${list.map(p => `<label class="check"><input type="checkbox" name="perm_${p.key}" ${cur[p.key] ? 'checked' : ''}> ${esc(p.label)}${!!cur[p.key] !== !!def[p.key] ? ' <span class="pill warn" title="Different from the role default">custom</span>' : ''}</label>`).join('')}</div>`;
   };
   const m = formModal({
     title: u.id ? `Edit ${u.name}` : 'Add employee', values: u, wide: true,
     fields: [{ name: 'name', label: 'Name', required: true }, { name: 'email', label: 'Email (login)', type: 'email', required: true },
-      { name: 'role', label: 'Role', type: 'select', options: [['tech', 'Technician (field app)'], ['office', 'Office (choose what they can do below)'], ['admin', 'Admin (everything)']], blank: false, default: 'tech' },
+      { name: 'role', label: 'Role', type: 'select', options: [['tech', 'Technician (field app)'], ['office', 'Office (choose what they can do below)'], ['manager', 'Manager (all office work + company KPIs; not Team/Settings)'], ['admin', 'Admin (everything)']], blank: false, default: 'tech' },
       { name: 'title', label: 'Title (Apprentice, Journeyman, Foreman…)' }, { name: 'phone', label: 'Phone' }, { name: 'license_number', label: 'License #' },
       { name: 'hourly_wage', label: 'Hourly wage $', type: 'number', default: 0 }, { name: 'burden_pct', label: 'Burden % (taxes, WC, benefits)', type: 'number', default: 25 },
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },

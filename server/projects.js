@@ -13,7 +13,7 @@ module.exports = function projectRoutes(app, db, X) {
   const { wrap, bad, insert, update, mustGet, jobSelect, fixTechs } = X;
   const today = () => localDate(new Date());
   const now = () => new Date().toISOString();
-  const isOffice = u => u.role === 'admin' || u.role === 'office';
+  const isOffice = u => u.role !== 'tech';
   const onProject = (user, job) => !!get(db, `SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?
       UNION SELECT 1 FROM time_entries WHERE job_id = ? AND user_id = ? AND clock_in > datetime('now', '-14 days')`, job.id, user.id, job.id, user.id)
     || job.foreman_id === user.id;

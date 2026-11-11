@@ -929,6 +929,10 @@ const MIGRATIONS = [
         UNIQUE (week, owner_id, at, by_label)
       );`);
   },
+  // 28: Manager role — office work plus the company-wide views (KPIs for everyone), below admin (no Team/Settings/Import)
+  Object.assign(function (db) {
+    rebuildTable(db, 'users', sql => sql.replace(/CHECK \(role IN \('admin',\s*'office',\s*'tech'\)\)/, "CHECK (role IN ('admin','manager','office','tech'))"));
+  }, { foreignKeysOff: true }),
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

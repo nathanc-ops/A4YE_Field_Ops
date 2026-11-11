@@ -131,6 +131,7 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 
 The A4YE KPI Dashboard sheet, inside Field Ops, with the same people and rules.
 - **Setting it up:** admins import it once under **KPIs → Import from sheet**. Download the Google Sheet as .xlsx first. The import reads only the Metrics, Settings, Values, Notes and Submissions tabs.
+- **Who can use KPIs:** office staff, managers and admins. Technicians can't hold a KPI page or KPI permissions, and the import reports any it skips.
 - **Each person fills in their own page.** The import links each page to a Field Ops user by the sheet's `EMAIL_<Name>` settings, and the link can be changed under **KPIs → Targets & set-up**.
 - **Permissions:**
   - People with **"KPIs: see everyone's numbers"** (the sheet's `MASTER_VIEWERS`) also see every page and the company **Scorecard**.
@@ -163,7 +164,9 @@ When you type a service address on a customer or location, the app looks it up. 
 
 **Team → click a person** shows permission checkboxes under their role.
 - **Office:** turn on or off customers, jobs and schedule, projects, estimates, invoices, purchasing, price book, expenses, timesheets, business reports, accounting, and seeing costs.
-- **Technician:** field estimates, seeing costs, daily logs, and clocking into any open project.
+- **Manager:** everything Office can do, all switched on to start (accounting included). Also starts with both company-wide KPI permissions. Team, Settings and Import stay admin-only.
+- **Technician:** field estimates, seeing costs, daily logs, and clocking into any open project. Technicians never get KPIs.
+- **KPIs (office, managers and admins only):** "see everyone's numbers" and "fill in or correct anyone's page". On for managers, off for office until switched on.
 
 Each role starts from sensible defaults; a "custom permissions" tag shows who differs. Admins always have everything, and Team, Settings and Import stay admin-only.
 

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'tech' CHECK (role IN ('admin','office','tech')),
+  role TEXT NOT NULL DEFAULT 'tech' CHECK (role IN ('admin','manager','office','tech')),
   phone TEXT,
   title TEXT,                         -- e.g. Journeyman, Apprentice, Master
   license_number TEXT,

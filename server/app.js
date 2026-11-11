@@ -70,9 +70,9 @@ function createApp(db) {
     next();
   }
   const role = (...roles) => (req, res, next) => roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'You do not have permission for this' });
-  const office = role('admin', 'office');
+  const office = role('admin', 'manager', 'office');
   // admin-only routes also open to an office person who was given that area's permission (e.g. Accounting)
-  const admin = (req, res, next) => req.user.role === 'admin' || (req.user.role === 'office' && req.permGranted)
+  const admin = (req, res, next) => req.user.role === 'admin' || ((req.user.role === 'office' || req.user.role === 'manager') && req.permGranted)
     ? next() : res.status(403).json({ error: 'You do not have permission for this' });
 
   app.get('/api/setup', wrap((req, res) => {
@@ -178,7 +178,7 @@ function createApp(db) {
     return v;
   };
   app.use('/api', (req, res, next) => {
-    if (req.user.role !== 'office') return next();
+    if (req.user.role !== 'office' && req.user.role !== 'manager') return next();
     const rule = P.ruleFor(req.method, req.originalUrl.split('?')[0]);
     if (rule) {
       if (!req.can(rule.perm)) return res.status(403).json({ error: `You don't have permission for ${P.LABEL[rule.perm]}. Ask the owner to turn it on under Team.` });
@@ -201,7 +201,7 @@ function createApp(db) {
   });
   app.get('/api/permissions', admin, (req, res) => {
     const s = D.settings(db);
-    res.json({ list: P.PERMS, defaults: { office: P.defaults('office', s), tech: P.defaults('tech', s), admin: P.defaults('admin', s) } });
+    res.json({ list: P.PERMS, defaults: { manager: P.defaults('manager', s), office: P.defaults('office', s), tech: P.defaults('tech', s), admin: P.defaults('admin', s) } });
   });
   app.post('/api/logout', wrap((req, res) => { run(db, 'DELETE FROM sessions WHERE token = ?', req.token); res.json({ ok: true }); }));
   app.post('/api/me/password', wrap((req, res) => {

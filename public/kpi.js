@@ -164,9 +164,10 @@ async function kpiImport(el) {
     let p; try { p = await POST('/import/kpi-workbook/preview', { file: data }); } catch (err) { out.innerHTML = `<div class="alert">${esc(err.message)}</div>`; return; }
     out.innerHTML = `<p><b>${p.metrics}</b> metrics · <b>${p.values}</b> weekly values · <b>${p.notes}</b> cause/fix notes · <b>${p.submissions}</b> submissions</p>
       ${p.problems.length ? `<div class="alert"><b>Formulas that can't be read:</b> ${p.problems.map(esc).join('; ')}</div>` : ''}
-      ${table([{ label: 'Page', key: 'name' }, { label: 'Sheet email', get: o => o.email || '—' }, { label: 'Field Ops user', html: o => o.user ? esc(o.user.name) : '<span style="color:var(--bad)">no user with that email — link one under Targets & set-up after importing</span>' }], p.owners)}
+      ${table([{ label: 'Page', key: 'name' }, { label: 'Sheet email', get: o => o.email || '—' }, { label: 'Field Ops user', html: o => o.user ? esc(o.user.name) : o.tech ? `<span style="color:var(--bad)">${esc(o.tech)} is a technician — KPIs are for office, managers and admins. Change their role under Team, or link someone else after importing.</span>` : '<span style="color:var(--bad)">no user with that email — link one under Targets & set-up after importing</span>' }], p.owners)}
       ${table([{ label: 'Email', key: 'email' }, { label: 'Gets', get: g => g.perm === 'kpi_edit_all' ? "fill in anyone's page" : "see everyone's numbers" },
-        { label: 'Field Ops user', html: g => g.user ? `${esc(g.user.name)}${g.user.role === 'admin' ? ' <span class="small muted">(admin: has it already)</span>' : ''}` : '<span class="small muted">no user with that email — skipped</span>' }], p.grants)}
+        { label: 'Role', get: g => g.user ? label(g.user.role) : '' },
+        { label: 'Field Ops user', html: g => g.user ? `${esc(g.user.name)}${g.user.role === 'admin' ? ' <span class="small muted">(admin: has it already)</span>' : ''}` : g.tech ? `<span class="small muted">${esc(g.tech)} is a technician — skipped</span>` : '<span class="small muted">no user with that email — skipped</span>' }], p.grants)}
       <p class="small muted">Settings: yellow band ${esc(p.settings.band ?? '—')}, OT rate ${esc(p.settings.ot_rate ?? '—')}, due ${esc(p.settings.due_days ?? '—')} days after Saturday at ${esc(p.settings.due_time ?? '—')}.</p>
       <button class="btn primary" id="kgo" ${p.problems.length ? 'disabled' : ''}>Import</button>`;
     $('#kgo', out).onclick = async () => {

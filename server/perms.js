@@ -3,35 +3,39 @@
 // Each person has a role (admin / office / tech) that sets their starting permissions; the owner can then
 // switch individual permissions on or off per person (users.permissions holds only those overrides, as JSON).
 // Admins always have everything, so the owner can't lock themselves out. Team, Settings and Import stay admin-only.
+// Managers start with every office permission plus the company-wide KPI views; office staff start with less.
 
 const PERMS = [
   // office areas
-  { key: 'customers', label: 'Customers: add and edit', roles: ['office'] },
-  { key: 'jobs', label: 'Jobs and schedule: book, edit, dispatch, cancel, permits, service plans', roles: ['office'] },
-  { key: 'projects', label: 'Commercial projects: budgets, % complete, cost codes', roles: ['office'] },
-  { key: 'estimates', label: 'Estimates: create, send, approve', roles: ['office'] },
-  { key: 'invoices', label: 'Invoices and payments', roles: ['office'] },
-  { key: 'purchasing', label: 'Purchasing: POs, pick lists, vendors', roles: ['office'] },
-  { key: 'pricebook', label: 'Price book and inventory', roles: ['office'] },
-  { key: 'expenses', label: 'Expenses', roles: ['office'] },
-  { key: 'timesheets', label: "Timesheets: edit anyone's time, payroll report", roles: ['office'] },
-  { key: 'reports', label: 'Business reports: P&L, A/R, job costing, dashboard money figures', roles: ['office'] },
-  { key: 'accounting', label: 'Accounting, vendor bills and banking', roles: ['office'] },
+  { key: 'customers', label: 'Customers: add and edit', roles: ['office', 'manager'] },
+  { key: 'jobs', label: 'Jobs and schedule: book, edit, dispatch, cancel, permits, service plans', roles: ['office', 'manager'] },
+  { key: 'projects', label: 'Commercial projects: budgets, % complete, cost codes', roles: ['office', 'manager'] },
+  { key: 'estimates', label: 'Estimates: create, send, approve', roles: ['office', 'manager'] },
+  { key: 'invoices', label: 'Invoices and payments', roles: ['office', 'manager'] },
+  { key: 'purchasing', label: 'Purchasing: POs, pick lists, vendors', roles: ['office', 'manager'] },
+  { key: 'pricebook', label: 'Price book and inventory', roles: ['office', 'manager'] },
+  { key: 'expenses', label: 'Expenses', roles: ['office', 'manager'] },
+  { key: 'timesheets', label: "Timesheets: edit anyone's time, payroll report", roles: ['office', 'manager'] },
+  { key: 'reports', label: 'Business reports: P&L, A/R, job costing, dashboard money figures', roles: ['office', 'manager'] },
+  { key: 'accounting', label: 'Accounting, vendor bills and banking', roles: ['office', 'manager'] },
   // both
-  { key: 'see_costs', label: 'See costs, wages and margins', roles: ['office', 'tech'] },
+  { key: 'see_costs', label: 'See costs, wages and margins', roles: ['office', 'manager', 'tech'] },
   // field
   { key: 'field_estimates', label: 'Build estimates and change orders in the field', roles: ['tech'] },
   { key: 'daily_logs', label: 'Write daily logs on commercial projects', roles: ['tech'] },
   { key: 'any_project', label: 'Clock in on any open commercial project (not just assigned ones)', roles: ['tech'] },
-  // weekly KPIs: everyone fills in their own page; these two widen it (the KPI sheet's MASTER_VIEWERS and ADMINS)
-  { key: 'kpi_view_all', label: "KPIs: see everyone's numbers and the company scorecard", roles: ['office', 'tech'], off: true },
-  { key: 'kpi_edit_all', label: "KPIs: fill in or correct anyone's page, set targets", roles: ['office', 'tech'], off: true },
+  // weekly KPIs (office, managers and admins only): everyone fills in their own page; these two widen it
+  // (the KPI sheet's MASTER_VIEWERS and ADMINS). On for managers, off for office until switched on.
+  { key: 'kpi_view_all', label: "KPIs: see everyone's numbers and the company scorecard", roles: ['office', 'manager'], off: true },
+  { key: 'kpi_edit_all', label: "KPIs: fill in or correct anyone's page, set targets", roles: ['office', 'manager'], off: true },
 ];
 const OFF_BY_DEFAULT = new Set(PERMS.filter(p => p.off).map(p => p.key));
 const KEYS = PERMS.map(p => p.key);
 
 function defaults(role, settings = {}) {
   if (role === 'admin') return Object.fromEntries(KEYS.map(k => [k, true]));
+  // manager: every office area (accounting included) and the company-wide KPI views; admin can still switch any off
+  if (role === 'manager') return Object.fromEntries(PERMS.filter(p => p.roles.includes('manager')).map(p => [p.key, true]));
   if (role === 'office') return Object.fromEntries(KEYS.map(k => [k, k !== 'accounting' && !OFF_BY_DEFAULT.has(k)]));
   return { // tech: the company-wide field settings are the starting point
     field_estimates: settings.tech_estimates !== '0', see_costs: settings.tech_see_costs === '1',

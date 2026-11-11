@@ -83,7 +83,10 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   };
   const consts = c => ({ OT_RATE: c.otRate, BAND: c.band });
   const perms = user => P.effective(user, S());
+  // KPIs are for office staff, managers and admins; technicians never see them, even if linked to a page
+  const KPI_ROLES = ['admin', 'manager', 'office'];
   const access = user => {
+    if (!KPI_ROLES.includes(user.role)) return { view_all: false, edit_all: false, owners: [], any: false };
     const p = perms(user), owns = all(db, 'SELECT id FROM kpi_owners WHERE user_id = ?', user.id).map(r => r.id);
     return { view_all: !!p.kpi_view_all, edit_all: !!p.kpi_edit_all, owners: owns, any: !!(p.kpi_view_all || p.kpi_edit_all || owns.length) && !!get(db, 'SELECT 1 x FROM kpi_metrics LIMIT 1') };
   };
@@ -247,7 +250,7 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     const c = cfg();
     res.json({ owners: all(db, 'SELECT o.*, u.name user_name, (SELECT COUNT(*) FROM kpi_metrics m WHERE m.owner_id = o.id AND m.active = 1) metrics FROM kpi_owners o LEFT JOIN users u ON u.id = o.user_id ORDER BY o.sort, o.name'),
       metrics: metricsAll(), settings: { band: c.band, ot_rate: c.otRate, due_days: c.dueDays, due_time: c.dueTime, history_weeks: c.history, headlines: c.headlines.join(', ') },
-      users: all(db, 'SELECT id, name, email, role FROM users WHERE active = 1 ORDER BY name') });
+      users: all(db, "SELECT id, name, email, role FROM users WHERE active = 1 AND role IN ('admin','manager','office') ORDER BY name") });
   });
   app.put('/api/kpi/metrics/:id', editAll, wrap((req, res) => {
     const m = get(db, 'SELECT * FROM kpi_metrics WHERE id = ?', req.params.id); if (!m) throw bad('No such metric', 404);
@@ -263,7 +266,9 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   app.put('/api/kpi/owners/:id', editAll, wrap((req, res) => {
     const o = get(db, 'SELECT * FROM kpi_owners WHERE id = ?', Number(req.params.id)); if (!o) throw bad('No such owner', 404);
     const uid = req.body.user_id === '' || req.body.user_id == null ? null : Number(req.body.user_id);
-    if (uid != null && !get(db, 'SELECT 1 x FROM users WHERE id = ?', uid)) throw bad('No such user');
+    const u = uid != null && get(db, 'SELECT role FROM users WHERE id = ?', uid);
+    if (uid != null && !u) throw bad('No such user');
+    if (u && !KPI_ROLES.includes(u.role)) throw bad('KPI pages are for office staff, managers and admins — that person is a technician');
     run(db, 'UPDATE kpi_owners SET user_id = ? WHERE id = ?', uid, o.id);
     res.json({ ok: true });
   }));
@@ -310,10 +315,15 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     const set = Object.fromEntries(t.settings.map(r => [str(r.Key), r.Value]));
     const owners = [...new Set(t.metrics.map(r => str(r.Owner)).filter(Boolean))];
     const userByEmail = e => e ? get(db, 'SELECT id, name, email, role FROM users WHERE lower(email) = ?', e) : null;
-    const ownerMap = owners.map(name => { const e = str(set[`EMAIL_${name}`]).toLowerCase(); const u = userByEmail(e); return { name, email: e || null, user: u ? { id: u.id, name: u.name } : null }; });
+    // a technician can't hold a KPI page or KPI permissions: reported, not linked
+    const ownerMap = owners.map(name => {
+      const e = str(set[`EMAIL_${name}`]).toLowerCase(), u = userByEmail(e), ok = u && KPI_ROLES.includes(u.role);
+      return { name, email: e || null, user: ok ? { id: u.id, name: u.name } : null, tech: u && !ok ? u.name : null };
+    });
     const grants = [];
     for (const [key, perm] of [['ADMINS', 'kpi_edit_all'], ['MASTER_VIEWERS', 'kpi_view_all']]) for (const e of emailsIn(set[key])) {
-      const u = userByEmail(e); grants.push({ email: e, perm, user: u ? { id: u.id, name: u.name, role: u.role } : null });
+      const u = userByEmail(e), ok = u && KPI_ROLES.includes(u.role);
+      grants.push({ email: e, perm, user: ok ? { id: u.id, name: u.name, role: u.role } : null, tech: u && !ok ? u.name : null });
     }
     // ADMINS can edit any page, so they can see every page too
     for (const g of grants.filter(x => x.perm === 'kpi_edit_all')) if (!grants.some(x => x.perm === 'kpi_view_all' && x.email === g.email)) grants.push({ ...g, perm: 'kpi_view_all' });
@@ -354,7 +364,7 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     // permissions: the sheet's ADMINS and MASTER_VIEWERS, for people who aren't Field Ops admins already (they have everything)
     const s = S(), changedUsers = new Set();
     for (const g of p.grants) {
-      if (!g.user || g.user.role === 'admin') continue;
+      if (!g.user || g.user.role === 'admin') continue; // admins have everything already
       const u = get(db, 'SELECT * FROM users WHERE id = ?', g.user.id), want = { ...P.effective(u, s), [g.perm]: true };
       run(db, 'UPDATE users SET permissions = ? WHERE id = ?', P.overridesFrom(u.role, want, s), u.id); changedUsers.add(u.name);
     }
@@ -380,7 +390,8 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
       const w = wk(r.Week), o = get(db, 'SELECT id FROM kpi_owners WHERE name = ?', str(r.Owner)); if (!w || !o) continue;
       ns += Number(run(db, 'INSERT OR IGNORE INTO kpi_submissions (week, owner_id, user_id, by_label, at) VALUES (?,?,?,?,?)', w, o.id, userId(r.By), str(r.By) || 'KPI sheet', when(r['Submitted at'])).changes);
     }
-    res.json({ ok: true, metrics: t.metrics.length, owners: p.ownerMap, permissions_for: [...changedUsers], unmatched_emails: p.grants.filter(g => !g.user).map(g => g.email),
+    res.json({ ok: true, metrics: t.metrics.length, owners: p.ownerMap, permissions_for: [...changedUsers], unmatched_emails: [...new Set(p.grants.filter(g => !g.user && !g.tech).map(g => g.email))],
+      skipped_technicians: [...new Set([...p.grants, ...p.ownerMap].filter(g => g.tech).map(g => g.tech))],
       values: nv, notes: nn, submissions: ns });
   }));
 };
