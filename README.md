@@ -132,7 +132,7 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 Techs get a phone notice when they're put on a job or visit, when its time changes, or when they're taken off it or it's cancelled.
 - **Who gets one:** the person who made the change doesn't. A finished visit, or one already in the past, doesn't notify.
 - **One notice per change:** one save that adds someone and moves the time sends them a single "New job" with the new time.
-- **Turning it on:** each person does it on their own phone, from the banner on **My Day** or **Settings → Notifications on this device**.
+- **Turning it on:** each person does it on their own phone, from **🔔 Notifications** in the menu (techs also get a banner on My Day).
 - **Browser and Home Screen app:** standard Web Push with keys the server makes itself, so there's nothing to sign up for. iPhone needs the Home Screen app, iOS 16.4+.
 - **Store apps:** need an Apple push key and a Firebase key, entered in **Settings → Push notifications**. See [docs/MOBILE_APPS.md](docs/MOBILE_APPS.md).
 

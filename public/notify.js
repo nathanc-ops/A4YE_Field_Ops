@@ -124,7 +124,7 @@ async function pushNag(el) {
     ${m === 'ios-install' ? '<br><span class="small">On iPhone: Share → <b>Add to Home Screen</b>, open Field Ops from the icon, then turn notifications on in Settings.</span>' : ''}
     <div class="row" style="gap:8px;margin-top:8px">${m === 'ios-install' ? '' : '<button class="btn primary sm" id="nagon">Turn on</button>'}<button class="btn sm" id="nagno">Not now</button></div></div>`;
   if ($('#nagon', el)) $('#nagon', el).onclick = async () => { try { await enablePush(); toast('Notifications are on'); el.innerHTML = ''; } catch (e) { toast(e.message, true); } };
-  $('#nagno', el).onclick = () => { try { localStorage.setItem('fo_push_nag', 'no'); } catch { /* private mode */ } el.innerHTML = ''; };
+  $('#nagno', el).onclick = () => { try { localStorage.setItem('fo_push_nag', 'no'); } catch { /* private mode */ } el.innerHTML = ''; toast('You can turn them on any time from 🔔 Notifications in the menu'); };
 }
 
 // Settings (admin): the store apps' push keys, who has notifications on, what was sent
@@ -143,11 +143,21 @@ async function pushAdmin(el) {
       ${fieldHtml({ name: 'fcm_service_account', label: p.fcm ? 'Service-account JSON (saved — paste a new one to replace)' : 'Service-account JSON (Firebase → Project settings → Service accounts → Generate new private key)', type: 'textarea', full: true })}
       <div class="full"><button class="btn primary sm">Save Firebase key</button></div></form></details>
     <h3 style="margin-top:12px">Who has notifications on</h3>${table([{ label: 'Person', key: 'name' }, { label: 'Kind', get: d => ({ web: 'Browser / Home Screen', apns: 'iPhone app', fcm: 'Android app' }[d.kind]) },
-      { label: 'Devices', key: 'n', num: true }, { label: 'Last delivered', get: d => d.last_ok ? fmtDT(d.last_ok) : '—' }], p.devices, { empty: 'Nobody yet — each person turns it on from their phone (My Day or Settings).' })}
+      { label: 'Devices', key: 'n', num: true }, { label: 'Last delivered', get: d => d.last_ok ? fmtDT(d.last_ok) : '—' }], p.devices, { empty: 'Nobody yet — each person turns it on from their phone: 🔔 Notifications in the menu.' })}
     <h3 style="margin-top:12px">Recent notices</h3>${table([{ label: 'When', get: l => fmtDT(l.created_at) }, { label: 'To', key: 'name' }, { label: 'Notice', html: l => `${esc(l.title)}<div class="small muted">${esc(l.body || '')}</div>` },
       { label: 'Delivered', html: l => l.sent ? `${l.sent}/${l.devices}` : `<span style="color:var(--bad)">0/${l.devices}</span>${l.error ? `<div class="small" style="color:var(--bad)">${esc(l.error)}</div>` : ''}` }], p.log, { empty: 'Nothing sent yet' })}`;
   $('#apnsf', el).onsubmit = async e => { e.preventDefault(); const f = e.target;
     await act(() => PUT('/push/admin', { apns_key_p8: f.apns_key_p8.value, apns_key_id: f.apns_key_id.value, apns_team_id: f.apns_team_id.value, apns_bundle_id: f.apns_bundle_id.value, apns_env: f.apns_env.value }), 'Apple key saved').catch(() => null); pushAdmin(el); };
   $('#fcmf', el).onsubmit = async e => { e.preventDefault();
     await act(() => PUT('/push/admin', { fcm_service_account: e.target.fcm_service_account.value }), 'Firebase key saved').catch(() => null); pushAdmin(el); };
+}
+
+// 🔔 Notifications (menu, everyone): turn them on for this phone, test, and — for admins — the store-app set-up
+async function viewNotifications() {
+  $('#view').innerHTML = setTop('Notifications') + `<div class="grid g2"><div class="card"><h2>This phone or computer</h2><div id="pushme"><div class="muted small">Loading…</div></div>
+      <p class="small muted" style="margin-top:12px">You get a notice when you're put on a job or visit, when its time changes, or when you're taken off it or it's cancelled.
+      Turn it on on each phone you use. Changes you make yourself don't notify you.</p></div>
+    ${isAdmin() ? '<div class="card"><h2>Push notifications (everyone)</h2><div id="pushadmin"><div class="muted small">Loading…</div></div></div>' : ''}</div>`;
+  pushCard($('#pushme'));
+  if ($('#pushadmin')) pushAdmin($('#pushadmin'));
 }

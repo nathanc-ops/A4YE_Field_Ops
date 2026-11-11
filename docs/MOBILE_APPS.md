@@ -109,7 +109,7 @@ To ship a new native build, raise *Version* or *Build* in Xcode (General tab).
 Techs get a notice on their phone when they are put on a job or visit, a visit's time changes, they're taken off, or it is cancelled.
 The person making the change isn't notified.
 
-- **Browser and Home Screen app: nothing to set up.** Each person turns it on once, from **My Day** (the banner) or **Settings → Notifications on this device**.
+- **Browser and Home Screen app: nothing to set up.** Each person turns it on once, from **🔔 Notifications** in the menu (techs also see a banner on My Day).
   - **iPhone:** works only from the Home Screen app (iOS 16.4 or later). In Safari it can't be turned on; the app says so.
 - **App Store iPhone app** needs an Apple push key, made once:
   1. In the Apple Developer site: **Certificates, IDs & Profiles → Keys → +**. Tick *Apple Push Notifications service (APNs)*, then download the `.p8` file (it can only be downloaded once). Note its **Key ID** and your **Team ID** (top right of the developer site).
