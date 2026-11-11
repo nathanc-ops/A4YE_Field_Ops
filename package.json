@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/nathanc-ops/A4YE_Field_Ops#readme",
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "express": "^4.22.3",
     "nodemailer": "^6.10.1",
     "web-push": "3.6.7"

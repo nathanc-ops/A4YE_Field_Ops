@@ -1129,6 +1129,12 @@ async function settingsExtras(el) {
         <li>Under <b>Credentials → Create credentials → API key</b>, restrict the key to <b>Places API (New)</b> only.</li>
         <li>Paste it here. The key stays on your server and is never sent to browsers.</li></ol></details>
       <div class="row"><button class="btn primary">Save</button>${s.google_maps_api_key_set ? '<button type="button" class="btn danger" id="geoclear">Remove key</button>' : ''}</div></form></div>`);
+    cards.push(`<div class="card"><h2>Plan takeoff (Claude)</h2>
+      <p class="small">Estimating → a bid → Plans (PDF): Claude reads the plan set and returns the takeoff as Estimate Import rows, priced from your price book. Admins and managers only.</p>
+      <p class="small">${s.anthropic_api_key_set ? '<span class="pill good">Anthropic key saved</span>' : '<span class="pill">Not set up</span>'} Usage is billed to your Anthropic account; each takeoff shows the tokens it used.</p>
+      <form id="aif"><div class="form-grid">${fieldHtml({ name: 'anthropic_api_key', label: s.anthropic_api_key_set ? 'Anthropic API key (saved — leave blank to keep)' : 'Anthropic API key', type: 'password', full: true })}</div>
+      <details class="small" style="margin:8px 0"><summary>How to get a key</summary><ol><li>Sign in at console.anthropic.com (or create an account) and add billing.</li><li>Under <b>API keys</b>, create a key for Field Ops.</li><li>Paste it here. It stays on your server and is never sent to browsers.</li></ol></details>
+      <div class="row"><button class="btn primary">Save</button>${s.anthropic_api_key_set ? '<button type="button" class="btn danger" id="aiclear">Remove key</button>' : ''}</div></form></div>`);
     const log = await GET('/integrations/ply/log');
     let locs = []; try { locs = JSON.parse(s.ply_locations || '[]'); } catch { locs = []; }
     let last = null; try { last = JSON.parse(s.ply_last_sync || 'null'); } catch { last = null; }
@@ -1169,6 +1175,8 @@ async function settingsExtras(el) {
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
   $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
   $('#geof').onsubmit = e => { e.preventDefault(); const v = e.target.google_maps_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ google_maps_api_key: v }, 'Google Maps key saved'); };
+  if ($('#aif')) $('#aif').onsubmit = e => { e.preventDefault(); const v = e.target.anthropic_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ anthropic_api_key: v }, 'Anthropic key saved'); };
+  if ($('#aiclear')) $('#aiclear').onclick = () => { if (confirm('Remove the Anthropic key? Plan takeoffs stop working until a new one is added.')) saveSettings({ anthropic_api_key_clear: '1' }, 'Key removed'); };
   if ($('#geoclear')) $('#geoclear').onclick = () => { if (confirm('Remove the Google Maps key? Address lookup falls back to the free US Census check.')) saveSettings({ google_maps_api_key_clear: '1' }, 'Key removed'); };
   const pf = $('#plyf');
   pf.onsubmit = e => { e.preventDefault(); saveSettings({ ply_enabled: pf.ply_enabled.checked ? '1' : '0', ply_api_key: pf.ply_api_key.value.trim(), ply_env: pf.ply_env.value,

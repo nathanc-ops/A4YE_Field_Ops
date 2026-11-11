@@ -159,7 +159,12 @@ The commercial bid log from the Estimating Dashboard workbook. **Admins and mana
 - **Totals use the sheet's formulas:** bids submitted (has a submitted date), total value, awarded, waiting. Added: win rate (awarded ÷ awarded + lost, by count and by $) and results per contractor.
 - **Due next** lists bids still being estimated, by due date; late ones are flagged. **Needs a check-in** lists bids waiting 14+ days since they went out and since the notes last changed.
 - A bid sent to two contractors counts under both, so the per-contractor $ adds up to more than the total (the sheet's "Bid Value % per Contractor" chart had the same double count).
-- Add or edit bids on the page; adding a submitted date moves a bid from Estimating to Waiting. Link an awarded bid to its job. **Contractors** edits the GC list.
+- Add or edit bids on the page; adding a submitted date moves a bid from Estimating to Waiting.
+- **Plan takeoff by Claude:** on a bid, pick the job type (Commercial / Residential) and attach the plan set (PDF, up to 20 MB). Claude reads the plans and returns the takeoff as **Estimate Import rows** (cost code, area, tag, description, qty, unit…), with the sheet each count came from, a confidence level, RFIs, assumptions and exclusions.
+  - Pricing is done by Field Ops, not the model: a line matching a **price book** item uses its cost and labor hours; otherwise Claude's suggested labor unit / material price is used and flagged **AI price — check**; anything left is **Not priced**. Every line can be edited, excluded or overridden; extra lines can be added.
+  - **Takeoff templates** (Estimating → Takeoff templates): per job type, labor rate (blank = the crew's average loaded cost), labor factor, markup %, and what Claude should count.
+  - **Use … as the bid value** writes the sell price to the bid. **Copy as Estimate Import rows** / **Download CSV** give columns A–P of the Estimate Import sheet; once the bid is linked to a commercial project, **Send to project budget** loads them into its cost-code budget.
+  - Needs an Anthropic API key (Settings → Integrations → Plan takeoff; stored on the server, never sent to browsers). Runs on Claude Opus 5.5 with Anthropic's automatic fallback if a request is declined; each takeoff shows the tokens it used. Admins and managers only. Link an awarded bid to its job. **Contractors** edits the GC list.
 
 ## Weekly KPIs (🎯 KPIs)
 

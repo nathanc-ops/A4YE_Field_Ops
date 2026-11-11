@@ -644,3 +644,11 @@ th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
 th.sortable:hover, th.sortable:focus-visible { color: var(--text); }
 th.sortable.on { color: var(--text); }
 th.sortable .sarrow { font-size: 10px; }
+
+/* ===== plan takeoff ===== */
+.tobusy { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--surface-2) 0%, var(--series-1) 50%, var(--surface-2) 100%); background-size: 200% 100%; animation: tobusy 1.6s linear infinite; }
+@keyframes tobusy { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .tobusy { animation: none; } }
+#toltbl input.bad { border-color: var(--bad); }
+#toltbl tr.muted td { opacity: .5; }
+#toltbl input { padding: 4px 6px; }

@@ -1038,6 +1038,30 @@ const MIGRATIONS = [
       SELECT id, NULLIF(TRIM(contact), ''), NULLIF(TRIM(email), ''), NULLIF(TRIM(phone), ''), CASE WHEN NULLIF(TRIM(email), '') IS NULL THEN 0 ELSE 1 END
       FROM vendors WHERE COALESCE(TRIM(contact), '') != '' OR COALESCE(TRIM(email), '') != '';`);
   },
+  // 35: plan takeoffs by Claude for bids; a bid is commercial or residential
+  db => {
+    addColumn(db, 'bids', 'job_kind', 'TEXT');
+    db.exec(`CREATE TABLE IF NOT EXISTS takeoffs (
+      id INTEGER PRIMARY KEY,
+      bid_id INTEGER NOT NULL REFERENCES bids(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('commercial','residential')),
+      status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','done','error')),
+      file_path TEXT NOT NULL,
+      filename TEXT,
+      notes TEXT,
+      result TEXT,
+      lines TEXT,
+      error TEXT,
+      model TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      applied_at TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_takeoffs_bid ON takeoffs(bid_id);`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

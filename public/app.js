@@ -256,7 +256,7 @@ function setTop(title, actions = '', sub = '') {
 
 // ============================================================ router
 const ROUTES = [
-  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
+  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/estimating\/takeoff\/(\d+)$/, id => viewTakeoff(id)], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
   [/^\/purchasing$/, () => viewPurchasing()], [/^\/vendors$/, () => viewVendors()], [/^\/vendors\/(\d+)$/, id => viewVendor(id)], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
   [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],

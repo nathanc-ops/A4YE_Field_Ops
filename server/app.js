@@ -21,7 +21,7 @@ function createApp(db) {
   const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
   const importJson = express.json({ limit: '40mb' }); // CSV exports from the old system can be large
   app.use((req, res, next) => (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
-    : req.path.startsWith('/api/import/') ? importJson : smallJson)(req, res, next));
+    : req.path.startsWith('/api/import/') || req.path === '/api/estimating/import' || /^\/api\/estimating\/bids\/\d+\/takeoff$/.test(req.path) ? importJson : smallJson)(req, res, next));
 
   // ------------------------------------------------------------ helpers
   // Sync handlers run inside one transaction, so a failed ledger posting rolls back the whole change.
@@ -188,7 +188,7 @@ function createApp(db) {
     next();
   });
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account', 'anthropic_api_key'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
@@ -1243,6 +1243,7 @@ function createApp(db) {
   Push.routes(app, db, { wrap, bad, admin });
   require('./kpi')(app, db, { wrap, bad, admin });
   require('./estimating')(app, db, { wrap, bad });
+  require('./takeoff')(app, db, { wrap, bad });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');

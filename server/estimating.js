@@ -40,7 +40,8 @@ module.exports = function estimating(app, db, { wrap, bad }) {
   const bidsWithGcs = () => {
     const links = all(db, 'SELECT l.bid_id, g.id, g.name FROM bid_gc_links l JOIN bid_gcs g ON g.id = l.gc_id ORDER BY g.sort, g.name');
     const by = new Map(); for (const l of links) { if (!by.has(l.bid_id)) by.set(l.bid_id, []); by.get(l.bid_id).push({ id: l.id, name: l.name }); }
-    return all(db, `SELECT b.*, j.number job_number, j.title job_title FROM bids b LEFT JOIN jobs j ON j.id = b.job_id
+    return all(db, `SELECT b.*, j.number job_number, j.title job_title, j.is_project job_is_project,
+      (SELECT COUNT(*) FROM takeoffs t WHERE t.bid_id = b.id) takeoff_count FROM bids b LEFT JOIN jobs j ON j.id = b.job_id
       ORDER BY CASE WHEN b.status = 'estimating' THEN 0 ELSE 1 END, COALESCE(b.due_date, b.submitted_date) DESC, b.id DESC`)
       .map(b => ({ ...b, gcs: by.get(b.id) || [] }));
   };
@@ -96,6 +97,7 @@ module.exports = function estimating(app, db, { wrap, bad }) {
     if ('status' in b) { if (!STATUSES.includes(b.status)) throw bad('Unknown status'); o.status = b.status; }
     if ('notes' in b) { o.notes = str(b.notes).slice(0, 4000) || null; if ((o.notes || null) !== (old.notes || null)) o.checked_in_at = new Date().toISOString().slice(0, 19).replace('T', ' '); }
     if ('job_id' in b) o.job_id = b.job_id ? Number(b.job_id) : null;
+    if ('job_kind' in b) { if (b.job_kind && !['commercial', 'residential'].includes(b.job_kind)) throw bad('Job type is commercial or residential'); o.job_kind = b.job_kind || null; }
     if (o.job_id && !get(db, 'SELECT id FROM jobs WHERE id = ?', o.job_id)) throw bad('Job not found');
     if (o.bid_number && get(db, 'SELECT id FROM bids WHERE bid_number = ? AND id != ?', o.bid_number, old.id || 0)) throw bad(`Bid ${o.bid_number} already exists`);
     // submitting a bid moves it out of "estimating"
