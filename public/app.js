@@ -256,7 +256,7 @@ function setTop(title, actions = '', sub = '') {
 
 // ============================================================ router
 const ROUTES = [
-  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/estimating\/takeoff\/(\d+)$/, id => viewTakeoff(id)], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
+  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/estimating\/takeoff\/(\d+)$/, id => viewTakeoff(id)], [/^\/estimating\/proposal\/(\d+)$/, id => viewProposal(id)], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
   [/^\/purchasing$/, () => viewPurchasing()], [/^\/vendors$/, () => viewVendors()], [/^\/vendors\/(\d+)$/, id => viewVendor(id)], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
   [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],
@@ -1599,7 +1599,7 @@ async function userForm(u) {
 }
 async function viewSettings() {
   const s = S.settings;
-  const fields = [{ name: 'company_name', label: 'Company name' }, { name: 'license_number', label: 'Contractor license #' }, { name: 'company_phone', label: 'Phone' }, { name: 'company_email', label: 'Email' },
+  const fields = [{ name: 'company_name', label: 'Company name' }, { name: 'license_number', label: 'Contractor license #' }, { name: 'company_phone', label: 'Phone' }, { name: 'company_email', label: 'Email' }, { name: 'company_website', label: 'Website' },
     { name: 'company_address', label: 'Address', full: true }, { name: 'default_tax_rate', label: 'Default sales tax %', type: 'number' }, { name: 'invoice_terms_days', label: 'Default invoice terms (days)', type: 'number' },
     { name: 'estimate_valid_days', label: 'Estimates valid for (days)', type: 'number' }, { name: 'target_gross_margin', label: 'Target gross margin %', type: 'number' },
     { name: 'overtime_weekly_hours', label: 'Overtime after (hrs/week)', type: 'number' }, { name: 'overtime_multiplier', label: 'Overtime multiplier', type: 'number' },

@@ -24,7 +24,7 @@ async function viewEstimating() {
   const T = d.totals, lbl = Object.fromEntries(d.statuses.map(s => [s.key, s.label]));
   const byId = new Map(d.bids.map(b => [b.id, b]));
   const count = st => d.bids.filter(b => b.status === st).length;
-  $('#view').innerHTML = setTop('Estimating', `<button class="btn" id="etpl">Takeoff templates</button><button class="btn" id="egc">Contractors</button><button class="btn" id="eimp">Import workbook</button><button class="btn primary" id="enew">+ New bid</button>`,
+  $('#view').innerHTML = setTop('Estimating', `<button class="btn" id="etpl">Estimate templates</button><button class="btn" id="eplist">Import price list</button><button class="btn" id="egc">Contractors</button><button class="btn" id="eimp">Import workbook</button><button class="btn primary" id="enew">+ New bid</button>`,
     'Commercial bids · admins and managers only') + `
     <div class="row" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
       <select id="eper" aria-label="Period">${[['all', 'All bids'], ['year', 'This year'], ['365', 'Last 12 months'], ['90', 'Last 90 days']].map(([k, v]) => `<option value="${k}" ${EST.period === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
@@ -91,6 +91,7 @@ async function viewEstimating() {
   $('#egc').onclick = () => estGcs(d);
   $('#eimp').onclick = () => estImport();
   $('#etpl').onclick = () => takeoffTemplates();
+  $('#eplist').onclick = () => priceListImport();
 }
 
 function estEdit(b, d) {
@@ -162,95 +163,295 @@ async function startTakeoff(bidId, kind, file) {
   const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(file); });
   return act(() => POST(`/estimating/bids/${bidId}/takeoff`, { kind, file: data, filename: file.name }), 'Plans sent — Claude is doing the takeoff').catch(() => null);
 }
+// ---------------------------------------------------------------- estimate (A4YE quote workbook model)
+const EST_SCOPES = [['distribution', 'Electrical - Distribution'], ['lighting', 'Electrical - Lighting'], ['power', 'Electrical - Power'], ['fire_alarm', 'Fire Alarm'], ['data', 'Data & Telecom'], ['demo', 'Demolition - Electrical']];
+const EST_PHASES = [['P1', 'P1 Demolition'], ['P2', 'P2 Rough-In'], ['P3', 'P3 Gear & Feeders'], ['P4', 'P4 Trim/Fixtures & Devices'], ['P5', 'P5 Equipment Connections'], ['P6', 'P6 Systems'], ['P7', 'P7 Closeout']];
+const estPhaseL = k => (EST_PHASES.find(p => p[0] === k) || [, k])[1];
 const TO_QCOLS = ['phase_code', 'phase', 'tag', 'description', 'qty', 'unit', 'material_unit', 'neca_hours', 'factor', 'adj_hours', 'labor_unit', 'total_unit', 'ext_material', 'ext_labor', 'ext_cost', 'notes'];
-// the Estimate Import sheet's columns A–P, so the rows paste straight into a project's Quote Import
-function takeoffRows(t) {
-  return t.lines.filter(l => l.include).map(l => {
-    const lu = Math.round(l.adj_hours * t.totals.labor_rate * 100) / 100;
-    return { phase_code: l.phase_code, phase: l.phase, tag: l.tag, description: l.description, qty: l.qty, unit: l.unit, material_unit: l.material_unit,
-      neca_hours: l.hours_unit, factor: t.totals.factor, adj_hours: l.adj_hours, labor_unit: lu, total_unit: Math.round((l.material_unit + lu) * 100) / 100,
-      ext_material: l.ext_material, ext_labor: l.ext_labor, ext_cost: l.ext_cost, notes: [l.notes, l.source && `Plans: ${l.source}`, l.priced_from === 'AI suggestion' ? 'AI-suggested price — check' : ''].filter(Boolean).join(' · ') };
-  });
+// the Estimate Import sheet's columns A–P (phase code = bid # - phase - cost code), so rows paste into a project's Quote Import
+function takeoffRows(t, bid) {
+  const prefix = String((bid && bid.bid_number) || `T${t.id}`).replace(/[^A-Za-z0-9]/g, '').slice(0, 12) || `T${t.id}`;
+  return t.lines.filter(l => l.include).map(l => ({ phase_code: `${prefix}-${l.phase}-${l.phase_code || '0000'}`, phase: estPhaseL(l.phase), tag: l.tag, description: l.description, qty: l.qty, unit: l.unit,
+    material_unit: l.material_unit, neca_hours: l.hours_unit, factor: l.factor, adj_hours: l.adj_hours, labor_unit: l.labor_unit, total_unit: l.total_unit,
+    ext_material: l.ext_material, ext_labor: l.ext_labor, ext_cost: l.ext_cost,
+    notes: [l.notes, l.source && `Plans: ${l.source}`, l.priced_from === 'AI suggestion' ? 'AI-suggested price — check' : ''].filter(Boolean).join(' · ') }));
 }
 async function viewTakeoff(id) {
+  const { params } = hashParams(); const tab = params.get('tab') || 'lines';
   const t = await GET('/estimating/takeoffs/' + id);
   const bids = await GET('/estimating'); const bid = bids.bids.find(b => b.id === t.bid_id) || {};
-  const T = t.totals, kindL = t.kind === 'commercial' ? 'Commercial' : 'Residential';
-  const head = setTop(`Takeoff · ${esc(bid.project_name || 'Bid')}`, `<a class="btn" href="#/estimating">‹ Estimating</a>${t.status !== 'running' ? '<button class="btn" id="torerun">Run again</button><button class="btn danger" id="todel">Delete</button>' : ''}`,
-    `${esc(kindL)} template · ${esc(t.filename || '')}${bid.bid_number ? ` · Bid ${esc(bid.bid_number)}` : ''}`);
+  const kindL = t.kind === 'commercial' ? 'Commercial' : 'Residential';
+  const head = setTop(`Estimate · ${esc(bid.project_name || 'Bid')}`, `<a class="btn" href="#/estimating">‹ Estimating</a>${t.status === 'done' ? `<button class="btn" id="toas">Assumptions</button><button class="btn" id="toxl">Workbook (.xlsx)</button><a class="btn" href="#/estimating/proposal/${id}">Proposal letter</a>` : ''}${t.status !== 'running' ? '<button class="btn" id="torerun">Run again</button><button class="btn danger" id="todel">Delete</button>' : ''}`,
+    `${esc(kindL)} · ${esc(t.filename || '')}${bid.bid_number ? ` · Bid ${esc(bid.bid_number)}` : ''}`);
   if (t.status === 'running') {
     $('#view').innerHTML = head + `<div class="card"><h2>Claude is reading the plans…</h2><p>Started ${fmtDT(t.created_at)}. A full plan set can take several minutes; this page checks every few seconds. You can leave and come back.</p><div class="tobusy" aria-hidden="true"></div></div>`;
-    const again = () => { if (location.hash === '#/estimating/takeoff/' + id) viewTakeoff(id); };
-    return setTimeout(again, 5000);
+    return setTimeout(() => { if (location.hash.startsWith('#/estimating/takeoff/' + id)) viewTakeoff(id); }, 5000);
   }
   if (t.status === 'error') {
     $('#view').innerHTML = head + `<div class="card"><div class="alert">⚠ ${esc(t.error || 'The takeoff failed')}</div></div>`;
   } else {
-    const pf = { 'price book': ['good', 'Price book'], 'AI suggestion': ['warn', 'AI price — check'], 'not priced': ['bad', 'Not priced'], edited: ['info', 'Edited'] };
+    const T = t.totals, E = t.estimate, B = E.build;
     const flags = [T.ai_priced && `${T.ai_priced} line(s) priced from Claude's suggestion — check them`, T.unpriced && `${T.unpriced} line(s) have no price`, T.low_confidence && `${T.low_confidence} low-confidence count(s)`, T.no_code && `${T.no_code} line(s) without a cost code from your list`].filter(Boolean);
     $('#view').innerHTML = head + `
-      <div class="grid g4">${kpi('Material', money0(T.material))}${kpi('Labor', money0(T.labor), `${num(T.hours, 1)} h × ${money(T.labor_rate)}/h${T.factor !== 1 ? ` · factor ${T.factor}` : ''}`)}
-        ${kpi('Cost', money0(T.cost), `${T.lines} lines`)}${kpi('Sell price', money0(T.sell), `cost + ${num(T.markup_pct)}% markup`)}</div>
+      <div class="grid g4">${kpi('Material', money0(E.subtotal.material), T.derived ? `incl. ${T.derived} EMT fitting line(s)` : '')}
+        ${kpi('Field labor', money0(B.labor), `${num(E.subtotal.hours, 1)} h × ${money(E.rates.blended)}/h · factor ${num(t.assumptions.productivity, 2)}`)}
+        ${kpi('Direct cost', money0(B.direct), `${E.schedule.weeks} wk at ${E.schedule.crew_size} workers`)}
+        ${kpi('Total quote', money0(B.total), `O&P ${num(B.op_pct, 2)}% · contingency ${num(B.contingency_pct, 2)}%`)}</div>
       ${flags.length ? `<div class="alert" style="margin-top:12px">${flags.map(esc).join(' · ')}</div>` : ''}
-      <div class="card" style="margin-top:14px"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">${esc(t.project_name || 'Takeoff')}</h2>
-        <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn" id="tocopy" title="Columns A–P of the Estimate Import sheet">Copy as Estimate Import rows</button><button class="btn" id="tocsv">Download CSV</button>
-        ${bid.job_id && bid.job_is_project ? `<button class="btn" id="tobudget">Send to project budget</button>` : ''}<button class="btn primary" id="toapply">Use ${money0(T.sell)} as the bid value</button></div></div>
-        <p class="small muted">${esc(t.scope_summary || '')}</p>
-        ${t.applied_at ? `<p class="small"><span class="pill good">✓ Used as the bid value ${fmtDT(t.applied_at)}</span></p>` : ''}
-        <div class="table-wrap"><table id="toltbl"><thead><tr><th></th><th>Code</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Material/unit</th><th class="num">Hrs/unit</th><th class="num">Ext cost</th><th>Priced from</th><th>Count</th></tr></thead><tbody>
-        ${t.lines.map((l, i) => `<tr data-i="${i}" class="${l.include ? '' : 'muted'}">
-          <td><input type="checkbox" data-k="include" ${l.include ? 'checked' : ''} aria-label="Include"></td>
-          <td><input data-k="phase_code" value="${esc(l.phase_code)}" style="width:64px" title="${esc(l.cost_code_name || 'Not on the cost code list')}" class="${l.cost_code_ok ? '' : 'bad'}"></td>
-          <td><input data-k="description" value="${esc(l.description)}" style="min-width:220px">${l.tag || l.pricebook_name ? `<div class="small muted">${[l.tag && 'Tag ' + esc(l.tag), l.pricebook_name && esc(l.pricebook_name)].filter(Boolean).join(' · ')}</div>` : ''}</td>
-          <td class="num"><input data-k="qty" type="number" step="any" value="${esc(l.qty)}" style="width:70px"></td>
-          <td><input data-k="unit" value="${esc(l.unit)}" style="width:50px"></td>
-          <td class="num"><input data-k="material_override" type="number" step="any" placeholder="${esc(l.material_unit)}" value="${l.material_override ?? ''}" style="width:80px"></td>
-          <td class="num"><input data-k="hours_override" type="number" step="any" placeholder="${esc(l.hours_unit)}" value="${l.hours_override ?? ''}" style="width:64px"></td>
-          <td class="num">${money(l.ext_cost)}</td>
-          <td><span class="pill ${pf[l.priced_from][0]}">${pf[l.priced_from][1]}</span></td>
-          <td><span class="pill ${l.confidence === 'low' ? 'bad' : l.confidence === 'medium' ? 'warn' : 'good'}" title="${esc([l.source && 'From ' + l.source, l.notes].filter(Boolean).join(' — '))}">${esc(l.confidence || '')}</span>${l.source ? `<div class="small muted">${esc(l.source)}</div>` : ''}</td></tr>`).join('')}
-        </tbody></table></div>
-        <div class="row" style="margin-top:10px;gap:8px"><button class="btn" id="toadd">+ Line</button><button class="btn primary" id="tosave">Save changes</button>
-          <span class="small muted">Blank material/hours use the price book, or Claude's suggestion (shown greyed). Type a number to override.</span></div></div>
-      <div class="grid g2" style="margin-top:14px">
-        ${[['Questions for the GC (RFIs)', t.questions], ['Assumptions', t.assumptions], ['Exclusions', t.exclusions], ['Sheets reviewed', t.sheets_reviewed]].map(([h, list]) =>
-          `<div class="card"><h2>${h}</h2>${(list || []).length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<div class="empty">None</div>'}</div>`).join('')}
-      </div>
-      <p class="small muted" style="margin-top:10px">Read by ${esc(t.model || '')} · ${num((t.input_tokens || 0) / 1000, 0)}k tokens in, ${num((t.output_tokens || 0) / 1000, 0)}k out. Counts from plans can be wrong: check them before you bid.</p>`;
-    const read = () => t.lines.map((l, i) => {
-      const tr = $(`#toltbl tr[data-i="${i}"]`); const g = k => $(`[data-k="${k}"]`, tr);
-      return { ...l, include: g('include').checked, phase_code: g('phase_code').value.trim(), description: g('description').value, qty: Number(g('qty').value) || 0, unit: g('unit').value,
-        material_override: g('material_override').value === '' ? null : Number(g('material_override').value), hours_override: g('hours_override').value === '' ? null : Number(g('hours_override').value) };
-    });
-    const save = async () => { await act(() => PUT('/estimating/takeoffs/' + id, { lines: read() }), 'Saved'); };
-    $('#tosave').onclick = async () => { await save(); viewTakeoff(id); };
-    $('#toadd').onclick = async () => { t.lines = read(); t.lines.push({ description: 'New line', qty: 1, unit: 'EA', phase_code: '', include: true, added: '1', confidence: 'high', source: 'Added by estimator' });
-      await act(() => PUT('/estimating/takeoffs/' + id, { lines: t.lines })); viewTakeoff(id); };
-    $('#toapply').onclick = async () => { await save(); const r = await act(() => POST(`/estimating/takeoffs/${id}/apply`), 'Bid value updated'); toast(`Bid value set to ${money0(r.bid_value)}`); viewTakeoff(id); };
-    const tsv = () => takeoffRows(t).map(r => TO_QCOLS.map(k => String(r[k] ?? '').replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
-    $('#tocopy').onclick = async () => { await navigator.clipboard.writeText(tsv()).then(() => toast('Copied — paste into the Estimate Import sheet (column A)'), () => toast('Copy blocked by the browser — use Download CSV', true)); };
-    $('#tocsv').onclick = () => toCSV(TO_QCOLS.map(k => ({ label: label(k), key: k })), takeoffRows(t), `takeoff-${(bid.bid_number || id)}.csv`);
-    if ($('#tobudget')) $('#tobudget').onclick = async () => {
-      if (!confirm(`Replace ${bid.job_number}'s cost-code budget with this takeoff (${t.totals.lines} lines)?`)) return;
-      await act(() => POST(`/projects/${bid.job_id}/quote-import`, { text: tsv(), source: `Takeoff ${t.filename || ''}`.trim(), mode: 'replace', skip_uncoded: true }), 'Project budget updated');
+      ${t.applied_at ? `<p class="small"><span class="pill good">✓ Used as the bid value ${fmtDT(t.applied_at)}</span></p>` : ''}
+      <div class="tabs" style="margin-top:14px">${[['lines', `Lines (${t.lines.filter(l => !l.derived).length})`], ['estimate', 'Estimate summary'], ['notes', `RFIs & notes (${(t.questions || []).length})`]].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tt="${k}">${l}</button>`).join('')}</div>
+      <div id="tobody"></div>`;
+    $$('[data-tt]').forEach(b => b.onclick = () => go(`#/estimating/takeoff/${id}?tab=${b.dataset.tt}`));
+    const body = $('#tobody');
+    if (tab === 'estimate') body.innerHTML = estimateSummaryHtml(t);
+    else if (tab === 'notes') body.innerHTML = `<div class="grid g2">${[['Questions for the GC (RFIs)', t.questions], ['Assumptions', t.clarifications], ['Exclusions', t.exclusions], ['Sheets reviewed', t.sheets_reviewed]]
+      .map(([h, list]) => `<div class="card"><h2>${h}</h2>${(list || []).length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<div class="empty">None</div>'}</div>`).join('')}</div>
+      <div class="card" style="margin-top:14px"><h2>Plans basis</h2><p>${esc(t.plans_basis || '—')}</p><h2>Scope</h2><p>${esc(t.scope_summary || '—')}</p></div>`;
+    else body.innerHTML = linesHtml(t);
+    if (tab === 'lines') wireLines(t, id, bid);
+    if (tab === 'estimate') { const cs = $('#tocrew'); if (cs) cs.onchange = async () => { await act(() => PUT('/estimating/takeoffs/' + id, { assumptions: { ...t.assumptions, crew_size: Number(cs.value) || 1 } })); viewTakeoff(id); }; }
+    $('#toas').onclick = () => assumptionsModal({ title: `Assumptions for this estimate (${kindL})`, A: t.assumptions, emt: t.emt, custom: !!(t.own_assumptions && (t.own_assumptions.assumptions || t.own_assumptions.emt)),
+      save: async (A, emt) => { await act(() => PUT('/estimating/takeoffs/' + id, { assumptions: A, emt }), 'Saved'); viewTakeoff(id); },
+      reset: async () => { await act(() => PUT('/estimating/takeoffs/' + id, { assumptions: null, emt: null }), `Back to the ${kindL} template`); viewTakeoff(id); } });
+    $('#toxl').onclick = async () => {
+      const res = await fetch(`/api/estimating/takeoffs/${id}/xlsx`, { headers: { Authorization: 'Bearer ' + S.token } });
+      if (!res.ok) return toast('Could not build the workbook', true);
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob());
+      a.download = (res.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'estimate.xlsx'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     };
   }
-  if ($('#torerun')) $('#torerun').onclick = async () => { if (!confirm('Run the takeoff again? Your edits on this one are replaced.')) return; await act(() => POST(`/estimating/takeoffs/${id}/rerun`)); viewTakeoff(id); };
+  if ($('#torerun')) $('#torerun').onclick = async () => { if (!confirm('Run the takeoff again? Your line edits are replaced.')) return; await act(() => POST(`/estimating/takeoffs/${id}/rerun`)); viewTakeoff(id); };
   if ($('#todel')) $('#todel').onclick = async () => { if (!confirm('Delete this takeoff and its PDF?')) return; await act(() => DEL('/estimating/takeoffs/' + id), 'Deleted'); go('#/estimating'); };
+}
+function linesHtml(t) {
+  const pf = { 'price book': ['good', 'Price book'], 'AI suggestion': ['warn', 'AI price — check'], 'not priced': ['bad', 'Not priced'], edited: ['info', 'Edited'] };
+  const T = t.totals;
+  const rowHtml = (l, i) => l.derived ? `<tr class="derived"><td></td><td>${esc(l.phase_code)}</td><td>${esc(l.phase)}</td><td colspan="2"><span class="small">↳ ${esc(l.description)}</span><div class="small muted">${esc(l.source)}</div></td>
+      <td class="num">${num(l.qty)}</td><td>${esc(l.unit)}</td><td class="num">${money(l.material_unit)}</td><td class="num">${num(l.hours_unit, 3)}</td><td class="num">${num(l.factor, 2)}</td><td class="num">${money(l.ext_cost)}</td><td><span class="pill">Auto</span></td><td></td></tr>`
+    : `<tr data-i="${i}" class="${l.include ? '' : 'muted'}">
+      <td><input type="checkbox" data-k="include" ${l.include ? 'checked' : ''} aria-label="Include"></td>
+      <td><input data-k="phase_code" value="${esc(l.phase_code)}" style="width:58px" title="${esc(l.cost_code_name || 'Not on the cost code list')}" class="${l.cost_code_ok ? '' : 'bad'}"></td>
+      <td><select data-k="phase" style="width:62px" title="${esc(estPhaseL(l.phase))}">${EST_PHASES.map(([k, lab]) => `<option value="${k}" ${k === l.phase ? 'selected' : ''} title="${esc(lab)}">${k}</option>`).join('')}</select></td>
+      <td><select data-k="scope" style="width:118px">${EST_SCOPES.map(([k, lab]) => `<option value="${k}" ${k === l.scope ? 'selected' : ''}>${esc(lab.replace('Electrical - ', ''))}</option>`).join('')}</select></td>
+      <td><input data-k="description" value="${esc(l.description)}" style="min-width:200px">${l.tag || l.pricebook_name ? `<div class="small muted">${[l.tag && 'Tag ' + esc(l.tag), l.pricebook_name && esc(l.pricebook_name)].filter(Boolean).join(' · ')}</div>` : ''}</td>
+      <td class="num"><input data-k="qty" type="number" step="any" value="${esc(l.qty)}" style="width:70px"></td>
+      <td><input data-k="unit" value="${esc(l.unit)}" style="width:44px"></td>
+      <td class="num"><input data-k="material_override" type="number" step="any" placeholder="${esc(l.material_unit)}" value="${l.material_override ?? ''}" style="width:74px"></td>
+      <td class="num"><input data-k="hours_override" type="number" step="any" placeholder="${esc(l.hours_unit)}" value="${l.hours_override ?? ''}" style="width:62px"></td>
+      <td class="num"><label class="small" title="High repetition: the crew gets faster on many identical items"><input type="checkbox" data-k="high_repetition" ${l.high_repetition ? 'checked' : ''}> HR</label><div class="small muted">× ${num(l.factor, 2)}</div></td>
+      <td class="num">${money(l.ext_cost)}</td>
+      <td><span class="pill ${pf[l.priced_from][0]}">${pf[l.priced_from][1]}</span></td>
+      <td><span class="pill ${l.confidence === 'low' ? 'bad' : l.confidence === 'medium' ? 'warn' : 'good'}" title="${esc([l.source && 'From ' + l.source, l.notes].filter(Boolean).join(' — '))}">${esc(l.confidence || '')}</span>${l.source ? `<div class="small muted">${esc(l.source)}</div>` : ''}</td></tr>`;
+  const body = EST_SCOPES.map(([k, lab]) => {
+    const idx = t.lines.map((l, i) => [l, i]).filter(([l]) => l.scope === k);
+    if (!idx.length) return '';
+    const sub = idx.filter(([l]) => l.include).reduce((s, [l]) => s + l.ext_cost, 0);
+    return `<tr class="toscope"><td colspan="11"><b>${esc(lab)}</b></td><td colspan="2" class="num"><b>${money(sub)}</b></td></tr>` + idx.map(([l, i]) => rowHtml(l, i)).join('');
+  }).join('');
+  return `<div class="card"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">${esc(t.project_name || 'Takeoff')}</h2>
+      <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn" id="tocopy" title="Columns A–P of the Estimate Import sheet">Copy as Estimate Import rows</button><button class="btn" id="tocsv">Download CSV</button>
+      <span id="tobudgetwrap"></span><button class="btn primary" id="toapply">Use ${money0(T.sell)} as the bid value</button></div></div>
+      <p class="small muted">${esc(t.scope_summary || '')}</p>
+      <div class="table-wrap"><table id="toltbl"><thead><tr><th></th><th>Code</th><th>Phase</th><th>Scope</th><th>Description</th><th class="num">Qty</th><th>Unit</th><th class="num">Material/unit</th><th class="num">NECA hrs/unit</th><th class="num">Factor</th><th class="num">Ext cost</th><th>Priced from</th><th>Count</th></tr></thead>
+      <tbody>${body}</tbody></table></div>
+      <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap"><button class="btn" id="toadd">+ Line</button><button class="btn primary" id="tosave">Save changes</button>
+        <span class="small muted">Blank material/hours use the price book, or Claude's suggestion (greyed). Hours are NECA normal; the crew factor (${num(t.assumptions.productivity, 2)}, HR ${num(t.assumptions.high_rep, 2)}; testing and preconstruction 1.00) is applied. ↳ rows are EMT fittings worked out from conduit footage.</span></div></div>`;
+}
+function wireLines(t, id, bid) {
+  const read = () => t.lines.map((l, i) => {
+    if (l.derived) return l;
+    const tr = $(`#toltbl tr[data-i="${i}"]`); const g = k => $(`[data-k="${k}"]`, tr);
+    return { ...l, include: g('include').checked, phase_code: g('phase_code').value.trim(), phase: g('phase').value, scope: g('scope').value, description: g('description').value,
+      qty: Number(g('qty').value) || 0, unit: g('unit').value, high_repetition: g('high_repetition').checked,
+      material_override: g('material_override').value === '' ? null : Number(g('material_override').value), hours_override: g('hours_override').value === '' ? null : Number(g('hours_override').value) };
+  }).filter(l => !l.derived);
+  const save = () => act(() => PUT('/estimating/takeoffs/' + id, { lines: read() }), 'Saved');
+  $('#tosave').onclick = async () => { await save(); viewTakeoff(id); };
+  $('#toadd').onclick = async () => { const lines = read(); lines.push({ description: 'New line', qty: 1, unit: 'EA', phase_code: '', scope: 'power', phase: 'P2', include: true, added: '1', confidence: 'high', source: 'Added by estimator' });
+    await act(() => PUT('/estimating/takeoffs/' + id, { lines })); viewTakeoff(id); };
+  $('#toapply').onclick = async () => { await save(); const r = await act(() => POST(`/estimating/takeoffs/${id}/apply`), 'Bid value updated'); toast(`Bid value set to ${money0(r.bid_value)}`); viewTakeoff(id); };
+  const tsv = () => takeoffRows(t, bid).map(r => TO_QCOLS.map(k => String(r[k] ?? '').replace(/[\t\n]/g, ' ')).join('\t')).join('\n');
+  $('#tocopy').onclick = async () => { await navigator.clipboard.writeText(tsv()).then(() => toast('Copied — paste into the Estimate Import sheet (column A)'), () => toast('Copy blocked by the browser — use Download CSV', true)); };
+  $('#tocsv').onclick = () => toCSV(TO_QCOLS.map(k => ({ label: label(k), key: k })), takeoffRows(t, bid), `takeoff-${(bid.bid_number || id)}.csv`);
+  if (bid.job_id && bid.job_is_project) {
+    $('#tobudgetwrap').innerHTML = '<button class="btn" id="tobudget">Send to project budget</button>';
+    $('#tobudget').onclick = async () => {
+      if (!confirm(`Replace ${bid.job_number}'s cost-code budget with this estimate (${t.totals.lines} lines)?`)) return;
+      await act(() => POST(`/projects/${bid.job_id}/quote-import`, { text: tsv(), source: `Estimate ${t.filename || ''}`.trim(), mode: 'replace', skip_uncoded: true }), 'Project budget updated');
+    };
+  }
+}
+function estimateSummaryHtml(t) {
+  const E = t.estimate, B = E.build, P = E.productivity, A = t.assumptions;
+  const line = (l, v, cls = '') => `<tr class="${cls}"><td>${l}</td><td class="num">${v}</td></tr>`;
+  const maxPh = Math.max(1, ...E.phases.map(p => p.hours));
+  return `<div class="grid g2">
+    <div class="card"><h2>Scope categories</h2>${table([{ label: 'Scope', key: 'label' }, { label: 'Earned hrs', num: 1, get: s => num(s.hours, 1) }, { label: 'Material', num: 1, get: s => money0(s.material) }, { label: 'Labor', num: 1, get: s => money0(s.labor) }, { label: 'Total', num: 1, get: s => money0(s.total) }],
+      E.scopes.filter(s => s.lines), { foot: ['Subtotal', { v: num(E.subtotal.hours, 1), num: 1 }, { v: money0(E.subtotal.material), num: 1 }, { v: money0(E.subtotal.labor), num: 1 }, { v: money0(E.subtotal.total), num: 1 }] })}
+      <h3 style="margin-top:14px">Hours by phase</h3><div class="ebars">${E.phases.map(p => `<div class="ebar" title="${esc(p.label)}: ${num(p.hours, 1)} h"><span class="ebl">${esc(p.label)}</span><span class="ebt"><span class="ebf" style="width:${p.hours / maxPh * 100}%"></span></span><span class="ebv">${num(p.hours, 1)} h</span></div>`).join('')}</div></div>
+    <div class="card"><h2>Quote build-up</h2><div class="table-wrap"><table class="tobuild"><tbody>
+      ${line('Material', money(B.material))}${line(`Field labor (straight time, ${money(E.rates.blended)}/h blended)`, money(B.labor))}
+      ${line(`Per diem${A.per_diem ? ` (${money(A.per_diem)}/worker/day, ${num(E.rates.travelled * 100, 1)}% travelled)` : ' (none)'}`, money(B.per_diem))}
+      ${B.indirects.filter(x => x.value).map(x => line(`<span class="small muted">· ${esc(x.label)}</span>`, `<span class="small">${money(x.value)}</span>`)).join('')}
+      ${line('Field indirects', money(B.indirects_total))}${line(`Project management (${num(B.pm_hours, 1)} h × ${money(A.pm_rate)})`, money(B.pm))}
+      ${line('<b>Direct cost subtotal</b>', `<b>${money(B.direct)}</b>`, 'tot')}${line(`Design contingency (${num(B.contingency_pct, 2)}%)`, money(B.contingency))}
+      ${line(`Overhead & profit (${num(B.op_pct, 2)}%)`, money(B.op))}${line(`Sales tax on material (${num(B.tax_pct, 2)}%)`, money(B.tax))}
+      ${line('<b>TOTAL QUOTE — BASE (5 × 8)</b>', `<b>${money(B.total)}</b>`, 'tot')}</tbody></table></div></div>
+    <div class="card"><h2>Schedule & crew</h2>
+      <label class="f" style="max-width:220px"><span>Crew size (workers)</span><input id="tocrew" type="number" min="1" step="1" value="${esc(A.crew_size)}"></label>
+      <p>${E.schedule.weeks} week(s) at ${A.days_week} × ${A.hours_day}, ${num(A.availability * 100, 0)}% availability · ${num(E.schedule.man_days, 1)} field man-days · ${E.schedule.net_days} working days.</p>
+      <h3>Schedule options (same duration)</h3>${table([{ label: 'Option', key: 'label' }, { label: 'Paid hrs', num: 1, get: o => num(o.paid_hours, 0) }, { label: 'OT hrs', num: 1, get: o => num(o.ot_hours, 0) }, { label: 'Crew', num: 1, key: 'crew' },
+        { label: 'Total', num: 1, get: o => money0(o.total) }, { label: 'vs base', num: 1, html: o => o.add == null ? '<span class="pill">Base</span>' : `<span class="pill ${o.add > 0 ? 'warn' : 'good'}">${o.add > 0 ? '+' : ''}${money0(o.add)}</span>` }], E.options)}</div>
+    <div class="card"><h2>Labor productivity — the bet</h2>
+      <p class="small muted">Hours are bid at ${num(A.productivity, 2)} × NECA normal. If the crew only performs at NECA normal:</p>
+      <div class="table-wrap"><table class="tobuild"><tbody>${line('Hours at NECA normal', num(P.neca_hours, 1))}${line('Hours as bid', num(P.bid_hours, 1))}${line('Hours removed by the productivity factor', num(P.removed, 1))}
+      ${line('Downside exposure, marked up', money(P.exposure))}${line('Share of the quote', P.exposure_share == null ? '—' : pct(P.exposure_share * 100))}
+      ${line('O&P left if the full downside happens', `<span class="${P.op_left < 0 ? 'bad' : ''}">${money(P.op_left)}</span>`)}</tbody></table></div></div>
+  </div>`;
+}
+// Cover & Assumptions editor: used for a job type's template and for one estimate
+function assumptionsModal({ title, A, emt, instructions, save, reset, custom }) {
+  const n = (name, lab, v, step = 'any') => `<label class="f"><span>${lab}</span><input name="${name}" type="number" step="${step}" value="${esc(v)}"></label>`;
+  const crewRow = (c, i) => `<tr data-c="${i}"><td><input data-ck="cls" value="${esc(c.cls)}"></td><td><input data-ck="base" type="number" step="any" value="${esc(c.base)}" style="width:80px"></td>
+    <td><input data-ck="mix" type="number" step="any" value="${esc(c.mix)}" style="width:70px"></td><td><input data-ck="local" type="number" step="any" value="${esc(c.local)}" style="width:70px"></td><td><button type="button" class="btn sm" data-crm="${i}" aria-label="Remove">✕</button></td></tr>`;
+  const m = modal(`<h2>${esc(title)}</h2>${custom ? '<p class="small"><span class="pill info">Changed for this estimate</span></p>' : ''}
+    <form id="asf">
+      <h3>Crew (market rates by classification)</h3>
+      <div class="table-wrap"><table id="ascrew"><thead><tr><th>Classification</th><th>Base $/hr</th><th>Crew mix %</th><th>Local hire %</th><th></th></tr></thead><tbody>${A.crew.map(crewRow).join('')}</tbody></table></div>
+      <button type="button" class="btn sm" id="asadd">+ Classification</button>
+      <div class="form-grid" style="margin-top:10px">${n('burden', 'Labor burden factor', A.burden)}${n('productivity', 'Crew productivity factor (1.00 = NECA normal)', A.productivity)}${n('high_rep', 'High-repetition factor', A.high_rep)}</div>
+      <h3>Schedule</h3><div class="form-grid">${n('crew_size', 'Crew size (workers)', A.crew_size, 1)}${n('days_week', 'Work days / week', A.days_week, 1)}${n('hours_day', 'Hours / day', A.hours_day)}${n('availability', 'Availability factor', A.availability)}${n('holidays', 'Holidays in the window', A.holidays, 1)}</div>
+      <h3>Overtime</h3><div class="form-grid">${n('ot_after', 'Overtime after (hrs/week)', A.ot_after)}${n('ot_mult', 'Overtime multiplier', A.ot_mult)}${n('ot_burden', 'Variable burden on the premium', A.ot_burden)}${n('eff_5x12', 'Efficiency at 5 × 12', A.eff_5x12)}${n('eff_6x10', 'Efficiency at 6 × 10', A.eff_6x10)}</div>
+      <h3>Per diem & project management</h3><div class="form-grid">${n('per_diem', 'Per diem $/worker/day (travelled)', A.per_diem)}${n('pm_rate', 'PM rate $/hr', A.pm_rate)}${n('pm_hours_week', 'PM hours / week', A.pm_hours_week)}</div>
+      <h3>Field indirects</h3><div class="form-grid">${n('small_tools_pct', 'Small tools % (material + labor)', A.small_tools_pct)}${n('trucks', 'Service trucks', A.trucks)}${n('truck_week', '$ / truck / week', A.truck_week)}
+        ${n('scissor_lifts', 'Scissor lifts', A.scissor_lifts)}${n('scissor_week', '$ / scissor / week', A.scissor_week)}${n('booms', 'Boom lifts', A.booms)}${n('boom_week', '$ / boom / week', A.boom_week)}
+        ${n('conex_week', 'Conex / trailer $ / week', A.conex_week)}${n('safety_pct', 'Safety % of labor', A.safety_pct)}${n('mob_equip_pct', 'Mobilization – equipment %', A.mob_equip_pct)}${n('mob_crew_pct', 'Mobilization – crew travel %', A.mob_crew_pct)}</div>
+      <h3>Markups</h3><div class="form-grid">${n('contingency_pct', 'Design contingency %', A.contingency_pct)}${n('op_pct', 'Overhead & profit %', A.op_pct)}${n('tax_pct', 'Sales tax on material %', A.tax_pct)}</div>
+      <h3>EMT fittings from footage</h3><div class="form-grid"><label class="check"><input type="checkbox" name="emt_derive" ${emt.derive ? 'checked' : ''}> Add couplings, connectors and straps automatically</label>
+        ${n('emt_couplings_per_100', 'Couplings per 100 LF', emt.couplings_per_100)}${n('emt_connectors_per_100', 'Connectors per 100 LF', emt.connectors_per_100)}${n('emt_straps_per_100', 'Straps per 100 LF', emt.straps_per_100)}${n('emt_locknuts_per_connector', 'Locknuts per connector', emt.locknuts_per_connector)}
+        <label class="f"><span>Fitting type</span><select name="emt_fitting"><option value="SS" ${emt.fitting === 'SS' ? 'selected' : ''}>Set screw (dry interior)</option><option value="COMP" ${emt.fitting === 'COMP' ? 'selected' : ''}>Compression, raintight</option></select></label></div>
+      ${instructions != null ? `<h3>What Claude counts for this job type</h3><textarea name="instructions" rows="6" style="width:100%">${esc(instructions)}</textarea>` : ''}
+      <div class="actions">${reset ? '<button type="button" class="btn" id="asreset">Use the template</button>' : ''}<button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Save</button></div></form>`, { wide: true });
+  $('[data-x]', m.el).onclick = m.close;
+  const wireCrew = () => $$('[data-crm]', m.el).forEach(b => b.onclick = () => { b.closest('tr').remove(); });
+  wireCrew();
+  $('#asadd', m.el).onclick = () => { const tb = $('#ascrew tbody', m.el); tb.insertAdjacentHTML('beforeend', crewRow({ cls: '', base: 0, mix: 0, local: 0 }, tb.children.length)); wireCrew(); };
+  if (reset) $('#asreset', m.el).onclick = async () => { m.close(); await reset(); };
+  $('#asf', m.el).onsubmit = async e => {
+    e.preventDefault(); const f = e.target;
+    const out = { crew: $$('#ascrew tbody tr', m.el).map(tr => Object.fromEntries(['cls', 'base', 'mix', 'local'].map(k => [k, $(`[data-ck="${k}"]`, tr).value]))).filter(c => c.cls || Number(c.mix)) };
+    for (const el of f.elements) if (el.name && el.type === 'number' && !el.name.startsWith('emt_')) out[el.name] = el.value;
+    const mix = out.crew.reduce((s, c) => s + (Number(c.mix) || 0), 0);
+    if (Math.abs(mix - 100) > 0.5 && !confirm(`The crew mix adds up to ${num(mix, 1)}%, not 100%. Rates are weighted by the mix either way. Save anyway?`)) return;
+    const e2 = { derive: f.emt_derive.checked, fitting: f.emt_fitting.value, couplings_per_100: f.emt_couplings_per_100.value, connectors_per_100: f.emt_connectors_per_100.value,
+      straps_per_100: f.emt_straps_per_100.value, locknuts_per_connector: f.emt_locknuts_per_connector.value };
+    await save(out, e2, f.instructions ? f.instructions.value : undefined); m.close();
+  };
 }
 async function takeoffTemplates() {
   const s = await GET('/estimating/takeoff-settings');
-  const card = k => { const t = s.templates[k]; return `<fieldset data-k="${k}" style="border:1px solid var(--border);border-radius:10px;padding:10px;margin:0 0 10px"><legend><b>${esc(t.label)}</b></legend><div class="form-grid">
-    <label class="f"><span>Labor rate $/h (blank = crew average, ${money(s.company_rate)})</span><input name="labor_rate" type="number" step="any" value="${t.labor_rate ?? ''}"></label>
-    <label class="f"><span>Labor factor (× hours per unit)</span><input name="factor" type="number" step="any" value="${esc(t.factor)}"></label>
-    <label class="f"><span>Markup %</span><input name="markup_pct" type="number" step="any" value="${esc(t.markup_pct)}"></label>
-    <label class="f full"><span>What Claude counts for this type of job</span><textarea name="instructions" rows="6">${esc(t.instructions)}</textarea></label></div></fieldset>`; };
-  const m = modal(`<h2>Takeoff templates</h2>
+  const m = modal(`<h2>Estimate templates</h2>
     ${s.configured ? '<p class="small"><span class="pill good">Anthropic key saved</span> Takeoffs run on ' + esc(s.model) + '.</p>' : '<div class="alert">No Anthropic API key yet. An admin adds it in Settings → Integrations → Plan takeoff.</div>'}
-    <p class="small muted">Rows come out in the Estimate Import layout. Price book items set material and labor; otherwise Claude's suggested labor unit and material price are used and flagged.</p>
-    <form id="tplf">${card('commercial')}${card('residential')}<div class="actions"><button type="button" class="btn" data-x>Cancel</button><button class="btn primary">Save templates</button></div></form>`, { wide: true });
+    <p class="small muted">Each job type carries the quote workbook's Cover & Assumptions: crew mix and rates, productivity, overtime, per diem, indirects and markups. Every new estimate starts from these; you can change them per estimate.</p>
+    <div class="row" style="gap:8px">${['commercial', 'residential'].map(k => { const tpl = s.templates[k]; return `<button class="btn" data-tk="${k}">${esc(tpl.label)} · ${money(blendRate(tpl.assumptions))}/h · O&P ${num(tpl.assumptions.op_pct, 2)}%</button>`; }).join('')}</div>
+    <div class="actions"><button class="btn" data-x>Close</button></div>`);
   $('[data-x]', m.el).onclick = m.close;
-  $('#tplf', m.el).onsubmit = async e => { e.preventDefault();
-    const templates = Object.fromEntries($$('fieldset', m.el).map(f => [f.dataset.k, Object.fromEntries(['labor_rate', 'factor', 'markup_pct', 'instructions'].map(n => [n, f.elements[n].value]))]));
-    await act(() => PUT('/estimating/takeoff-settings', { templates }), 'Templates saved').catch(() => null); m.close(); };
+  $$('[data-tk]', m.el).forEach(b => b.onclick = () => { const k = b.dataset.tk, tpl = s.templates[k]; m.close();
+    assumptionsModal({ title: `${tpl.label} template`, A: tpl.assumptions, emt: tpl.emt, instructions: tpl.instructions,
+      save: async (A, emt, instructions) => { await act(() => PUT('/estimating/takeoff-settings', { templates: { [k]: { assumptions: A, emt, instructions } } }), 'Template saved'); } }); });
 }
+const blendRate = A => { const mix = A.crew.reduce((s, c) => s + c.mix, 0) || 1; return A.crew.reduce((s, c) => s + c.base * A.burden * c.mix, 0) / mix; };
+async function priceListImport() {
+  const vendors = await GET('/vendors');
+  const m = modal(`<h2>Import a price list</h2>
+    <p class="small muted">An .xlsx with a tab whose header row has <b>Key</b>, <b>Description</b>, <b>Unit</b> and <b>Material $/Unit</b> (the EMT Conduit Pricing workbook's “EMT Price List” tab works as-is). NECA Hrs/Unit, the cost code and the vendor item # come along when present.
+      Items are matched to the price book by Key, so re-importing updates prices. An old .xls has to be saved as .xlsx first.</p>
+    <div class="form-grid"><label class="f"><span>Vendor these prices are from</span><select id="plv"><option value="">—</option>${vendors.filter(v => v.active).map(v => `<option value="${v.id}">${esc(v.name)}</option>`).join('')}</select></label>
+      <label class="f"><span>Workbook (.xlsx)</span><input type="file" id="plf" accept=".xlsx"></label></div><div id="plres"></div>
+    <div class="actions"><button class="btn" data-x>Close</button><button class="btn primary" id="plgo">Import</button></div>`);
+  $('[data-x]', m.el).onclick = m.close;
+  $('#plgo', m.el).onclick = async () => {
+    const file = $('#plf', m.el).files[0]; if (!file) return toast('Choose the .xlsx file', true);
+    const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(file); });
+    const r = await act(() => POST('/estimating/price-list', { file: data, vendor_id: $('#plv', m.el).value || null })).catch(() => null); if (!r) return;
+    $('#plres', m.el).innerHTML = `<p><b>${r.created}</b> added · <b>${r.updated}</b> updated${r.skipped ? ` · ${r.skipped} skipped` : ''} · from ${r.sheets.map(esc).join(', ')}</p>${r.warnings.length ? `<ul class="small">${r.warnings.slice(0, 20).map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : ''}
+      <p class="small muted">Check the labor hours before bidding: a price list's NECA hours may be defaults, not verified against your jobs.</p>`;
+  };
+}
+
+// ---------------------------------------------------------------- proposal letter
+const PROP_SCOPE = { distribution: 'Distribution', lighting: 'Lighting', power: 'Power', fire_alarm: 'Fire Alarm', data: 'Data & Telecom', demo: 'Demolition' };
+function proposalFromTakeoff(p) {
+  const T = p.takeoff, gc = p.gcs[0] || '', project = (p.bid && p.bid.project_name) || T.project_name || 'the project';
+  const scopes = EST_SCOPES.map(([k]) => k).filter(k => T.lines.some(l => l.scope === k));
+  return {
+    date: new Date().toLocaleDateString('en-US'), re: `${project} – Electrical Proposal`, gc, greeting: 'Hello,',
+    intro: `Thank you for the opportunity to provide ${gc || 'you'} with a pricing proposal for the ${project}.${T.scope_summary ? ' ' + T.scope_summary : ''}`,
+    basis: T.plans_basis ? `This proposal is based on ${T.plans_basis.replace(/\.$/, '')}. No addenda had been received at the time of this proposal.` : '',
+    pricing: T.tax_pct > 0 ? 'Our base bid is shown below. It includes Idaho sales tax on materials.' : 'Our base bid is shown below.',
+    bids: [{ label: 'ELECTRICAL BASE BID', amount: Math.round(T.total * 100) / 100 }], credit: null,
+    validity: 'Pricing is valid for 30 days from submission.',
+    closing: `Our team at ${p.company.name || 'our company'} remains committed to delivering high-quality workmanship, adhering to project timelines, and ensuring all installations meet code and project requirements.`,
+    sections: scopes.map(k => ({ title: PROP_SCOPE[k], note: '', rows: T.lines.filter(l => l.scope === k).map(l => ({ tag: l.tag || '—', description: l.description, qty: l.qty, unit: l.unit })) })),
+    conditions: [...p.defaults.conditions], exclusions: [...new Set([...(T.exclusions || []), ...p.defaults.exclusions])], clarifications: [...(T.clarifications || [])], qualifications: [...p.defaults.qualifications],
+  };
+}
+async function viewProposal(id) {
+  const p = await GET(`/estimating/takeoffs/${id}/proposal`);
+  let d = p.draft || proposalFromTakeoff(p);
+  const C = p.company;
+  const lh = () => `<div class="pl-head"><div><div class="pl-co">${esc(C.name || '')}</div>${(C.address || '').split(/\n|,\s*(?=[A-Z][a-z]+,?\s+[A-Z]{2}\b)/).map(x => `<div>${esc(x)}</div>`).join('')}${C.phone ? `<div>${esc(C.phone)}</div>` : ''}${C.website ? `<div><u>${esc(C.website)}</u></div>` : ''}<div>${esc(d.date)}</div></div>
+    ${C.logo ? `<img src="${esc(C.logo)}" alt="" class="pl-logo">` : ''}</div>`;
+  const list = a => (a || []).filter(Boolean).length ? `<ul>${a.filter(Boolean).map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+  const preview = () => `<div class="pl-page">${lh()}
+      <p>Re: &nbsp;${esc(d.re)}</p><p>${esc(d.greeting)}</p>${[d.intro, d.basis, d.pricing].filter(Boolean).map(x => `<p>${esc(x)}</p>`).join('')}
+      ${d.bids.map(b => `<div class="pl-bid">${esc(b.label)}: ${money(b.amount)}</div>`).join('')}
+      ${d.credit && d.credit.amount ? `<div class="pl-bid sm">${esc(d.credit.label || 'Credit')}: (${money(Math.abs(d.credit.amount))})</div>` : ''}
+      <p>${esc(d.validity)}</p><p>${esc(d.closing)}</p></div>
+    <div class="pl-page pl-break">${lh()}<h2>Inclusions</h2>
+      ${d.sections.map((s, i) => `<h3>${i + 1}. ${esc(s.title)}</h3>${s.note ? `<p class="pl-note">${esc(s.note)}</p>` : ''}
+        <table class="pl-tbl"><thead><tr><th>Tag</th><th>Description</th><th>Qty</th><th>Unit</th></tr></thead><tbody>${s.rows.map(r => `<tr><td>${esc(r.tag)}</td><td>${esc(r.description)}</td><td>${esc(Number(r.qty).toLocaleString('en-US'))}</td><td>${esc(r.unit)}</td></tr>`).join('')}</tbody></table>`).join('')}
+      ${d.conditions.filter(Boolean).length ? `<h2>General Conditions & Clarifications</h2>${list(d.conditions)}` : ''}
+      ${d.exclusions.filter(Boolean).length ? `<h2>Exclusions</h2>${list(d.exclusions)}` : ''}
+      ${d.clarifications.filter(Boolean).length ? `<h2>Clarifications & Assumptions</h2>${list(d.clarifications)}` : ''}
+      ${d.qualifications.filter(Boolean).length ? `<h2>Proposal Qualifications</h2>${list(d.qualifications)}` : ''}</div>`;
+  const ta = (k, rows = 3) => `<textarea data-pk="${k}" rows="${rows}">${esc(d[k] || '')}</textarea>`;
+  const lines = k => `<textarea data-pl="${k}" rows="5" title="One per line">${esc((d[k] || []).join('\n'))}</textarea>`;
+  $('#view').innerHTML = setTop('Proposal letter', `<a class="btn" href="#/estimating/takeoff/${id}">‹ Estimate</a><button class="btn" id="plreset">Rebuild from estimate</button><button class="btn" id="plsave">Save draft</button><button class="btn primary" onclick="print()">Print / Save as PDF</button>`,
+    `${esc(p.bid.project_name || '')}${p.gcs.length ? ' · to ' + esc(p.gcs.join(', ')) : ''}`) + `
+    <div class="pl-wrap"><div class="card no-print pl-edit">
+      <div class="form-grid"><label class="f"><span>Date</span><input data-pk="date" value="${esc(d.date)}"></label><label class="f"><span>Greeting</span><input data-pk="greeting" value="${esc(d.greeting)}"></label>
+        <label class="f full"><span>Re:</span><input data-pk="re" value="${esc(d.re)}"></label></div>
+      <label class="f full"><span>Opening</span>${ta('intro', 4)}</label><label class="f full"><span>Plans basis</span>${ta('basis', 3)}</label><label class="f full"><span>Pricing sentence</span>${ta('pricing', 2)}</label>
+      <h3>Bid amounts</h3><div id="plbids">${d.bids.map((b, i) => `<div class="row" style="gap:6px;margin-bottom:6px"><input data-bl="${i}" value="${esc(b.label)}" style="flex:1"><input data-ba="${i}" type="number" step="0.01" value="${esc(b.amount)}" style="width:140px"><button type="button" class="btn sm" data-brm="${i}" aria-label="Remove">✕</button></div>`).join('')}</div>
+      <div class="row" style="gap:6px"><button type="button" class="btn sm" id="pladdbid">+ Base bid</button><label class="small">Award credit <input id="plcredit" type="number" step="0.01" value="${esc(d.credit ? d.credit.amount : '')}" style="width:120px" placeholder="none"></label></div>
+      <label class="f full"><span>Validity</span>${ta('validity', 1)}</label><label class="f full"><span>Closing</span>${ta('closing', 3)}</label>
+      <h3>Inclusions</h3><p class="small muted">One row per line: Tag | Description | Qty | Unit</p>
+      ${d.sections.map((s, i) => `<div class="pl-sec"><input data-st="${i}" value="${esc(s.title)}"><input data-sn="${i}" value="${esc(s.note)}" placeholder="Note under the heading (sheets, details)"><textarea data-sr="${i}" rows="5">${esc(s.rows.map(r => [r.tag, r.description, r.qty, r.unit].join(' | ')).join('\n'))}</textarea></div>`).join('')}
+      <h3>Lists (one per line)</h3>
+      <label class="f full"><span>General conditions & clarifications</span>${lines('conditions')}</label><label class="f full"><span>Exclusions</span>${lines('exclusions')}</label>
+      <label class="f full"><span>Clarifications & assumptions</span>${lines('clarifications')}</label><label class="f full"><span>Proposal qualifications</span>${lines('qualifications')}</label>
+      <label class="check"><input type="checkbox" id="pldef"> Save the conditions, exclusions and qualifications as my standard lists</label>
+      ${(p.takeoff.questions || []).length ? `<div class="alert info" style="margin-top:10px"><b>Open RFIs from the takeoff</b> (not printed): <ul>${p.takeoff.questions.map(q => `<li>${esc(q)}</li>`).join('')}</ul></div>` : ''}
+    </div><div class="pl-doc" id="pldoc">${preview()}</div></div>`;
+  const read = () => {
+    const v = k => { const el = $(`[data-pk="${k}"]`); return el ? el.value : d[k]; };
+    const L = k => $(`[data-pl="${k}"]`).value.split('\n').map(x => x.trim()).filter(Boolean);
+    const credit = $('#plcredit').value;
+    return { ...d, ...Object.fromEntries(['date', 're', 'greeting', 'intro', 'basis', 'pricing', 'validity', 'closing'].map(k => [k, v(k)])),
+      bids: $$('[data-bl]').map(el => ({ label: el.value, amount: Number($(`[data-ba="${el.dataset.bl}"]`).value) || 0 })),
+      credit: credit ? { label: 'Combined Award Credit', amount: Number(credit) } : null,
+      sections: d.sections.map((s, i) => ({ title: $(`[data-st="${i}"]`).value, note: $(`[data-sn="${i}"]`).value,
+        rows: $(`[data-sr="${i}"]`).value.split('\n').filter(x => x.trim()).map(x => { const [tag, description, qty, unit] = x.split('|').map(y => (y || '').trim()); return { tag, description, qty: Number(String(qty).replace(/,/g, '')) || qty || '', unit }; }) })),
+      conditions: L('conditions'), exclusions: L('exclusions'), clarifications: L('clarifications'), qualifications: L('qualifications') };
+  };
+  const refresh = () => { d = read(); $('#pldoc').innerHTML = preview(); };
+  $$('.pl-edit input, .pl-edit textarea').forEach(el => el.addEventListener('input', refresh));
+  $('#pladdbid').onclick = () => { d = read(); d.bids.push({ label: 'ALTERNATE', amount: 0 }); viewProposalDraft(id, d); };
+  $$('[data-brm]').forEach(b => b.onclick = () => { d = read(); d.bids.splice(+b.dataset.brm, 1); viewProposalDraft(id, d); });
+  $('#plsave').onclick = async () => { d = read(); const save_defaults = $('#pldef').checked;
+    await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: { ...d, std_conditions: d.conditions, std_exclusions: d.exclusions, std_qualifications: d.qualifications }, save_defaults }), save_defaults ? 'Saved, and the lists are now your standard' : 'Draft saved'); };
+  $('#plreset').onclick = async () => { if (!confirm('Rebuild the letter from the estimate? Your edits to this draft are lost.')) return; await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: null })); viewProposal(id); };
+}
+// re-render the editor with an unsaved draft (adding or removing a bid line)
+async function viewProposalDraft(id, d) { await act(() => PUT(`/estimating/takeoffs/${id}/proposal`, { draft: d })); viewProposal(id); }

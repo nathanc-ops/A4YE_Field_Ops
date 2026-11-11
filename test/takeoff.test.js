@@ -14,11 +14,11 @@ const calls = [];
 let reply = null;
 Takeoff.setClientFactory(apiKey => ({ beta: { messages: { stream: params => { calls.push({ apiKey, params }); return { finalMessage: async () => reply(params) }; } } } }));
 const takeoffJson = {
-  project_name: 'Test Office TI', scope_summary: 'Lighting and power for a small office suite', sheets_reviewed: ['E1.1 Lighting', 'E2.1 Power'],
+  project_name: 'Test Office TI', plans_basis: 'Made-up test plans E1.1 and E2.1', scope_summary: 'Lighting and power for a small office suite', sheets_reviewed: ['E1.1 Lighting', 'E2.1 Power'],
   lines: [
-    { phase_code: '0810', phase: 'Level 1', tag: 'A', description: '2x4 LED troffer', qty: 20, unit: 'EA', pricebook_code: 'LT-24', neca_hours: 0, material_unit: 0, source: 'E1.1', confidence: 'high', notes: '' },
-    { phase_code: '0820', phase: 'Level 1', tag: '', description: 'Duplex receptacle', qty: 10, unit: 'EA', pricebook_code: '', neca_hours: 0.5, material_unit: 12, source: 'E2.1', confidence: 'medium', notes: '' },
-    { phase_code: '9999', phase: 'Site', tag: '', description: 'Feeder to RTU', qty: 120, unit: 'LF', pricebook_code: '', neca_hours: 0, material_unit: 0, source: 'E2.1 scaled', confidence: 'low', notes: 'length scaled' },
+    { phase_code: '0810', scope: 'lighting', phase: 'P4', area: 'Level 1', high_repetition: false, tag: 'A', description: '2x4 LED troffer', qty: 20, unit: 'EA', pricebook_code: 'LT-24', neca_hours: 0, material_unit: 0, source: 'E1.1', confidence: 'high', notes: '' },
+    { phase_code: '0820', scope: 'power', phase: 'P4', area: 'Level 1', high_repetition: false, tag: '', description: 'Duplex receptacle', qty: 10, unit: 'EA', pricebook_code: '', neca_hours: 0.5, material_unit: 12, source: 'E2.1', confidence: 'medium', notes: '' },
+    { phase_code: '9999', scope: 'distribution', phase: 'P3', area: 'Site', high_repetition: false, tag: '', description: 'Feeder to RTU', qty: 120, unit: 'LF', pricebook_code: '', neca_hours: 0, material_unit: 0, source: 'E2.1 scaled', confidence: 'low', notes: 'length scaled' },
   ],
   assumptions: ['Ceiling grid by others'], exclusions: ['Fire alarm'], questions: ['Is the RTU disconnect by mechanical?'],
 };
@@ -74,13 +74,15 @@ test('runs the takeoff: request shape, pricing from the price book first, Claude
   assert.equal(lt.priced_from, 'price book'); assert.equal(lt.material_unit, 85); assert.equal(lt.hours_unit, 0.75);
   assert.equal(rec.priced_from, 'AI suggestion'); assert.equal(rec.ext_material, 120);
   assert.equal(feeder.priced_from, 'not priced'); assert.equal(feeder.cost_code_ok, false);
-  const rate = t.totals.labor_rate;   // crew average, or $65 with no wages set
+  // the commercial template: blended crew rate $42.4722/h, productivity 0.75 on NECA-normal hours
+  assert.equal(t.totals.labor_rate, 42.4722);
   assert.equal(t.totals.material, 20 * 85 + 120);
-  assert.equal(t.totals.hours, 20 * 0.75 + 10 * 0.5);
-  assert.equal(t.totals.cost, Math.round((1820 + 20 * rate) * 100) / 100);
-  assert.equal(t.totals.sell, Math.round(t.totals.cost * 1.15 * 100) / 100, 'commercial markup 15%');
+  assert.equal(t.totals.hours, Math.round((20 * 0.75 + 10 * 0.5) * 0.75 * 100) / 100);
+  assert.equal(t.estimate.subtotal.neca_hours, 20 * 0.75 + 10 * 0.5);
+  assert.equal(t.totals.sell, t.estimate.build.total, 'the bid total is the Summary build-up total');
+  assert.ok(t.estimate.build.total > t.totals.cost);
   assert.deepEqual([t.totals.ai_priced, t.totals.unpriced, t.totals.low_confidence, t.totals.no_code], [1, 1, 1, 1]);
-  assert.deepEqual(t.questions, ['Is the RTU disconnect by mechanical?']);
+  assert.deepEqual(t.questions, ['Is the RTU disconnect by mechanical?']); assert.deepEqual(t.clarifications, ['Ceiling grid by others']);
 });
 
 test('edits re-price; the template changes the numbers; the sell price becomes the bid value', async () => {
@@ -90,10 +92,15 @@ test('edits re-price; the template changes the numbers; the sell price becomes t
   t = (await call('admin', 'PUT', `/estimating/takeoffs/${id}`, { lines })).data;
   assert.equal(t.lines[2].priced_from, 'edited'); assert.equal(t.lines[2].ext_material, 720); assert.equal(t.lines[2].cost_code_ok, true);
   assert.equal(t.totals.lines, 2, 'excluded line left out');
-  await call('admin', 'PUT', '/estimating/takeoff-settings', { templates: { commercial: { labor_rate: 100, factor: 1.2, markup_pct: 10 } } });
+  // the job type's template: one crew class at $50 x 1.4 burden, productivity 1.0
+  await call('admin', 'PUT', '/estimating/takeoff-settings', { templates: { commercial: { assumptions: { crew: [{ cls: 'Journeyman', base: 50, mix: 100, local: 100 }], burden: 1.4, productivity: 1 } } } });
   t = (await call('admin', 'GET', `/estimating/takeoffs/${id}`)).data;
-  assert.equal(t.totals.labor_rate, 100); assert.equal(t.totals.factor, 1.2);
-  assert.equal(t.totals.hours, Math.round((20 * 0.75 * 1.2 + 120 * 0.1 * 1.2) * 100) / 100);
+  assert.equal(t.totals.labor_rate, 70); assert.equal(t.totals.factor, 1);
+  assert.equal(t.totals.hours, Math.round((20 * 0.75 + 120 * 0.1) * 100) / 100);
+  // this estimate only: 10% O&P, no contingency, no indirects
+  t = (await call('admin', 'PUT', `/estimating/takeoffs/${id}`, { assumptions: { ...t.assumptions, op_pct: 10, contingency_pct: 0, small_tools_pct: 0, trucks: 0, conex_week: 0, safety_pct: 0, mob_equip_pct: 0, mob_crew_pct: 0, pm_hours_week: 0, tax_pct: 0 } })).data;
+  assert.equal(t.totals.sell, Math.round(t.totals.cost * 1.1 * 100) / 100);
+  assert.equal((await call('admin', 'GET', '/estimating/takeoff-settings')).data.templates.commercial.assumptions.op_pct, 21.95, 'the template is unchanged');
   const r = (await call('admin', 'POST', `/estimating/takeoffs/${id}/apply`)).data;
   assert.equal(r.bid_value, t.totals.sell);
   const bid = (await call('admin', 'GET', '/estimating')).data.bids.find(b => b.id === bidId);
@@ -104,7 +111,7 @@ test('residential uses its own template; refusals and bad output end as errors w
   reply = okReply;
   const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'residential', file: pdf })).data;
   const t = await waitDone(id);
-  assert.match(calls.at(-1).params.system[0].text, /RESIDENTIAL bid/); assert.equal(t.totals.markup_pct, 25);
+  assert.match(calls.at(-1).params.system[0].text, /RESIDENTIAL bid/); assert.equal(t.assumptions.op_pct, 25); assert.equal(t.assumptions.productivity, 1);
   reply = () => ({ stop_reason: 'refusal', content: [], usage: {} });
   const a = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', file: pdf })).data.id;
   assert.match((await waitDone(a)).error, /declined/);
@@ -117,4 +124,53 @@ test('residential uses its own template; refusals and bad output end as errors w
   assert.equal((await waitDone(b)).status, 'done');
   assert.equal((await call('admin', 'DELETE', `/estimating/takeoffs/${b}`)).status, 200);
   assert.equal((await call('admin', 'GET', `/estimating/takeoffs/${b}`)).status, 404);
+});
+
+test('exports the estimate in the quote workbook layout, with formulas', async () => {
+  const id = (await call('admin', 'GET', `/estimating/bids/${bidId}/takeoffs`)).data.at(-1).id;
+  const res = await fetch(`${base}/api/estimating/takeoffs/${id}/xlsx`, { headers: { Authorization: 'Bearer ' + tok.admin } });
+  assert.equal(res.status, 200); assert.match(res.headers.get('content-type'), /spreadsheetml/);
+  const wb = require('../server/xlsx').read(Buffer.from(await res.arrayBuffer()));
+  assert.deepEqual(wb.sheetNames.slice(0, 2), ['Cover & Assumptions', 'Summary']);
+  assert.ok(wb.sheetNames.includes('Electrical - Lighting')); assert.ok(wb.sheetNames.includes('Schedule & Crew'));
+  const sh = wb.sheet('Electrical - Lighting');
+  assert.equal(sh.val(5, 1), 'Phase Code'); assert.equal(sh.val(5, 16), 'Notes / Source');
+  const row = [...sh.rows.keys()].find(r => /troffer/.test(sh.val(r, 4) || ''));
+  assert.match(sh.val(row, 1), /-P\d-0810$/);
+  assert.ok(sh.cell(row, 10).f && sh.cell(row, 15).f, 'adjusted hours and ext. cost are formulas');
+});
+
+test('price list import (EMT pricing layout) fills the price book; EMT fittings are derived from footage', async () => {
+  const { xlsx } = require('./_xlsx');
+  const H = ['Key', 'Cost Code - Mat', 'Cost Code - Lab', 'Category', 'Description', 'Size', 'Unit', 'Material $/Unit', 'NECA Hrs/Unit', 'Prod. Factor', 'Adj. Hrs/Unit', 'Labor $/Unit', 'Total Unit Cost', 'Vendor Item #', 'CAT #'];
+  const rows = [H, ['TEST CONDUIT'], ['EMT-3/4"', '0810-M', '0810-L', 'Conduit - EMT', '3/4" EMT conduit (test)', '3/4"', 'FT', 1, 0.04],
+    ['SSCPLG-3/4"', '0810-M', '0810-L', 'Fitting', '3/4" set screw coupling (test)', '3/4"', 'EA', 0.5, 0.1], ['SSCONN-3/4"', '0810-M', '0810-L', 'Fitting', '3/4" set screw connector (test)', '3/4"', 'EA', 0.4, 0.12],
+    ['STRAP-3/4"', '0810-M', '0810-L', 'Support', '3/4" strap (test)', '3/4"', 'EA', 0.3, 0.05]];
+  const cells = {}; rows.forEach((r, i) => r.forEach((v, j) => { if (v !== undefined) cells[`${String.fromCharCode(65 + j)}${i + 1}`] = v; }));
+  const file = xlsx({ 'How to Use': { A1: 'test' }, 'EMT Price List': cells }).toString('base64');
+  const r = (await call('admin', 'POST', '/estimating/price-list', { file })).data;
+  assert.deepEqual([r.created, r.updated, r.sheets[0]], [4, 0, 'EMT Price List']);
+  assert.equal((await call('admin', 'POST', '/estimating/price-list', { file })).data.updated, 4, 're-import updates');
+  const pb = db.prepare("SELECT * FROM pricebook WHERE code = 'EMT-3/4\"'").get();
+  assert.equal(pb.unit_cost, 1); assert.equal(pb.labor_hours, 0.04); assert.equal(pb.unit, 'ft');
+  // a takeoff with 1,000 LF of 3/4" EMT gets 100 couplings, 60 connectors, 120 straps added
+  reply = () => ({ model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: {}, content: [{ type: 'text', text: JSON.stringify({ ...takeoffJson,
+    lines: [{ phase_code: '0810', scope: 'power', phase: 'P2', area: '', tag: '', description: '3/4" EMT', qty: 1000, unit: 'LF', pricebook_code: 'EMT-3/4"', neca_hours: 0, material_unit: 0, high_repetition: false, source: 'E2.1', confidence: 'medium', notes: '' }] }) }] });
+  const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', file: pdf })).data;
+  const t = await waitDone(id);
+  const derived = t.lines.filter(l => l.derived).map(l => [l.pricebook_code, l.qty]);
+  assert.deepEqual(derived, [['SSCPLG-3/4"', 100], ['SSCONN-3/4"', 60], ['STRAP-3/4"', 120]]);
+  assert.equal(t.totals.material, 1000 * 1 + 100 * 0.5 + 60 * 0.4 + 120 * 0.3);
+});
+
+test('proposal draft: built from the takeoff, saved, standard lists become company defaults', async () => {
+  const id = (await call('admin', 'GET', `/estimating/bids/${bidId}/takeoffs`)).data[0].id;
+  const p = (await call('admin', 'GET', `/estimating/takeoffs/${id}/proposal`)).data;
+  assert.equal(p.draft, null); assert.ok(p.takeoff.total > 0); assert.ok(p.takeoff.lines.length);
+  assert.ok(p.defaults.qualifications.some(q => /30 days/.test(q)));
+  const draft = { greeting: 'Hello Pat,', std_qualifications: ['Pricing assumes normal weekday working hours.', 'Valid 45 days.'] };
+  await call('admin', 'PUT', `/estimating/takeoffs/${id}/proposal`, { draft, save_defaults: true });
+  const again = (await call('admin', 'GET', `/estimating/takeoffs/${id}/proposal`)).data;
+  assert.equal(again.draft.greeting, 'Hello Pat,'); assert.deepEqual(again.defaults.qualifications, draft.std_qualifications);
+  assert.equal((await call('office', 'GET', `/estimating/takeoffs/${id}/proposal`)).status, 403);
 });

@@ -1062,6 +1062,11 @@ const MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_takeoffs_bid ON takeoffs(bid_id);`);
   },
+  // 36: estimate assumptions per takeoff (quote-workbook model) and the proposal letter draft
+  db => {
+    addColumn(db, 'takeoffs', 'assumptions', 'TEXT');
+    addColumn(db, 'takeoffs', 'proposal', 'TEXT');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

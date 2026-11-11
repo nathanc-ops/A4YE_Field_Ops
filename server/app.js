@@ -21,7 +21,7 @@ function createApp(db) {
   const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
   const importJson = express.json({ limit: '40mb' }); // CSV exports from the old system can be large
   app.use((req, res, next) => (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
-    : req.path.startsWith('/api/import/') || req.path === '/api/estimating/import' || /^\/api\/estimating\/bids\/\d+\/takeoff$/.test(req.path) ? importJson : smallJson)(req, res, next));
+    : req.path.startsWith('/api/import/') || req.path === '/api/estimating/import' || req.path === '/api/estimating/price-list' || /^\/api\/estimating\/bids\/\d+\/takeoff$/.test(req.path) ? importJson : smallJson)(req, res, next));
 
   // ------------------------------------------------------------ helpers
   // Sync handlers run inside one transaction, so a failed ledger posting rolls back the whole change.
