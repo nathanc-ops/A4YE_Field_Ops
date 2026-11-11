@@ -292,10 +292,62 @@ module.exports = function routesExt(app, db, X) {
 
   // ================================================================ vendors
   const VENDOR_FIELDS = ['name', 'contact', 'email', 'phone', 'address', 'account_number', 'terms_days', 'default_account_id', 'ply_vendor_id', 'active', 'notes'];
-  app.get('/api/vendors', office, wrap((req, res) => res.json(all(db, `SELECT v.*,
-    (SELECT COUNT(*) FROM purchase_orders p WHERE p.vendor_id = v.id) po_count FROM vendors v ORDER BY active DESC, name`))));
-  app.post('/api/vendors', office, wrap((req, res) => { if (!req.body.name) throw bad('Vendor name is required'); res.json({ id: insert('vendors', pick(req.body, VENDOR_FIELDS)) }); }));
-  app.put('/api/vendors/:id', office, wrap((req, res) => { update('vendors', req.params.id, pick(req.body, VENDOR_FIELDS)); res.json({ ok: true }); }));
+  // money on bills (what we owe, what we've spent) only for people who can see accounting
+  const seesBills = req => req.user.role === 'admin' || req.can('accounting');
+  const yearAgo = () => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.toISOString().slice(0, 10); };
+  app.get('/api/vendors', office, wrap((req, res) => {
+    const rows = all(db, `SELECT v.*,
+      (SELECT COUNT(*) FROM purchase_orders p WHERE p.vendor_id = v.id) po_count,
+      (SELECT COUNT(*) FROM purchase_orders p WHERE p.vendor_id = v.id AND p.status IN ('draft','submitted','partial')) open_po_count,
+      (SELECT MAX(order_date) FROM purchase_orders p WHERE p.vendor_id = v.id) last_po_date,
+      (SELECT COUNT(*) FROM pricebook pb WHERE pb.vendor_id = v.id AND pb.active = 1) item_count
+      FROM vendors v ORDER BY active DESC, name COLLATE NOCASE`);
+    if (req.query.detail && seesBills(req)) {
+      const since = yearAgo();
+      const bills = all(db, "SELECT * FROM bills WHERE status != 'void'").map(b => A.billTotals(db, b));
+      for (const v of rows) {
+        const mine = bills.filter(b => b.vendor_id === v.id);
+        v.owed = r2(mine.reduce((s, b) => s + b.balance, 0));
+        v.overdue = r2(mine.filter(b => b.balance > 0.004 && b.due_date && b.due_date < new Date().toISOString().slice(0, 10)).reduce((s, b) => s + b.balance, 0));
+        v.spend_12mo = r2(mine.filter(b => b.bill_date >= since).reduce((s, b) => s + b.total, 0));
+      }
+    }
+    res.json(rows);
+  }));
+  app.get('/api/vendors/:id', office, wrap((req, res) => {
+    const v = mustGet('vendors', req.params.id);
+    v.purchase_orders = all(db, `SELECT p.*, j.number job_number FROM purchase_orders p LEFT JOIN jobs j ON j.id = p.job_id WHERE p.vendor_id = ? ORDER BY p.id DESC LIMIT 100`, v.id).map(H.poTotals);
+    v.items = all(db, 'SELECT id, code, name, unit_cost, qty_on_hand, reorder_point, active FROM pricebook WHERE vendor_id = ? ORDER BY name COLLATE NOCASE', v.id);
+    v.sees_bills = seesBills(req);
+    if (v.sees_bills) {
+      v.bills = all(db, 'SELECT * FROM bills WHERE vendor_id = ? ORDER BY bill_date DESC, id DESC LIMIT 100', v.id).map(b => { const t = A.billTotals(db, b); delete t.lines; delete t.payments; return t; });
+      const live = v.bills.filter(b => b.status !== 'void');
+      v.owed = r2(live.reduce((s, b) => s + b.balance, 0));
+      v.spend_12mo = r2(live.filter(b => b.bill_date >= yearAgo()).reduce((s, b) => s + b.total, 0));
+    }
+    res.json(v);
+  }));
+  app.post('/api/vendors', office, wrap((req, res) => {
+    const name = String(req.body.name || '').trim(); if (!name) throw bad('Vendor name is required');
+    if (get(db, 'SELECT id FROM vendors WHERE name = ? COLLATE NOCASE', name)) throw bad(`${name} is already a vendor`);
+    res.json({ id: insert('vendors', { ...pick(req.body, VENDOR_FIELDS), name }) });
+  }));
+  app.put('/api/vendors/:id', office, wrap((req, res) => {
+    mustGet('vendors', req.params.id);
+    if ('name' in req.body) {
+      const name = String(req.body.name || '').trim(); if (!name) throw bad('Vendor name is required');
+      if (get(db, 'SELECT id FROM vendors WHERE name = ? COLLATE NOCASE AND id != ?', name, req.params.id)) throw bad(`${name} is already a vendor`);
+    }
+    update('vendors', req.params.id, pick(req.body, VENDOR_FIELDS)); res.json({ ok: true });
+  }));
+  // delete only a vendor nothing points at; anything with history is made inactive instead
+  app.delete('/api/vendors/:id', office, wrap((req, res) => {
+    const v = mustGet('vendors', req.params.id);
+    const uses = [['purchase order', 'purchase_orders'], ['bill', 'bills'], ['price book item', 'pricebook'], ['accounting entry', 'journal_lines']]
+      .map(([n, t]) => { try { return [n, get(db, `SELECT COUNT(*) n FROM ${t} WHERE vendor_id = ?`, v.id).n]; } catch { return [n, 0]; } }).filter(([, n]) => n);
+    if (uses.length) throw bad(`${v.name} has ${uses.map(([n, c]) => `${c} ${n}${c === 1 ? '' : 's'}`).join(', ')} — make it inactive instead, so that history keeps its vendor`, 409);
+    run(db, 'DELETE FROM vendors WHERE id = ?', v.id); res.json({ ok: true });
+  }));
 
   // ================================================================ purchase orders
   H.poTotals = po => {

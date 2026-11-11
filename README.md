@@ -136,13 +136,20 @@ Customers, Jobs, Estimates and Invoices: click a column heading to sort (click a
 - **Invoices:** status tabs, search (#, customer, job #), issued date range, overdue only. Sort by #, customer, job, issued, due, status, total, balance. Total and balance cover every match.
 - Estimates and invoices used to stop at the newest 500; they now page through everything.
 
+## Vendors (🏭 Vendors)
+
+Its own menu item (for anyone with Purchasing or Accounting; the old Purchasing → Vendors tab opens it). Search, Active / Inactive / All, sortable columns.
+- Each vendor's page: contact details, terms, open POs, purchase orders, bills, and the price book items that list it as preferred. **+ Purchase order** starts a PO with the vendor already picked.
+- Money from bills (we owe, past due, last 12 months' spend) shows only to admins and people with Accounting.
+- **Delete** works only for a vendor nothing uses; one with POs, bills, items or entries has to be made inactive so that history keeps its vendor. Names must be unique.
+
 ## Time Clock: week at a glance (office, managers, admins)
 
 Everyone's Monday–Sunday week (same weeks as payroll): hours worked each day, hours scheduled on the board, and projected = worked so far + scheduled time still ahead. Flags against **Overtime after** (Settings, default 40):
 - **Over 40 now:** clocked hours are already past it (anyone on the clock counts up to now).
 - **Headed over 40:** worked + what's still scheduled goes past it.
 - **Scheduled over 40:** the board has them booked for more than 40 this week.
-A visit spanning several days counts its daily window (Mon–Fri 7–3 = 8 h a day). Technicians don't see this view.
+A visit spanning several days counts its daily window (Mon–Fri 7–3 = 8 h a day). Technicians don't see this view. The same card is on the Dashboard.
 
 ## Estimating dashboard (📐 Estimating)
 

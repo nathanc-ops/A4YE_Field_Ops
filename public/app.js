@@ -228,6 +228,7 @@ const NAV = [
   { href: '#/agreements', label: 'Service Agreements', icon: '🔁', roles: ['admin', 'manager', 'office'] },
   { sect: 'Back Office', roles: ['admin', 'manager', 'office'] },
   { href: '#/purchasing', label: 'Purchasing & Pick Lists', icon: '🚚', roles: ['admin', 'manager', 'office'], perm: 'purchasing' },
+  { href: '#/vendors', label: 'Vendors', icon: '🏭', roles: ['admin', 'manager', 'office'], perm: ['purchasing', 'accounting'] },
   { href: '#/pricebook', label: 'Price Book & Inventory', icon: '📦', roles: ['admin', 'manager', 'office'] },
   { href: '#/expenses', label: 'Expenses', icon: '🧾', roles: ['admin', 'manager', 'office'], perm: 'expenses' },
   { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'manager', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
@@ -256,7 +257,7 @@ function setTop(title, actions = '', sub = '') {
 // ============================================================ router
 const ROUTES = [
   [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
-  [/^\/purchasing$/, () => viewPurchasing()], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
+  [/^\/purchasing$/, () => viewPurchasing()], [/^\/vendors$/, () => viewVendors()], [/^\/vendors\/(\d+)$/, id => viewVendor(id)], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
   [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],
   [/^\/jobs$/, viewJobs], [/^\/jobs\/(\d+)$/, viewJob],
@@ -331,6 +332,7 @@ async function viewDashboard() {
       ${kpi('Open estimates', money0(d.open_estimates.open_value), `${d.open_estimates.open} awaiting answer · ${pct(d.open_estimates.close_rate_pct)} close rate`)}` : `
       ${kpi("Today's visits", d.today_jobs.length)}${kpi('Waiting to be scheduled', d.unscheduled)}${kpi('On the clock now', d.clocked_in.length)}${kpi('Ready to invoice', d.to_invoice.length)}`}
     </div>
+    <div class="card" style="margin-top:14px" id="weekcard"><h2>Week at a glance</h2><div class="muted">Loading…</div></div>
     <div class="grid g2" style="margin-top:14px">
       <div class="card"><div class="row spread"><h2>Today's visits</h2><a href="#/schedule">Tech board →</a></div>
         ${table([{ label: 'Time', get: a => `${fmtTime(a.start)}–${fmtTime(a.end)}` }, { label: 'Job', html: a => `<b>${esc(a.job_number)}</b> ${esc(a.job_title)}<div class="muted small">${esc(a.customer_name)} · ${esc(a.address || '')}</div>` },
@@ -355,6 +357,7 @@ async function viewDashboard() {
       </div>
     </div>`;
   $$('[data-inv]').forEach(b => b.onclick = async () => { const r = await act(() => POST(`/jobs/${b.dataset.inv}/invoice`), 'Invoice created'); go('#/invoices/' + r.id); });
+  weekCard($('#weekcard'), todayStr(), { compact: true }).catch(e => { $('#weekcard').innerHTML = `<h2>Week at a glance</h2><div class="empty">${esc(e.message)}</div>`; });
 }
 
 // ============================================================ time clock widget
@@ -1229,8 +1232,9 @@ async function viewTime() {
 }
 
 // Everyone's week (Mon–Sun): hours worked so far, scheduled, projected; flags anyone over or headed over the overtime line.
-async function weekCard(el, day) {
+async function weekCard(el, day, { compact = false } = {}) {
   const w = await GET('/time/week' + qs({ week: day }));
+  if (!el.isConnected) return;
   const shift = n => { const d = new Date(w.week + 'T00:00:00'); d.setDate(d.getDate() + n); return localDate(d); };
   const t = todayStr(), lim = w.ot_after;
   const FLAG = { over: ['bad', `⚠ Over ${lim} now`], projected: ['warn', `⚠ Headed over ${lim}`], scheduled: ['info', `Scheduled over ${lim}`] };
@@ -1244,7 +1248,7 @@ async function weekCard(el, day) {
       <div class="row" style="gap:6px"><button class="btn sm" data-wk="${shift(-7)}" aria-label="Previous week">‹</button><b>${fmtDate(w.days[0])} – ${fmtDate(w.days[6])}</b><button class="btn sm" data-wk="${shift(7)}" aria-label="Next week">›</button>
       ${w.days.includes(t) ? '' : `<button class="btn sm" data-wk="${t}">This week</button>`}</div></div>
     <p class="small muted" style="margin:6px 0 10px">Worked = clocked hours so far (anyone on the clock counts up to now). Scheduled = their visits on the board this week.
-      Projected = worked + scheduled time still ahead. Overtime after ${esc(lim)} h (Settings). ${flagged ? `<b>${flagged} flagged.</b>` : 'Nobody flagged.'}</p>
+      Projected = worked + scheduled time still ahead. Overtime after ${esc(lim)} h (Settings). ${flagged ? `<b>${flagged} flagged.</b>` : 'Nobody flagged.'}${compact ? ' <a href="#/time">Time Clock →</a>' : ''}</p>
     ${table([{ label: 'Employee', html: r => `<b>${esc(r.name)}</b>${r.on_clock ? ' <span class="pill good">On the clock</span>' : ''}<div class="small muted">${esc(label(r.role))}</div>` },
       ...w.days.map((d, i) => ({ label: new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }), num: true,
         html: r => `${r.worked_by_day[i] ? num(r.worked_by_day[i], 1) : d <= t ? '<span class="muted">–</span>' : ''}${r.scheduled_by_day[i] ? `<div class="small muted" title="Scheduled">${num(r.scheduled_by_day[i], 1)} sch</div>` : ''}` })),
@@ -1253,7 +1257,7 @@ async function weekCard(el, day) {
       { label: 'Projected', num: true, html: r => `<b>${num(r.projected, 1)}</b>${bar(r)}` },
       { label: 'Flag', html: r => r.flags.map(f => `<span class="pill ${FLAG[f][0]}">${FLAG[f][1]}</span>`).join(' ') || '<span class="pill good">✓ Under</span>' }],
       rows, { empty: 'No one on the clock or the schedule this week' })}`;
-  $$('[data-wk]', el).forEach(b => b.onclick = () => weekCard(el, b.dataset.wk));
+  $$('[data-wk]', el).forEach(b => b.onclick = () => weekCard(el, b.dataset.wk, { compact }));
 }
 
 // ============================================================ price book & inventory

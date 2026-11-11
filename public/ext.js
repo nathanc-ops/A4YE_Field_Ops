@@ -624,6 +624,7 @@ async function viewPurchasing() {
   });
   $$('[data-s]').forEach(b => b.onclick = () => go('#/purchasing' + qs({ tab, status: b.dataset.s })));
   if ($('#newv')) $('#newv').onclick = () => vendorForm({});
+  if (tab === 'vendors') return go('#/vendors');
   $('#reorder').onclick = async () => {
     const r = await act(() => POST('/purchase-orders/reorder'));
     toast(r.created.length ? `Created ${r.created.length} draft PO(s)` : 'Nothing to reorder (or low items have no preferred vendor)', !r.created.length);
@@ -638,14 +639,68 @@ async function vendorForm(v) {
       { name: 'address', label: 'Address', full: true }, { name: 'account_number', label: 'Our account #' }, { name: 'terms_days', label: 'Terms (days)', type: 'number', default: 30 },
       ...(isAdmin() ? [{ name: 'default_account_id', label: 'Default expense account', type: 'select', options: acctOptions('cogs', 'expense', 'asset') }] : []),
       { name: 'ply_vendor_id', label: 'Ply vendor ID' }, { name: 'notes', label: 'Notes', type: 'textarea', full: true }, { name: 'active', label: 'Active', type: 'checkbox', default: 1 }],
-    submit: async d => { if (v.id) await PUT('/vendors/' + v.id, d); else await POST('/vendors', d); S.vendors = null; toast('Vendor saved'); route(); },
+    extra: v.id ? '<p class="small" style="margin:8px 0 0"><a href="#" id="delv" style="color:var(--bad)">Delete vendor</a> <span class="muted">(only if nothing uses it — otherwise untick Active)</span></p>' : '',
+    submit: async d => { if (v.id) await PUT('/vendors/' + v.id, d); else { const r = await POST('/vendors', d); S.vendors = null; toast('Vendor saved'); return go('#/vendors/' + r.id); } S.vendors = null; toast('Vendor saved'); route(); },
   });
+  const del = $('#delv'); if (del) del.onclick = async e => { e.preventDefault(); if (!confirm(`Delete ${v.name}?`)) return;
+    await act(() => DEL('/vendors/' + v.id), 'Vendor deleted'); S.vendors = null; $$('.modal-bg').forEach(m => m.remove()); go('#/vendors'); };
+}
+
+// ============================================================ vendors
+async function viewVendors() {
+  const { params } = hashParams();
+  const show = params.get('show') || 'active', q = (params.get('q') || '').toLowerCase();
+  const all = await GET('/vendors?detail=1');
+  const seesMoney = all.some(v => v.owed !== undefined);
+  const sort = listSort(params, '#/vendors', { by: 'name', dir: 'asc' }, ['owed', 'spend', 'last_po', 'open_po']);
+  const keyOf = { name: v => v.name.toLowerCase(), terms: v => v.terms_days, open_po: v => v.open_po_count, last_po: v => v.last_po_date || '', owed: v => v.owed || 0, spend: v => v.spend_12mo || 0, items: v => v.item_count };
+  let rows = all.filter(v => show === 'all' || (show === 'active' ? v.active : !v.active))
+    .filter(v => !q || [v.name, v.contact, v.email, v.phone, v.account_number, v.notes].some(x => String(x || '').toLowerCase().includes(q)));
+  const k = keyOf[sort.by] || keyOf.name, s = sort.dir === 'asc' ? 1 : -1;
+  rows = rows.sort((a, b) => { const x = k(a), y = k(b); return (typeof x === 'number' ? x - y : String(x).localeCompare(String(y))) * s || a.name.localeCompare(b.name); });
+  const keep = { show: params.get('show'), order: params.get('order'), dir: params.get('dir') };
+  $('#view').innerHTML = setTop('Vendors', '<button class="btn primary" id="newv">+ Vendor</button>', 'Supply houses and subs you buy from') + `
+    ${seesMoney ? `<div class="grid g4">${kpi('Active vendors', all.filter(v => v.active).length)}${kpi('We owe', money0(all.reduce((t, v) => t + (v.owed || 0), 0)), `${money0(all.reduce((t, v) => t + (v.overdue || 0), 0))} past due`)}
+      ${kpi('Spent · last 12 months', money0(all.reduce((t, v) => t + (v.spend_12mo || 0), 0)), 'from entered bills')}${kpi('Open POs', all.reduce((t, v) => t + v.open_po_count, 0))}</div>` : ''}
+    <div class="card" style="margin-top:14px">
+      <div class="tabs">${[['active', 'Active'], ['inactive', 'Inactive'], ['all', 'All']].map(([v, l]) => `<button class="${v === show ? 'on' : ''}" data-s="${v}">${l} ${v === 'all' ? all.length : all.filter(x => v === 'active' ? x.active : !x.active).length}</button>`).join('')}</div>
+      <form id="srch" class="filters"><input name="q" type="search" placeholder="Search name, contact, phone, email, account #" value="${esc(params.get('q') || '')}"><button class="btn">Search</button>${q ? `<a class="btn" href="#/vendors${qs({ show: keep.show })}">Clear</a>` : ''}</form>
+      ${table([{ label: 'Vendor', sort: 'name', html: v => `<b>${esc(v.name)}</b>${v.active ? '' : ' <span class="pill">Inactive</span>'}${v.contact ? `<div class="small muted">${esc(v.contact)}</div>` : ''}` },
+        { label: 'Phone', html: v => v.phone ? `<a href="tel:${esc(v.phone)}">${esc(v.phone)}</a>` : '' }, { label: 'Email', html: v => v.email ? `<a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : '' },
+        { label: 'Account #', key: 'account_number' }, { label: 'Terms', sort: 'terms', get: v => `Net ${v.terms_days}` },
+        { label: 'Items', num: 1, sort: 'items', key: 'item_count' }, { label: 'Open POs', num: 1, sort: 'open_po', get: v => v.open_po_count || '' }, { label: 'Last PO', sort: 'last_po', get: v => v.last_po_date ? fmtDate(v.last_po_date) : '' },
+        ...(seesMoney ? [{ label: 'We owe', num: 1, sort: 'owed', html: v => v.owed ? `${money(v.owed)}${v.overdue ? ' <span class="pill bad">past due</span>' : ''}` : '' }, { label: '12 mo spend', num: 1, sort: 'spend', get: v => v.spend_12mo ? money0(v.spend_12mo) : '' }] : [])],
+        rows, { onClick: v => go('#/vendors/' + v.id), empty: q ? 'No vendors match' : 'No vendors yet', sort })}</div>`;
+  $('#newv').onclick = () => vendorForm({});
+  $$('[data-s]').forEach(b => b.onclick = () => go('#/vendors' + qs({ ...keep, q: params.get('q'), show: b.dataset.s })));
+  $('#srch').onsubmit = e => { e.preventDefault(); listFilterGo(e.target, '#/vendors', keep); };
+}
+async function viewVendor(id) {
+  const v = await GET('/vendors/' + id);
+  $('#view').innerHTML = setTop(esc(v.name), `<a class="btn" href="#/vendors">‹ Vendors</a><button class="btn" id="editv">Edit</button><a class="btn primary" href="#/purchasing/po/new?vendor_id=${v.id}">+ Purchase order</a>`,
+    `${v.active ? '' : '<span class="pill">Inactive</span> '}${v.contact ? esc(v.contact) + ' · ' : ''}${v.phone ? `<a href="tel:${esc(v.phone)}">${esc(v.phone)}</a>` : ''}${v.email ? ` · <a href="mailto:${esc(v.email)}">${esc(v.email)}</a>` : ''}`) + `
+    <div class="grid g4">${kpi('Terms', `Net ${v.terms_days}`, v.account_number ? `Our account # ${esc(v.account_number)}` : '')}
+      ${kpi('Open POs', v.purchase_orders.filter(p => ['draft', 'submitted', 'partial'].includes(p.status)).length, `${v.purchase_orders.length} total`)}
+      ${v.sees_bills ? kpi('We owe', money(v.owed)) + kpi('Spent · last 12 months', money0(v.spend_12mo), 'from entered bills') : kpi('Price book items', v.items.length)}</div>
+    ${v.address || v.notes || v.ply_vendor_id ? `<div class="card" style="margin-top:14px">${v.address ? `<div>${esc(v.address)}</div>` : ''}${v.ply_vendor_id ? `<div class="small muted">Ply vendor ID ${esc(v.ply_vendor_id)}</div>` : ''}${v.notes ? `<div style="white-space:pre-wrap;margin-top:6px">${esc(v.notes)}</div>` : ''}</div>` : ''}
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h2>Purchase orders</h2>${table([{ label: 'PO', html: p => `<b>${esc(p.number)}</b>` }, { label: 'Job', get: p => p.job_number || 'Shop stock' }, { label: 'Ordered', get: p => fmtDate(p.order_date) },
+        { label: 'Status', html: p => pill(p.status) }, { label: 'Total', num: 1, get: p => money(p.total) }], v.purchase_orders, { onClick: p => go('#/purchasing/po/' + p.id), empty: 'No purchase orders yet' })}</div>
+      ${v.sees_bills ? `<div class="card"><h2>Bills</h2>${table([{ label: 'Their invoice', get: b => b.vendor_invoice || '—' }, { label: 'Date', get: b => fmtDate(b.bill_date) },
+        { label: 'Due', html: b => `${fmtDate(b.due_date)}${b.balance > 0.004 && b.status !== 'void' && b.due_date && b.due_date < todayStr() ? ' <span class="pill bad">Past due</span>' : ''}` },
+        { label: 'Status', html: b => pill(b.status) }, { label: 'Total', num: 1, get: b => money(b.total) }, { label: 'Owed', num: 1, get: b => b.status === 'void' ? '' : money(b.balance) }], v.bills,
+        { onClick: b => go('#/accounting/bills/' + b.id), empty: 'No bills entered' })}</div>` : ''}
+      <div class="card"><h2>Price book items from this vendor</h2>${table([{ label: 'Code', key: 'code' }, { label: 'Item', html: p => `${esc(p.name)}${p.active ? '' : ' <span class="pill">Inactive</span>'}` },
+        { label: 'Cost', num: 1, get: p => money(p.unit_cost) }, { label: 'On hand', num: 1, html: p => `${num(p.qty_on_hand)}${p.reorder_point && p.qty_on_hand <= p.reorder_point ? ' <span class="pill warn">Reorder</span>' : ''}` }],
+        v.items, { empty: 'No price book items list this vendor as preferred' })}</div>
+    </div>`;
+  $('#editv').onclick = () => vendorForm(v);
 }
 
 async function viewPO(id) {
   const { params } = hashParams();
   const [vendors, pb] = await Promise.all([loadVendors(true), loadPricebook(true)]);
-  let po = id === 'new' ? { lines: [], status: 'draft', job_id: params.get('job_id') ? Number(params.get('job_id')) : null, deliver_to: params.get('job_id') ? 'job' : 'shop', tax: 0, shipping: 0, order_date: todayStr() } : await GET('/purchase-orders/' + id);
+  let po = id === 'new' ? { lines: [], status: 'draft', vendor_id: params.get('vendor_id') ? Number(params.get('vendor_id')) : null, job_id: params.get('job_id') ? Number(params.get('job_id')) : null, deliver_to: params.get('job_id') ? 'job' : 'shop', tax: 0, shipping: 0, order_date: todayStr() } : await GET('/purchase-orders/' + id);
   const locked = ['received', 'cancelled'].includes(po.status);
   const plyOn = S.settings.ply_enabled === '1';
   const row = (l, i) => `<tr data-i="${i}">
