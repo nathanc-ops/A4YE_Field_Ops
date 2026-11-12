@@ -232,9 +232,10 @@ function visitHoursOnDay(a, day) {
   return we > ws ? overlap(ws, we) : overlap(d0, d1);
 }
 // Crew blocks: techs are grouped by the Title on their Team profile (Journeyman, Apprentice, Master/Foreman…).
-const CREW = [['master', 'Masters & foremen'], ['journeyman', 'Journeymen'], ['apprentice', 'Apprentices'], ['other', 'Other staff']];
+const CREW = [['master', 'Masters & foremen'], ['journeyman', 'Journeymen'], ['apprentice', 'Apprentices'], ['other', 'Other staff'], ['office', 'Office']];
 function crewOf(userId) {
-  const t = String((S.users.find(u => u.id === userId) || {}).title || '');
+  const u = S.users.find(x => x.id === userId) || {}, t = String(u.title || '');
+  if (u.role && u.role !== 'tech' && !/journey|apprent|foreman|master|helper/i.test(t)) return 'office';
   if (/apprent|helper|trainee|\bappr\b/i.test(t)) return 'apprentice';
   if (/journey|\bjw\b|\bjm\b|\bjman\b/i.test(t)) return 'journeyman';
   if (/master|foreman|supervisor|super\b/i.test(t)) return 'master';
@@ -396,7 +397,8 @@ async function viewWeek(date, seg) {
   const sunday = addDaysStr(monday, 6);
   const projs = projAll.filter(pj => (!pj.start_date || pj.start_date <= sunday) && (!pj.end_date || pj.end_date >= monday)
     && (pj.start_date || pj.end_date || appts.some(a => a.job_id === pj.id)));
-  const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)))) : S.users.filter(u => u.id === S.user.id);
+  const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)) || follows.some(f => f.hold_assignee === u.id))) : S.users.filter(u => u.id === S.user.id);
+  const tasksFor = (r, d) => follows.filter(f => f.hold_follow_up === d && (r.id ? f.hold_assignee === r.id : !f.hold_assignee));
   const rows = [...techs.map(t => ({ id: t.id, name: t.name, color: t.color })), ...(isOffice() ? [{ id: 0, name: 'Unassigned', color: '#94a3b8' }] : [])];
   const onDay = (a, d) => Date.parse(a.start) < Date.parse(dayISO(addDaysStr(d, 1))) && Date.parse(a.end) > Date.parse(dayISO(d));
   const cellAppts = (r, d) => appts.filter(a => onDay(a, d) && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length)).sort((x, y) => dayWindow(x, d).start.localeCompare(dayWindow(y, d).start));
@@ -404,9 +406,6 @@ async function viewWeek(date, seg) {
   const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
-    ${follows.length ? `<div class="card wk-follow"><div class="row spread"><h2 style="margin:0">On-hold follow-ups this week</h2><span class="small muted">Reminders only — they don't take anyone's time</span></div>
-      <div class="wk-fgrid">${days.map(d => `<div class="${d === todayStr() ? 'today' : ''}"><div class="small muted">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</div>
-        ${follows.filter(f => f.hold_follow_up === d).map(f => `<a class="fchip" href="#/jobs/${f.id}" title="${esc(f.hold_reason || '')}"><b>${esc(f.number)}</b> ${esc(f.customer_name || '')}<br><span class="muted">${esc((f.hold_reason || '').slice(0, 50))}</span></a>`).join('')}</div>`).join('')}</div></div>` : ''}
     ${projs.length ? `<div class="card wk-proj"><div class="row spread"><h2 style="margin:0">Commercial projects this week</h2><span class="small muted">Crew on site each day — click a day to change that day's crew</span></div>
       <div class="table-wrap"><table><thead><tr><th>Project</th>${days.map(d => `<th class="${d === todayStr() ? 'today' : ''}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</th>`).join('')}<th></th></tr></thead>
       <tbody>${projs.map(pj => `<tr><td><a href="#/jobs/${pj.id}?tab=project"><b>${esc(pj.number)}</b></a> ${esc(pj.title)}<div class="small muted">${esc(pj.customer_company || pj.customer_name)}${pj.end_date ? ` · until ${fmtDate(pj.end_date)}` : ''}</div></td>
@@ -419,6 +418,7 @@ async function viewWeek(date, seg) {
     ${g.rows.map(r => `<div class="tech"><span class="dot" style="background:${esc(r.color)}"></span> ${esc(r.name)}<div class="small muted">${num(totals.get(r), 1)} h booked</div></div>
       ${days.map(d => { const list = cellAppts(r, d); const c = cap(list, d); return `<div class="cell" data-tech="${r.id}" data-day="${d}">
         ${r.id && list.length ? `<div class="cap ${c.cls}" title="${num(c.h, 1)} of 8 h"><i style="width:${c.pct}%"></i></div>` : ''}
+        ${tasksFor(r, d).map(f => `<a class="chip fchip" href="#/jobs/${f.id}" title="${esc(`Follow up: ${f.hold_reason || ''}`)}"><b>☐ Follow up</b> ${esc(f.number)}<br>${esc(f.customer_name || '')}<br><span class="muted">${esc((f.hold_reason || '').slice(0, 60))}</span></a>`).join('')}
         ${list.map(a => { const w = dayWindow(a, d); return `<a class="chip st-${a.status} ${a.kind === 'estimate' ? 'est' : ''} ${isMultiDay(a) ? 'multi' : ''}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" data-day="${d}" href="${a.href}"><b>${fmtTime(w.start)}–${fmtTime(w.end)}</b> ${dayTag(a, d)}${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`; }).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
     <div style="margin-top:8px">${legend()}</div>`;
   bindDatePick('week');
@@ -1117,6 +1117,7 @@ async function settingsExtras(el) {
   if (isAdmin()) {
     await loadAccounts();
     cards.push(`<div class="card"><h2>Scheduling & accounting defaults</h2><form id="defs"><div class="form-grid">
+      ${fieldHtml({ name: 'hold_followup_assignee', label: 'Follow-up tasks for jobs on hold go to', type: 'select', blank: 'Whoever puts the job on hold', options: followUpPeople() }, s.hold_followup_assignee)}
       ${fieldHtml({ name: 'day_start_hour', label: 'Tech board starts (hour, 0–23)', type: 'number' }, s.day_start_hour)}${fieldHtml({ name: 'day_end_hour', label: 'Tech board ends (hour)', type: 'number' }, s.day_end_hour)}
       ${fieldHtml({ name: 'default_deposit_account', label: 'Customer payments deposit to', type: 'select', options: (S.accounts || []).filter(a => a.subtype === 'bank').map(a => [a.number, `${a.number} · ${a.name}`]), blank: false }, s.default_deposit_account)}
       ${fieldHtml({ name: 'default_paid_from_account', label: 'Expenses & bills paid from', type: 'select', options: (S.accounts || []).filter(a => ['bank', 'credit_card'].includes(a.subtype)).map(a => [a.number, `${a.number} · ${a.name}`]), blank: false }, s.default_paid_from_account)}
@@ -1177,7 +1178,7 @@ async function settingsExtras(el) {
   };
   $('#brandreset').onclick = () => saveSettings({ brand_primary: '#e0001a', brand_accent: '#fa001c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
-  $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
+  $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ hold_followup_assignee: f.hold_followup_assignee.value, day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
   $('#geof').onsubmit = e => { e.preventDefault(); const v = e.target.google_maps_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ google_maps_api_key: v }, 'Google Maps key saved'); };
   if ($('#aif')) $('#aif').onsubmit = e => { e.preventDefault(); const v = e.target.anthropic_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ anthropic_api_key: v }, 'Anthropic key saved'); };
   if ($('#aiclear')) $('#aiclear').onclick = () => { if (confirm('Remove the Anthropic key? Plan takeoffs stop working until a new one is added.')) saveSettings({ anthropic_api_key_clear: '1' }, 'Key removed'); };

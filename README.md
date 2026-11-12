@@ -131,8 +131,9 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 
 Putting a job **on hold** (status menu, Edit, or a tech's phone) requires a **reason** and a **follow-up date**; the server refuses it without them.
 - The job shows a banner: who put it on hold, when, why, and the follow-up date (overdue in red), with **Change follow-up** and **Add to my calendar** (.ics).
-- The follow-up appears on **Schedule → Week** (a reminder row above the grid; it doesn't take anyone's time), on the **Dashboard** when due or overdue, and under the status in the Jobs list.
-- Whoever put the job on hold gets an all-day **calendar invite** by email (when email is set up). Moving the date updates the same event; taking the job off hold cancels it.
+- The follow-up is a **task for a person**: picked when the job goes on hold (default: **Settings → Follow-up tasks for jobs on hold go to**, e.g. the office person who chases holds; blank = whoever puts it on hold). It can be handed to someone else from the job's banner.
+- The task shows on **Schedule → Week** in that person's row (office staff get an **Office** row; it takes no booked hours), on the **Dashboard** when due or overdue (your own first), and under the status in the Jobs list.
+- The person with the task gets an all-day **calendar invite** by email (when email is set up). Moving the date updates the same event; taking the job off hold cancels it.
 - Every change is written to the job's notes, so the history stays after the hold ends.
 
 ## Lists: filter and sort

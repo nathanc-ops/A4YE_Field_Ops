@@ -44,7 +44,7 @@ test('the follow-up is on the schedule, the dashboard and a calendar file; movin
   assert.equal((await call('admin', 'GET', '/dashboard')).data.follow_ups_due.length, 0, 'not due yet');
   let ics = (await call('admin', 'GET', `/jobs/${jobId}/hold.ics`));
   assert.match(ics.type, /text\/calendar/);
-  assert.match(ics.data, new RegExp(`DTSTART;VALUE=DATE:${day(5).replace(/-/g, '')}`)); assert.match(ics.data, /UID:job-hold-\d+@fieldops/); assert.match(ics.data, /SUMMARY:Follow up: J-\d+ on hold/);
+  assert.match(ics.data, new RegExp(`DTSTART;VALUE=DATE:${day(5).replace(/-/g, '')}`)); assert.match(ics.data, /UID:job-hold-\d+@fieldops/); assert.match(ics.data, /SUMMARY:Task: follow up on J-\d+ \(on hold\)/);
   const seq1 = +ics.data.match(/SEQUENCE:(\d+)/)[1];
   await call('admin', 'PUT', `/jobs/${jobId}`, { hold_follow_up: day(0) });
   ics = (await call('admin', 'GET', `/jobs/${jobId}/hold.ics`));
@@ -66,4 +66,26 @@ test('off hold clears the follow-up and keeps the history; a job can be booked o
   const id2 = (await call('admin', 'POST', '/jobs', { customer_id: cust, title: 'Service upgrade', status: 'on_hold', hold_reason: 'Customer financing pending', hold_follow_up: day(10) })).data.id;
   const j2 = (await call('admin', 'GET', `/jobs/${id2}`)).data;
   assert.equal(j2.hold_follow_up, day(10)); assert.match(j2.notes[0].body, /Customer financing pending/);
+});
+
+test('the follow-up is a task for someone: the company default, or who was picked; they get the invite', async () => {
+  const kId = (await call('admin', 'POST', '/users', { name: 'Office Person', email: 'k@x.com', password: 'password123', role: 'office' })).data.id;
+  await call('admin', 'PUT', '/settings', { hold_followup_assignee: String(kId) });
+  const cust = (await call('admin', 'POST', '/customers', { name: 'Third Customer' })).data.id;
+  const id = (await call('admin', 'POST', '/jobs', { customer_id: cust, title: 'Generator hookup', tech_ids: [techId] })).data.id;
+  await call('tech', 'PUT', `/jobs/${id}`, { status: 'on_hold', hold_reason: 'Generator not delivered', hold_follow_up: day(3) });
+  let j = (await call('admin', 'GET', `/jobs/${id}`)).data;
+  assert.equal(j.hold_assignee, kId, 'the Settings person, not the tech who set it'); assert.equal(j.hold_assignee_name, 'Office Person');
+  assert.match(j.notes[0].body, /\(Office Person\)/);
+  const f = (await call('admin', 'GET', `/job-follow-ups?from=${day(0)}&to=${day(7)}`)).data.find(x => x.id === id);
+  assert.equal(f.hold_assignee, kId); assert.equal(f.assignee_name, 'Office Person');
+  assert.match((await call('admin', 'GET', `/jobs/${id}/hold.ics`)).data, /SUMMARY:Task: follow up on J-\d+/);
+  // hand it to someone else
+  await call('admin', 'PUT', `/jobs/${id}`, { hold_assignee: techId });
+  j = (await call('admin', 'GET', `/jobs/${id}`)).data;
+  assert.equal(j.hold_assignee, techId); assert.match(j.notes[0].body, /Follow-up now with Tech/);
+  assert.match((await call('admin', 'PUT', `/jobs/${id}`, { hold_assignee: 99999 })).data.error, /active user/);
+  // off hold clears it
+  await call('admin', 'PUT', `/jobs/${id}`, { status: 'scheduled' });
+  assert.equal((await call('admin', 'GET', `/jobs/${id}`)).data.hold_assignee, null);
 });

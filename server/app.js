@@ -464,6 +464,7 @@ function createApp(db) {
     const job = fixTechs(j);
     if (req.user.role === 'tech' && !job.tech_ids.includes(req.user.id)) throw bad('Not assigned to this job', 403);
     if (job.hold_by) job.hold_by_name = (get(db, 'SELECT name FROM users WHERE id = ?', job.hold_by) || {}).name || null;
+    if (job.hold_assignee) job.hold_assignee_name = (get(db, 'SELECT name FROM users WHERE id = ?', job.hold_assignee) || {}).name || null;
     job.location = job.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', job.location_id) : null;
     job.time = all(db, 'SELECT t.*, u.name user_name, cc.code cost_code FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.job_id = ? ORDER BY clock_in DESC', job.id);
     job.materials = all(db, 'SELECT m.*, u.name user_name, cc.code cost_code FROM job_materials m LEFT JOIN users u ON u.id = m.user_id LEFT JOIN cost_codes cc ON cc.id = m.cost_code_id WHERE job_id = ? ORDER BY m.id DESC', job.id);
@@ -508,7 +509,7 @@ function createApp(db) {
       setTechs(jid, req.body.tech_ids);
       if (data.scheduled_start) H.syncSingleAppointment(jid, data.scheduled_start, data.scheduled_end, req.body.tech_ids);
       if (data.timeclock_job) TC.relink(db);
-      if (data.status === 'on_hold') run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', jid, req.user.id, `Put on hold: ${data.hold_reason} — follow up ${data.hold_follow_up}`);
+      if (data.status === 'on_hold') run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', jid, req.user.id, `Put on hold: ${data.hold_reason} — follow up ${data.hold_follow_up} (${(get(db, 'SELECT name FROM users WHERE id = ?', data.hold_assignee) || {}).name || ''})`);
       return jid;
     });
     if (data.status === 'on_hold' && req.body.hold_invite !== false) setImmediate(() => holdInvite(id, false));
@@ -563,7 +564,7 @@ function createApp(db) {
     const reason = String(body.hold_reason ?? '').trim(), follow = String(body.hold_follow_up ?? '').trim();
     const entering = data.status === 'on_hold' && job.status !== 'on_hold';
     const leaving = data.status && data.status !== 'on_hold' && job.status === 'on_hold';
-    const editing = !entering && !leaving && job.status === 'on_hold' && (body.hold_reason !== undefined || body.hold_follow_up !== undefined);
+    const editing = !entering && !leaving && job.status === 'on_hold' && (body.hold_reason !== undefined || body.hold_follow_up !== undefined || body.hold_assignee !== undefined);
     if (entering || editing) {
       const r = entering ? reason : (reason || job.hold_reason || '');
       const f = entering ? follow : (follow || job.hold_follow_up || '');
@@ -572,14 +573,19 @@ function createApp(db) {
       if (f < today() && f !== job.hold_follow_up) throw bad('The follow-up date is in the past');
       Object.assign(data, { hold_reason: r.slice(0, 1000), hold_follow_up: f, hold_seq: (job.hold_seq || 0) + 1 });
       if (entering) Object.assign(data, { hold_at: new Date().toISOString(), hold_by: user.id });
+      const who = Number(body.hold_assignee) || (entering ? 0 : job.hold_assignee) || Number(D.settings(db).hold_followup_assignee) || user.id;
+      const ok = get(db, 'SELECT id, name FROM users WHERE id = ? AND active = 1', who);
+      if (!ok) throw bad('Pick who follows up (an active user)');
+      const reassigned = editing && ok.id !== job.hold_assignee;
+      data.hold_assignee = ok.id;
       if (!job.id) return null;
       const moved = editing && f !== job.hold_follow_up, reworded = editing && r !== job.hold_reason;
-      if (editing && !moved && !reworded) return null;
-      return { note: entering ? `Put on hold: ${r} — follow up ${f}` : [moved && `Follow-up moved to ${f}`, reworded && `Hold reason: ${r}`].filter(Boolean).join('. '),
+      if (editing && !moved && !reworded && !reassigned) return null;
+      return { note: entering ? `Put on hold: ${r} — follow up ${f} (${ok.name})` : [moved && `Follow-up moved to ${f}`, reworded && `Hold reason: ${r}`, reassigned && `Follow-up now with ${ok.name}`].filter(Boolean).join('. '),
         after: () => { if (body.hold_invite !== false) setImmediate(() => holdInvite(job.id, false)); } };
     }
     if (leaving) {
-      Object.assign(data, { hold_reason: null, hold_follow_up: null, hold_at: null, hold_by: null, hold_seq: (job.hold_seq || 0) + 1 });
+      Object.assign(data, { hold_reason: null, hold_follow_up: null, hold_at: null, hold_by: null, hold_assignee: null, hold_seq: (job.hold_seq || 0) + 1 });
       const was = { ...job };
       return { note: `Taken off hold (was: ${job.hold_reason || 'no reason recorded'})`, after: () => setImmediate(() => holdInvite(was.id, true, was)) };
     }
@@ -592,7 +598,7 @@ function createApp(db) {
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
     return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//A4YE Field Ops//Job follow-ups//EN', 'CALSCALE:GREGORIAN', `METHOD:${cancelled ? 'CANCEL' : 'PUBLISH'}`, 'BEGIN:VEVENT',
       `UID:job-hold-${j.id}@fieldops`, `SEQUENCE:${j.hold_seq || 0}`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${next}`,
-      `SUMMARY:${esc(`Follow up: ${j.number} on hold — ${j.title || ''}`)}`, `DESCRIPTION:${esc(`${j.customer_name ? j.customer_name + '. ' : ''}On hold: ${j.hold_reason || ''}`)}`,
+      `SUMMARY:${esc(`Task: follow up on ${j.number} (on hold) — ${j.title || ''}`)}`, `DESCRIPTION:${esc(`${j.customer_name ? j.customer_name + '. ' : ''}On hold: ${j.hold_reason || ''}`)}`,
       'TRANSP:TRANSPARENT', `STATUS:${cancelled ? 'CANCELLED' : 'CONFIRMED'}`,
       ...(cancelled ? [] : ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc(`Follow up on ${j.number}`)}`, 'TRIGGER:PT8H', 'END:VALARM']),
       'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
@@ -601,8 +607,8 @@ function createApp(db) {
     try {
       const j = snapshot ? { ...snapshot, hold_seq: (snapshot.hold_seq || 0) + 1, customer_name: (get(db, 'SELECT name FROM customers WHERE id = ?', snapshot.customer_id) || {}).name }
         : get(db, 'SELECT j.*, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id WHERE j.id = ?', jobId);
-      if (!j || !j.hold_follow_up || !j.hold_by || !mailer.config(db)) return;
-      const u = get(db, 'SELECT name, email FROM users WHERE id = ?', j.hold_by); if (!u || !u.email) return;
+      if (!j || !j.hold_follow_up || !(j.hold_assignee || j.hold_by) || !mailer.config(db)) return;
+      const u = get(db, 'SELECT name, email FROM users WHERE id = ?', j.hold_assignee || j.hold_by); if (!u || !u.email) return;
       const subject = cancelled ? `Off hold: ${j.number} — follow-up cancelled` : `Follow up ${j.hold_follow_up}: ${j.number} on hold`;
       const text = cancelled ? `${j.number} ${j.title || ''} is no longer on hold, so the follow-up on ${j.hold_follow_up} is cancelled.`
         : `${j.number} ${j.title || ''}${j.customer_name ? ` (${j.customer_name})` : ''} is on hold.\n\nReason: ${j.hold_reason}\nFollow up: ${j.hold_follow_up}\n\nThe attached calendar invite puts the follow-up on your calendar.`;
@@ -619,8 +625,9 @@ function createApp(db) {
   // on-hold follow-ups for the schedule (a date range) and the dashboard (due or overdue)
   app.get('/api/job-follow-ups', office, wrap((req, res) => {
     const from = isDay(req.query.from) ? req.query.from : '0000-01-01', to = isDay(req.query.to) ? req.query.to : '9999-12-31';
-    res.json(all(db, `SELECT j.id, j.number, j.title, j.hold_reason, j.hold_follow_up, j.hold_at, c.name customer_name, u.name hold_by_name FROM jobs j JOIN customers c ON c.id = j.customer_id
-      LEFT JOIN users u ON u.id = j.hold_by WHERE j.status = 'on_hold' AND j.hold_follow_up BETWEEN ? AND ? ORDER BY j.hold_follow_up, j.number`, from, to));
+    res.json(all(db, `SELECT j.id, j.number, j.title, j.hold_reason, j.hold_follow_up, j.hold_at, j.hold_assignee, c.name customer_name, u.name hold_by_name, a.name assignee_name
+      FROM jobs j JOIN customers c ON c.id = j.customer_id LEFT JOIN users u ON u.id = j.hold_by LEFT JOIN users a ON a.id = j.hold_assignee
+      WHERE j.status = 'on_hold' AND j.hold_follow_up BETWEEN ? AND ? ORDER BY j.hold_follow_up, j.number`, from, to));
   }));
   app.put('/api/jobs/:id', wrap((req, res) => {
     const job = mustGet('jobs', req.params.id);
@@ -1216,7 +1223,8 @@ function createApp(db) {
       open_estimates: money ? C.estimateConversion(db, '0000-01-01', t) : undefined,
       ar, mtd: pl,
       target_gross_margin: Number(s.target_gross_margin) || 0,
-      follow_ups_due: all(db, `SELECT j.id, j.number, j.title, j.hold_reason, j.hold_follow_up FROM jobs j WHERE j.status = 'on_hold' AND (j.hold_follow_up IS NULL OR j.hold_follow_up <= ?) ORDER BY j.hold_follow_up LIMIT 15`, t),
+      follow_ups_due: all(db, `SELECT j.id, j.number, j.title, j.hold_reason, j.hold_follow_up, j.hold_assignee, a.name assignee_name FROM jobs j LEFT JOIN users a ON a.id = j.hold_assignee
+        WHERE j.status = 'on_hold' AND (j.hold_follow_up IS NULL OR j.hold_follow_up <= ?) ORDER BY (j.hold_assignee = ${Number(req.user.id)}) DESC, j.hold_follow_up LIMIT 15`, t),
       inspections_upcoming: all(db, `SELECT p.*, j.number job_number, j.title job_title FROM permits p JOIN jobs j ON j.id = p.job_id WHERE p.inspection_date >= ? AND p.status NOT IN ('passed','closed') ORDER BY p.inspection_date LIMIT 10`, t),
       low_stock: all(db, 'SELECT id, code, name, qty_on_hand, reorder_point FROM pricebook WHERE active = 1 AND reorder_point > 0 AND qty_on_hand <= reorder_point ORDER BY name'),
       agreements_due: all(db, `SELECT a.*, c.name customer_name FROM agreements a JOIN customers c ON c.id = a.customer_id WHERE a.status = 'active' AND a.next_visit <= ? ORDER BY a.next_visit`, addDays(t, 30)),

@@ -349,7 +349,7 @@ async function viewDashboard() {
         ${d.estimates_review ? `<div class="alert" style="margin-top:8px">📝 ${d.estimates_review} tech estimate(s) waiting for your pricing review — customers can't sign yet. <a href="#/estimates?status=review">Review →</a></div>` : ''}</div>
       <div class="card"><h2>On the clock now</h2>${table([{ label: 'Who', key: 'user_name' }, { label: 'On', get: t => t.job_number ? `${t.job_number} ${t.job_title}` : label(t.kind) }, { label: 'Since', get: t => fmtTime(t.clock_in) }], d.clocked_in, { empty: 'Nobody is clocked in' })}</div>
       <div class="card"><h2>Watch list</h2>
-        ${(d.follow_ups_due || []).map(f => `<div class="row spread" style="padding:4px 0"><span>Follow up · <a href="#/jobs/${f.id}">${esc(f.number)}</a> ${esc(f.title || '')}<div class="small muted">${esc((f.hold_reason || 'no reason recorded').slice(0, 80))}</div></span><span class="pill ${!f.hold_follow_up || f.hold_follow_up < todayStr() ? 'bad' : 'warn'}">${f.hold_follow_up ? (f.hold_follow_up < todayStr() ? 'overdue ' : 'today ') + fmtDate(f.hold_follow_up) : 'no date'}</span></div>`).join('')}
+        ${(d.follow_ups_due || []).map(f => `<div class="row spread" style="padding:4px 0"><span>Follow up · <a href="#/jobs/${f.id}">${esc(f.number)}</a> ${esc(f.title || '')}<div class="small muted">${f.hold_assignee === S.user.id ? '<b>Your task</b> · ' : f.assignee_name ? `${esc(f.assignee_name)} · ` : ''}${esc((f.hold_reason || 'no reason recorded').slice(0, 80))}</div></span><span class="pill ${!f.hold_follow_up || f.hold_follow_up < todayStr() ? 'bad' : 'warn'}">${f.hold_follow_up ? (f.hold_follow_up < todayStr() ? 'overdue ' : 'today ') + fmtDate(f.hold_follow_up) : 'no date'}</span></div>`).join('')}
         ${d.inspections_upcoming.map(p => `<div class="row spread" style="padding:4px 0"><span>📋 ${esc(p.permit_type || 'Inspection')} · <a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a></span><span class="muted">${fmtDate(p.inspection_date)}</span></div>`).join('')}
         ${d.agreements_due.map(a => `<div class="row spread" style="padding:4px 0"><span>🔁 ${esc(a.customer_name)} — ${esc(a.name)}</span><span class="muted">${fmtDate(a.next_visit)}</span></div>`).join('')}
         ${d.low_stock.map(p => `<div class="row spread" style="padding:4px 0"><span>📦 Low stock: ${esc(p.name)}</span><span class="pill warn">${num(p.qty_on_hand)} left</span></div>`).join('')}
@@ -577,30 +577,36 @@ function holdPrompt(j) {
     const m = formModal({ title: `Put ${j.number || 'this job'} on hold`, okLabel: 'Put on hold',
       fields: [{ name: 'hold_reason', label: 'Why is it on hold?', type: 'textarea', full: true, required: true, placeholder: 'e.g. Waiting on the customer to approve the change order; Utility has to set the meter; Material on back order until the 20th' },
         { name: 'hold_follow_up', label: 'Follow up on', type: 'date', required: true, default: localDate(d) },
-        { name: 'hold_invite', label: 'Email me a calendar invite for the follow-up', type: 'checkbox', default: 1 }],
-      extra: '<p class="small muted">The follow-up shows on the schedule (Week view) and the Dashboard, and is noted on the job.</p>',
+        { name: 'hold_assignee', label: 'Follow-up task for', type: 'select', blank: false, options: followUpPeople(), default: Number(S.settings.hold_followup_assignee) || S.user.id },
+        { name: 'hold_invite', label: 'Email them a calendar invite', type: 'checkbox', default: 1 }],
+      extra: '<p class="small muted">The follow-up goes on the schedule as a task in that person\'s row (Week view) and on the Dashboard, and is noted on the job.</p>',
       submit: async v => {
         if (!v.hold_reason || v.hold_reason.trim().length < 3) throw new Error('Give a reason for putting the job on hold');
         if (!v.hold_follow_up) throw new Error('Pick a follow-up date');
         if (v.hold_follow_up < todayStr()) throw new Error('The follow-up date is in the past');
-        done = true; resolve({ hold_reason: v.hold_reason.trim(), hold_follow_up: v.hold_follow_up, hold_invite: !!v.hold_invite });
+        done = true; resolve({ hold_reason: v.hold_reason.trim(), hold_follow_up: v.hold_follow_up, hold_assignee: Number(v.hold_assignee) || null, hold_invite: !!v.hold_invite });
       } });
     const close = m.close; m.close = () => { close(); if (!done) resolve(null); };
     $('[data-x]', m.el).onclick = () => m.close();
     new MutationObserver((_, o) => { if (!m.el.isConnected) { o.disconnect(); if (!done) resolve(null); } }).observe(document.body, { childList: true });
   });
 }
+// who can be given a follow-up task: active office people first, then everyone else
+const followUpPeople = () => [...(S.users || [])].filter(u => u.active).sort((a, b) => (a.role === 'tech') - (b.role === 'tech') || a.name.localeCompare(b.name))
+  .map(u => [u.id, `${u.name}${u.role === 'tech' ? ' (tech)' : ''}`]);
 function holdBanner(j) {
   const late = j.hold_follow_up && j.hold_follow_up < todayStr();
   return `<div class="alert ${late ? '' : 'info'} holdbar" style="margin-bottom:14px"><div><b>On hold${j.hold_at ? ` since ${fmtDate(j.hold_at.slice(0, 10))}` : ''}${j.hold_by_name ? ` (${esc(j.hold_by_name)})` : ''}:</b> ${esc(j.hold_reason || 'no reason recorded')}
-    <div>Follow up: ${j.hold_follow_up ? `<b>${fmtDate(j.hold_follow_up)}</b>${late ? ' <span class="pill bad">overdue</span>' : ''}` : '<span class="pill warn">no date set</span>'}</div></div>
+    <div>Follow up: ${j.hold_follow_up ? `<b>${fmtDate(j.hold_follow_up)}</b>${late ? ' <span class="pill bad">overdue</span>' : ''}` : '<span class="pill warn">no date set</span>'}${j.hold_assignee_name ? ` · task for <b>${esc(j.hold_assignee_name)}</b>` : ''}</div></div>
     ${isOffice() ? `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" id="holdedit">${j.hold_follow_up ? 'Change follow-up' : 'Set follow-up'}</button>${j.hold_follow_up ? '<button class="btn sm" id="holdics">Add to my calendar</button>' : ''}</div>` : ''}</div>`;
 }
 function wireHoldBanner(j) {
-  if ($('#holdedit')) $('#holdedit').onclick = () => formModal({ title: `On hold: ${j.number}`, okLabel: 'Save', values: { hold_reason: j.hold_reason || '', hold_follow_up: j.hold_follow_up || '', hold_invite: 1 },
+  if ($('#holdedit')) $('#holdedit').onclick = () => formModal({ title: `On hold: ${j.number}`, okLabel: 'Save',
+    values: { hold_reason: j.hold_reason || '', hold_follow_up: j.hold_follow_up || '', hold_assignee: j.hold_assignee || Number(S.settings.hold_followup_assignee) || S.user.id, hold_invite: 1 },
     fields: [{ name: 'hold_reason', label: 'Why is it on hold?', type: 'textarea', full: true, required: true }, { name: 'hold_follow_up', label: 'Follow up on', type: 'date', required: true },
-      { name: 'hold_invite', label: 'Email me an updated calendar invite', type: 'checkbox' }],
-    submit: async v => { await PUT('/jobs/' + j.id, { hold_reason: v.hold_reason, hold_follow_up: v.hold_follow_up, hold_invite: !!v.hold_invite }); toast('Saved'); route(); } });
+      { name: 'hold_assignee', label: 'Follow-up task for', type: 'select', blank: false, options: followUpPeople() },
+      { name: 'hold_invite', label: 'Email them an updated calendar invite', type: 'checkbox' }],
+    submit: async v => { await PUT('/jobs/' + j.id, { hold_reason: v.hold_reason, hold_follow_up: v.hold_follow_up, hold_assignee: Number(v.hold_assignee) || null, hold_invite: !!v.hold_invite }); toast('Saved'); route(); } });
   if ($('#holdics')) $('#holdics').onclick = async () => {
     const res = await fetch(`/api/jobs/${j.id}/hold.ics`, { headers: { Authorization: 'Bearer ' + S.token } });
     if (!res.ok) return toast('Could not make the calendar file', true);

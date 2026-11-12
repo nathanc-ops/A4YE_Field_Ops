@@ -1078,6 +1078,8 @@ const MIGRATIONS = [
     for (const [c, d] of [['hold_reason', 'TEXT'], ['hold_follow_up', 'TEXT'], ['hold_at', 'TEXT'], ['hold_by', 'INTEGER'], ['hold_seq', 'INTEGER NOT NULL DEFAULT 0']]) addColumn(db, 'jobs', c, d);
     db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_hold_follow_up ON jobs(hold_follow_up)');
   },
+  // 40: an on-hold follow-up is a task for someone (default: Settings → Jobs on hold)
+  db => { addColumn(db, 'jobs', 'hold_assignee', 'INTEGER'); db.exec('UPDATE jobs SET hold_assignee = hold_by WHERE hold_assignee IS NULL AND hold_by IS NOT NULL'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.
