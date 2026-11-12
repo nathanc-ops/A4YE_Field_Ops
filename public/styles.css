@@ -716,3 +716,12 @@ table.pl-rates td { padding: 2px 14px; color: #111; }
 }
 
 .upnote { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; box-shadow: var(--shadow, 0 4px 16px rgba(0,0,0,.3)); z-index: 1000; font-size: 14px; }
+
+/* ===== on hold ===== */
+.holdbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.wk-follow { margin-bottom: 12px; }
+.wk-fgrid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.wk-fgrid > div { min-height: 36px; border-top: 2px solid var(--border); padding-top: 4px; } .wk-fgrid > div.today { border-top-color: var(--series-1); }
+.fchip { display: block; font-size: 12px; padding: 4px 6px; margin-top: 4px; border-radius: 6px; background: var(--warn-soft); color: var(--text); border-left: 3px solid var(--warn); }
+.fchip:hover { text-decoration: none; filter: brightness(.97); }
+@media (max-width: 700px) { .wk-fgrid { grid-template-columns: 1fr; } .wk-fgrid > div:not(:has(.fchip)) { display: none; } }

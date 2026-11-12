@@ -349,11 +349,12 @@ async function viewDashboard() {
         ${d.estimates_review ? `<div class="alert" style="margin-top:8px">📝 ${d.estimates_review} tech estimate(s) waiting for your pricing review — customers can't sign yet. <a href="#/estimates?status=review">Review →</a></div>` : ''}</div>
       <div class="card"><h2>On the clock now</h2>${table([{ label: 'Who', key: 'user_name' }, { label: 'On', get: t => t.job_number ? `${t.job_number} ${t.job_title}` : label(t.kind) }, { label: 'Since', get: t => fmtTime(t.clock_in) }], d.clocked_in, { empty: 'Nobody is clocked in' })}</div>
       <div class="card"><h2>Watch list</h2>
+        ${(d.follow_ups_due || []).map(f => `<div class="row spread" style="padding:4px 0"><span>Follow up · <a href="#/jobs/${f.id}">${esc(f.number)}</a> ${esc(f.title || '')}<div class="small muted">${esc((f.hold_reason || 'no reason recorded').slice(0, 80))}</div></span><span class="pill ${!f.hold_follow_up || f.hold_follow_up < todayStr() ? 'bad' : 'warn'}">${f.hold_follow_up ? (f.hold_follow_up < todayStr() ? 'overdue ' : 'today ') + fmtDate(f.hold_follow_up) : 'no date'}</span></div>`).join('')}
         ${d.inspections_upcoming.map(p => `<div class="row spread" style="padding:4px 0"><span>📋 ${esc(p.permit_type || 'Inspection')} · <a href="#/jobs/${p.job_id}">${esc(p.job_number)}</a></span><span class="muted">${fmtDate(p.inspection_date)}</span></div>`).join('')}
         ${d.agreements_due.map(a => `<div class="row spread" style="padding:4px 0"><span>🔁 ${esc(a.customer_name)} — ${esc(a.name)}</span><span class="muted">${fmtDate(a.next_visit)}</span></div>`).join('')}
         ${d.low_stock.map(p => `<div class="row spread" style="padding:4px 0"><span>📦 Low stock: ${esc(p.name)}</span><span class="pill warn">${num(p.qty_on_hand)} left</span></div>`).join('')}
         ${(money ? d.ar.invoices : []).filter(i => i.days_past_due > 0).slice(0, 5).map(i => `<div class="row spread" style="padding:4px 0"><span>💵 <a href="#/invoices/${i.id}">${esc(i.number)}</a> ${esc(i.customer_name)}</span><span class="pill bad">${i.days_past_due}d · ${money0(i.balance)}</span></div>`).join('')}
-        ${!d.inspections_upcoming.length && !d.agreements_due.length && !d.low_stock.length && !(money ? d.ar.invoices : []).some(i => i.days_past_due > 0) ? '<div class="empty">All clear</div>' : ''}
+        ${!(d.follow_ups_due || []).length && !d.inspections_upcoming.length && !d.agreements_due.length && !d.low_stock.length && !(money ? d.ar.invoices : []).some(i => i.days_past_due > 0) ? '<div class="empty">All clear</div>' : ''}
       </div>
     </div>`;
   $$('[data-inv]').forEach(b => b.onclick = async () => { const r = await act(() => POST(`/jobs/${b.dataset.inv}/invoice`), 'Invoice created'); go('#/invoices/' + r.id); });
@@ -511,6 +512,7 @@ async function jobForm(job, { customerId } = {}) {
       data.tech_ids = $$('input[name=tech]:checked', form).map(i => Number(i.value));
       if (data.scheduled_start && !data.scheduled_end) data.scheduled_end = new Date(new Date(data.scheduled_start).getTime() + 2 * 3600000).toISOString();
       if (!data.status) delete data.status;
+      if (data.status === 'on_hold' && job.status !== 'on_hold') { const h = await holdPrompt(job); if (!h) return; Object.assign(data, h); }
       // clear the other model's fields so a job isn't half fixed, half T&M
       for (const f of fields.filter(x => x.bt && x.bt !== data.billing_type)) data[f.name] = f.type === 'checkbox' ? 1 : null;
       if (job.id) { await PUT('/jobs/' + job.id, data); toast('Job saved'); route(); }
@@ -560,13 +562,51 @@ async function viewJobs() {
       { label: 'Customer', sort: 'customer', html: j => `${esc(j.customer_name)} <span class="muted small">${esc(label(j.customer_type))}</span><div class="muted small">${esc(j.address || '')}</div>` },
       { label: 'Type', sort: 'type', html: j => `${esc(label(j.job_type))}<div>${billingPill(j.billing_type)}</div>` }, { label: 'Scheduled', sort: 'scheduled', get: j => fmtDT(j.scheduled_start) },
       ...(status === 'completed' || status === 'invoiced' ? [{ label: 'Completed', sort: 'completed', get: j => fmtDate(j.completed_at) }] : []),
-      { label: 'Techs', get: j => j.tech_names || '—' }, { label: 'Status', sort: 'status', html: j => pill(j.status) }], jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs match', sort })}</div>`;
+      { label: 'Techs', get: j => j.tech_names || '—' }, { label: 'Status', sort: 'status', html: j => `${pill(j.status)}${j.status === 'on_hold' ? `<div class="small muted" title="${esc(j.hold_reason || '')}">${esc((j.hold_reason || 'no reason recorded').slice(0, 60))}</div>${j.hold_follow_up ? `<div class="small ${j.hold_follow_up < todayStr() ? 'bad' : 'muted'}">follow up ${fmtDate(j.hold_follow_up)}</div>` : ''}` : ''}` }], jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs match', sort })}</div>`;
   $$('[data-s]').forEach(b => b.onclick = () => go('#/jobs' + qs({ ...f, ...keep, status: b.dataset.s })));
   $('#srch').onsubmit = e => { e.preventDefault(); listFilterGo(e.target, '#/jobs', keep); };
   $$('#srch select').forEach(s => s.onchange = () => listFilterGo($('#srch'), '#/jobs', keep));
   if (isOffice()) { $('#new').onclick = () => jobForm({}); if (params.get('new')) jobForm({}, { customerId: params.get('customer_id') }); }
 }
 
+// on hold: a reason and a follow-up date are required; resolves to the fields to send, or null if cancelled
+function holdPrompt(j) {
+  return new Promise(resolve => {
+    const d = new Date(); d.setDate(d.getDate() + 7);
+    let done = false;
+    const m = formModal({ title: `Put ${j.number || 'this job'} on hold`, okLabel: 'Put on hold',
+      fields: [{ name: 'hold_reason', label: 'Why is it on hold?', type: 'textarea', full: true, required: true, placeholder: 'e.g. Waiting on the customer to approve the change order; Utility has to set the meter; Material on back order until the 20th' },
+        { name: 'hold_follow_up', label: 'Follow up on', type: 'date', required: true, default: localDate(d) },
+        { name: 'hold_invite', label: 'Email me a calendar invite for the follow-up', type: 'checkbox', default: 1 }],
+      extra: '<p class="small muted">The follow-up shows on the schedule (Week view) and the Dashboard, and is noted on the job.</p>',
+      submit: async v => {
+        if (!v.hold_reason || v.hold_reason.trim().length < 3) throw new Error('Give a reason for putting the job on hold');
+        if (!v.hold_follow_up) throw new Error('Pick a follow-up date');
+        if (v.hold_follow_up < todayStr()) throw new Error('The follow-up date is in the past');
+        done = true; resolve({ hold_reason: v.hold_reason.trim(), hold_follow_up: v.hold_follow_up, hold_invite: !!v.hold_invite });
+      } });
+    const close = m.close; m.close = () => { close(); if (!done) resolve(null); };
+    $('[data-x]', m.el).onclick = () => m.close();
+    new MutationObserver((_, o) => { if (!m.el.isConnected) { o.disconnect(); if (!done) resolve(null); } }).observe(document.body, { childList: true });
+  });
+}
+function holdBanner(j) {
+  const late = j.hold_follow_up && j.hold_follow_up < todayStr();
+  return `<div class="alert ${late ? '' : 'info'} holdbar" style="margin-bottom:14px"><div><b>On hold${j.hold_at ? ` since ${fmtDate(j.hold_at.slice(0, 10))}` : ''}${j.hold_by_name ? ` (${esc(j.hold_by_name)})` : ''}:</b> ${esc(j.hold_reason || 'no reason recorded')}
+    <div>Follow up: ${j.hold_follow_up ? `<b>${fmtDate(j.hold_follow_up)}</b>${late ? ' <span class="pill bad">overdue</span>' : ''}` : '<span class="pill warn">no date set</span>'}</div></div>
+    ${isOffice() ? `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn sm" id="holdedit">${j.hold_follow_up ? 'Change follow-up' : 'Set follow-up'}</button>${j.hold_follow_up ? '<button class="btn sm" id="holdics">Add to my calendar</button>' : ''}</div>` : ''}</div>`;
+}
+function wireHoldBanner(j) {
+  if ($('#holdedit')) $('#holdedit').onclick = () => formModal({ title: `On hold: ${j.number}`, okLabel: 'Save', values: { hold_reason: j.hold_reason || '', hold_follow_up: j.hold_follow_up || '', hold_invite: 1 },
+    fields: [{ name: 'hold_reason', label: 'Why is it on hold?', type: 'textarea', full: true, required: true }, { name: 'hold_follow_up', label: 'Follow up on', type: 'date', required: true },
+      { name: 'hold_invite', label: 'Email me an updated calendar invite', type: 'checkbox' }],
+    submit: async v => { await PUT('/jobs/' + j.id, { hold_reason: v.hold_reason, hold_follow_up: v.hold_follow_up, hold_invite: !!v.hold_invite }); toast('Saved'); route(); } });
+  if ($('#holdics')) $('#holdics').onclick = async () => {
+    const res = await fetch(`/api/jobs/${j.id}/hold.ics`, { headers: { Authorization: 'Bearer ' + S.token } });
+    if (!res.ok) return toast('Could not make the calendar file', true);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = `follow-up-${j.number}.ics`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+}
 function cancelJobModal(j) {
   formModal({
     title: `Cancel ${j.number}`, okLabel: 'Cancel job',
@@ -605,10 +645,12 @@ async function viewJob(id) {
      ${isAdmin() ? `<button class="btn danger" id="deljob" ${j.delete_blockers.length ? `title="Can't delete: has ${esc(j.delete_blockers.join(', '))}"` : ''}>Delete</button>` : ''}
      ${!isOffice() && j.status !== 'cancelled' ? '<button class="btn go" id="clockhere">Clock in here</button>' : ''}`,
     `${pill(j.status)} ${j.priority !== 'normal' ? pill(j.priority) : ''} ${billingPill(j.billing_type)} · ${esc(label(j.job_type))} · ${isOffice() ? `<a href="#/customers/${j.customer_id}">${esc(j.customer_name)}</a>` : esc(j.customer_name)}`) + `
+    ${j.status === 'on_hold' ? holdBanner(j) : ''}
     ${j.status === 'cancelled' ? `<div class="alert" style="margin-bottom:14px"><b>Cancelled${j.cancelled_at ? ` ${fmtDate(j.cancelled_at.slice(0, 10))}` : ''}.</b> ${esc(j.cancel_reason || '')}</div>` : ''}
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div><div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => go(`#/jobs/${j.id}?tab=${b.dataset.tab}`));
   if ($('#canceljob')) $('#canceljob').onclick = () => cancelJobModal(j);
+  wireHoldBanner(j);
   if ($('#renum')) $('#renum').onclick = () => formModal({
     title: `Change job number — ${j.number}`, okLabel: 'Change number', values: { number: j.number },
     fields: [{ name: 'number', label: 'New job number', required: true, full: true }],
@@ -628,6 +670,7 @@ async function viewJob(id) {
     if (e.target.value === 'cancelled' && j.status !== 'cancelled') { e.target.value = j.status; return cancelJobModal(j); }
     if (j.status === 'cancelled') { e.target.value = j.status; return toast('Use Reopen job first', true); }
     const body = { status: e.target.value };
+    if (body.status === 'on_hold' && j.status !== 'on_hold') { const h = await holdPrompt(j); if (!h) { e.target.value = j.status; return; } Object.assign(body, h); }
     if (body.status === 'completed' && !isOffice()) { const n = prompt('Completion notes (what was done, anything the office should know):', j.completion_notes || ''); if (n === null) { e.target.value = j.status; return; } body.completion_notes = n; }
     await act(() => PUT('/jobs/' + j.id, body), 'Status updated'); route();
   };

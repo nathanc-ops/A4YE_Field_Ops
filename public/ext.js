@@ -390,7 +390,8 @@ async function viewWeek(date, seg) {
   const start = new Date(date + 'T00:00:00'); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   const monday = localDate(start);
   const days = [...Array(7)].map((_, i) => addDaysStr(monday, i));
-  const [appts, projAll] = await Promise.all([GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) })), isOffice() ? GET('/projects?lite=1') : []]);
+  const [appts, projAll, follows] = await Promise.all([GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) })), isOffice() ? GET('/projects?lite=1') : [],
+    isOffice() ? GET('/job-follow-ups' + qs({ from: monday, to: addDaysStr(monday, 6) })) : []]);
   // commercial projects running this week: who's on each one, day by day (and which have nobody booked)
   const sunday = addDaysStr(monday, 6);
   const projs = projAll.filter(pj => (!pj.start_date || pj.start_date <= sunday) && (!pj.end_date || pj.end_date >= monday)
@@ -403,6 +404,9 @@ async function viewWeek(date, seg) {
   const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
+    ${follows.length ? `<div class="card wk-follow"><div class="row spread"><h2 style="margin:0">On-hold follow-ups this week</h2><span class="small muted">Reminders only — they don't take anyone's time</span></div>
+      <div class="wk-fgrid">${days.map(d => `<div class="${d === todayStr() ? 'today' : ''}"><div class="small muted">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</div>
+        ${follows.filter(f => f.hold_follow_up === d).map(f => `<a class="fchip" href="#/jobs/${f.id}" title="${esc(f.hold_reason || '')}"><b>${esc(f.number)}</b> ${esc(f.customer_name || '')}<br><span class="muted">${esc((f.hold_reason || '').slice(0, 50))}</span></a>`).join('')}</div>`).join('')}</div></div>` : ''}
     ${projs.length ? `<div class="card wk-proj"><div class="row spread"><h2 style="margin:0">Commercial projects this week</h2><span class="small muted">Crew on site each day — click a day to change that day's crew</span></div>
       <div class="table-wrap"><table><thead><tr><th>Project</th>${days.map(d => `<th class="${d === todayStr() ? 'today' : ''}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</th>`).join('')}<th></th></tr></thead>
       <tbody>${projs.map(pj => `<tr><td><a href="#/jobs/${pj.id}?tab=project"><b>${esc(pj.number)}</b></a> ${esc(pj.title)}<div class="small muted">${esc(pj.customer_company || pj.customer_name)}${pj.end_date ? ` · until ${fmtDate(pj.end_date)}` : ''}</div></td>

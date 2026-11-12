@@ -1073,6 +1073,11 @@ const MIGRATIONS = [
   Object.assign(function (db) {
     rebuildTable(db, 'takeoffs', sql => sql.replace("CHECK (status IN ('running','done','error'))", "CHECK (status IN ('pending','running','done','error'))"));
   }, { foreignKeysOff: true }),
+  // 39: on hold needs a reason and a follow-up date (shown on the schedule, sent as a calendar invite)
+  db => {
+    for (const [c, d] of [['hold_reason', 'TEXT'], ['hold_follow_up', 'TEXT'], ['hold_at', 'TEXT'], ['hold_by', 'INTEGER'], ['hold_seq', 'INTEGER NOT NULL DEFAULT 0']]) addColumn(db, 'jobs', c, d);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_hold_follow_up ON jobs(hold_follow_up)');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

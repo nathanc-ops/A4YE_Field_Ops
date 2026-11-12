@@ -463,6 +463,7 @@ function createApp(db) {
     if (!j) throw bad('Not found', 404);
     const job = fixTechs(j);
     if (req.user.role === 'tech' && !job.tech_ids.includes(req.user.id)) throw bad('Not assigned to this job', 403);
+    if (job.hold_by) job.hold_by_name = (get(db, 'SELECT name FROM users WHERE id = ?', job.hold_by) || {}).name || null;
     job.location = job.location_id ? get(db, 'SELECT * FROM locations WHERE id = ?', job.location_id) : null;
     job.time = all(db, 'SELECT t.*, u.name user_name, cc.code cost_code FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN cost_codes cc ON cc.id = t.cost_code_id WHERE t.job_id = ? ORDER BY clock_in DESC', job.id);
     job.materials = all(db, 'SELECT m.*, u.name user_name, cc.code cost_code FROM job_materials m LEFT JOIN users u ON u.id = m.user_id LEFT JOIN cost_codes cc ON cc.id = m.cost_code_id WHERE job_id = ? ORDER BY m.id DESC', job.id);
@@ -500,14 +501,17 @@ function createApp(db) {
     const data = jobData(req.body);
     if (!data.customer_id || !data.title) throw bad('Customer and job title are required');
     if (!data.status) data.status = data.scheduled_start ? 'scheduled' : 'unscheduled';
+    if (data.status === 'on_hold') holdChange({ status: 'new' }, data, req.body, req.user);
     if (!data.billing_type) data.billing_type = data.contract_amount > 0 ? 'fixed' : 'tm';
     const id = tx(db, () => {
       const jid = insert('jobs', { ...data, number: D.nextNumber(db, 'jobs', 'J') });
       setTechs(jid, req.body.tech_ids);
       if (data.scheduled_start) H.syncSingleAppointment(jid, data.scheduled_start, data.scheduled_end, req.body.tech_ids);
       if (data.timeclock_job) TC.relink(db);
+      if (data.status === 'on_hold') run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', jid, req.user.id, `Put on hold: ${data.hold_reason} — follow up ${data.hold_follow_up}`);
       return jid;
     });
+    if (data.status === 'on_hold' && req.body.hold_invite !== false) setImmediate(() => holdInvite(id, false));
     res.json({ id });
   }));
   // job numbering (Settings → Job numbers): what the next new job will be, and dropping an old prefix from existing jobs
@@ -553,13 +557,78 @@ function createApp(db) {
     insert('job_notes', { job_id: job.id, user_id: req.user.id, body: `Job number changed from ${job.number} to ${number}` });
     res.json({ ok: true, number, next_new_job: D.nextJobNumber(db) });
   }));
+  // ---- on hold: a reason and a follow-up date are required; the follow-up goes on the schedule and, as an
+  //      all-day calendar invite, to whoever put the job on hold (moved = same event updated, off hold = cancelled)
+  function holdChange(job, data, body, user) {
+    const reason = String(body.hold_reason ?? '').trim(), follow = String(body.hold_follow_up ?? '').trim();
+    const entering = data.status === 'on_hold' && job.status !== 'on_hold';
+    const leaving = data.status && data.status !== 'on_hold' && job.status === 'on_hold';
+    const editing = !entering && !leaving && job.status === 'on_hold' && (body.hold_reason !== undefined || body.hold_follow_up !== undefined);
+    if (entering || editing) {
+      const r = entering ? reason : (reason || job.hold_reason || '');
+      const f = entering ? follow : (follow || job.hold_follow_up || '');
+      if (r.length < 3) throw bad('Give a reason for putting the job on hold');
+      if (!isDay(f)) throw bad('Pick a follow-up date for the job on hold');
+      if (f < today() && f !== job.hold_follow_up) throw bad('The follow-up date is in the past');
+      Object.assign(data, { hold_reason: r.slice(0, 1000), hold_follow_up: f, hold_seq: (job.hold_seq || 0) + 1 });
+      if (entering) Object.assign(data, { hold_at: new Date().toISOString(), hold_by: user.id });
+      if (!job.id) return null;
+      const moved = editing && f !== job.hold_follow_up, reworded = editing && r !== job.hold_reason;
+      if (editing && !moved && !reworded) return null;
+      return { note: entering ? `Put on hold: ${r} — follow up ${f}` : [moved && `Follow-up moved to ${f}`, reworded && `Hold reason: ${r}`].filter(Boolean).join('. '),
+        after: () => { if (body.hold_invite !== false) setImmediate(() => holdInvite(job.id, false)); } };
+    }
+    if (leaving) {
+      Object.assign(data, { hold_reason: null, hold_follow_up: null, hold_at: null, hold_by: null, hold_seq: (job.hold_seq || 0) + 1 });
+      const was = { ...job };
+      return { note: `Taken off hold (was: ${job.hold_reason || 'no reason recorded'})`, after: () => setImmediate(() => holdInvite(was.id, true, was)) };
+    }
+    return null;
+  }
+  // the follow-up as an all-day calendar event (RFC 5545)
+  function holdIcs(j, cancelled = false) {
+    const d = String(j.hold_follow_up).replace(/-/g, ''), next = addDays(j.hold_follow_up, 1).replace(/-/g, '');
+    const esc = v => String(v ?? '').replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+    return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//A4YE Field Ops//Job follow-ups//EN', 'CALSCALE:GREGORIAN', `METHOD:${cancelled ? 'CANCEL' : 'PUBLISH'}`, 'BEGIN:VEVENT',
+      `UID:job-hold-${j.id}@fieldops`, `SEQUENCE:${j.hold_seq || 0}`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${d}`, `DTEND;VALUE=DATE:${next}`,
+      `SUMMARY:${esc(`Follow up: ${j.number} on hold — ${j.title || ''}`)}`, `DESCRIPTION:${esc(`${j.customer_name ? j.customer_name + '. ' : ''}On hold: ${j.hold_reason || ''}`)}`,
+      'TRANSP:TRANSPARENT', `STATUS:${cancelled ? 'CANCELLED' : 'CONFIRMED'}`,
+      ...(cancelled ? [] : ['BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${esc(`Follow up on ${j.number}`)}`, 'TRIGGER:PT8H', 'END:VALARM']),
+      'END:VEVENT', 'END:VCALENDAR'].join('\r\n') + '\r\n';
+  }
+  async function holdInvite(jobId, cancelled, snapshot) {
+    try {
+      const j = snapshot ? { ...snapshot, hold_seq: (snapshot.hold_seq || 0) + 1, customer_name: (get(db, 'SELECT name FROM customers WHERE id = ?', snapshot.customer_id) || {}).name }
+        : get(db, 'SELECT j.*, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id WHERE j.id = ?', jobId);
+      if (!j || !j.hold_follow_up || !j.hold_by || !mailer.config(db)) return;
+      const u = get(db, 'SELECT name, email FROM users WHERE id = ?', j.hold_by); if (!u || !u.email) return;
+      const subject = cancelled ? `Off hold: ${j.number} — follow-up cancelled` : `Follow up ${j.hold_follow_up}: ${j.number} on hold`;
+      const text = cancelled ? `${j.number} ${j.title || ''} is no longer on hold, so the follow-up on ${j.hold_follow_up} is cancelled.`
+        : `${j.number} ${j.title || ''}${j.customer_name ? ` (${j.customer_name})` : ''} is on hold.\n\nReason: ${j.hold_reason}\nFollow up: ${j.hold_follow_up}\n\nThe attached calendar invite puts the follow-up on your calendar.`;
+      await mailer.send(db, { to: u.email, subject, text, related: `job:${j.id}`,
+        attachments: [{ filename: cancelled ? 'follow-up-cancelled.ics' : 'follow-up.ics', content: holdIcs(j, cancelled), contentType: `text/calendar; charset=utf-8; method=${cancelled ? 'CANCEL' : 'PUBLISH'}` }] });
+    } catch { /* email is a convenience: the follow-up is still on the schedule and the job */ }
+  }
+  app.get('/api/jobs/:id/hold.ics', office, wrap((req, res) => {
+    const j = get(db, 'SELECT j.*, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id WHERE j.id = ?', +req.params.id);
+    if (!j || j.status !== 'on_hold' || !j.hold_follow_up) throw bad('This job is not on hold', 404);
+    res.set('Content-Type', 'text/calendar; charset=utf-8'); res.set('Content-Disposition', `attachment; filename="follow-up-${j.number}.ics"`);
+    res.send(holdIcs(j));
+  }));
+  // on-hold follow-ups for the schedule (a date range) and the dashboard (due or overdue)
+  app.get('/api/job-follow-ups', office, wrap((req, res) => {
+    const from = isDay(req.query.from) ? req.query.from : '0000-01-01', to = isDay(req.query.to) ? req.query.to : '9999-12-31';
+    res.json(all(db, `SELECT j.id, j.number, j.title, j.hold_reason, j.hold_follow_up, j.hold_at, c.name customer_name, u.name hold_by_name FROM jobs j JOIN customers c ON c.id = j.customer_id
+      LEFT JOIN users u ON u.id = j.hold_by WHERE j.status = 'on_hold' AND j.hold_follow_up BETWEEN ? AND ? ORDER BY j.hold_follow_up, j.number`, from, to));
+  }));
   app.put('/api/jobs/:id', wrap((req, res) => {
     const job = mustGet('jobs', req.params.id);
     let data = jobData(req.body);
     if (req.user.role === 'tech') {
       const assigned = get(db, 'SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?', job.id, req.user.id);
       if (!assigned) throw bad('Not assigned to this job', 403);
-      data = pick(req.body, ['status', 'completion_notes']);
+      data = pick(req.body, ['status', 'completion_notes']);   // + hold_reason / hold_follow_up, read by holdChange()
       if (data.status && !['dispatched', 'in_progress', 'on_hold', 'completed'].includes(data.status)) throw bad('Techs cannot set that status', 403);
       if (data.status === 'completed' && job.status !== 'completed') {
         const blockers = H.completionBlockers(job.id);
@@ -573,8 +642,10 @@ function createApp(db) {
     } else if (job.status === 'cancelled' && data.status && data.status !== 'cancelled') throw bad('Reopen the job first');
     if (data.status === 'completed' && job.status !== 'completed') data.completed_at = new Date().toISOString();
     if (data.scheduled_start && job.status === 'unscheduled' && !data.status) data.status = 'scheduled';
+    const hold = holdChange(job, data, req.body, req.user);
     tx(db, () => {
       update('jobs', job.id, data);
+      if (hold) { run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', job.id, req.user.id, hold.note); hold.after(); }
       if (data.timeclock_job) TC.relink(db);
       if (req.user.role !== 'tech') {
         setTechs(job.id, req.body.tech_ids);
@@ -1145,6 +1216,7 @@ function createApp(db) {
       open_estimates: money ? C.estimateConversion(db, '0000-01-01', t) : undefined,
       ar, mtd: pl,
       target_gross_margin: Number(s.target_gross_margin) || 0,
+      follow_ups_due: all(db, `SELECT j.id, j.number, j.title, j.hold_reason, j.hold_follow_up FROM jobs j WHERE j.status = 'on_hold' AND (j.hold_follow_up IS NULL OR j.hold_follow_up <= ?) ORDER BY j.hold_follow_up LIMIT 15`, t),
       inspections_upcoming: all(db, `SELECT p.*, j.number job_number, j.title job_title FROM permits p JOIN jobs j ON j.id = p.job_id WHERE p.inspection_date >= ? AND p.status NOT IN ('passed','closed') ORDER BY p.inspection_date LIMIT 10`, t),
       low_stock: all(db, 'SELECT id, code, name, qty_on_hand, reorder_point FROM pricebook WHERE active = 1 AND reorder_point > 0 AND qty_on_hand <= reorder_point ORDER BY name'),
       agreements_due: all(db, `SELECT a.*, c.name customer_name FROM agreements a JOIN customers c ON c.id = a.customer_id WHERE a.status = 'active' AND a.next_visit <= ? ORDER BY a.next_visit`, addDays(t, 30)),

@@ -127,6 +127,14 @@ Set it up in the app: **Settings → Email** (admins). Pick the provider, enter 
 
 `PUBLIC_URL` controls the links in emails, so set it to the address customers can actually reach.
 
+## Jobs on hold
+
+Putting a job **on hold** (status menu, Edit, or a tech's phone) requires a **reason** and a **follow-up date**; the server refuses it without them.
+- The job shows a banner: who put it on hold, when, why, and the follow-up date (overdue in red), with **Change follow-up** and **Add to my calendar** (.ics).
+- The follow-up appears on **Schedule → Week** (a reminder row above the grid; it doesn't take anyone's time), on the **Dashboard** when due or overdue, and under the status in the Jobs list.
+- Whoever put the job on hold gets an all-day **calendar invite** by email (when email is set up). Moving the date updates the same event; taking the job off hold cancels it.
+- Every change is written to the job's notes, so the history stays after the hold ends.
+
 ## Lists: filter and sort
 
 Customers, Jobs, Estimates and Invoices: click a column heading to sort (click again to flip). Filters sit above each list; the URL keeps filters, sort and page, so Back and bookmarks work.
