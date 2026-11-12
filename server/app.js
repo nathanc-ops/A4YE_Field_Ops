@@ -20,7 +20,9 @@ function createApp(db) {
   const keepRaw = (req, res, buf) => { req.rawBody = buf; };
   const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
   const importJson = express.json({ limit: '40mb' }); // CSV exports from the old system can be large
-  app.use((req, res, next) => (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
+  const rawUpload = express.raw({ type: () => true, limit: '160mb' });   // plan files, one at a time
+  app.use((req, res, next) => /^\/api\/estimating\/takeoffs\/\d+\/upload$/.test(req.path) ? rawUpload(req, res, next) : next());
+  app.use((req, res, next) => /^\/api\/estimating\/takeoffs\/\d+\/upload$/.test(req.path) ? next() : (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
     : req.path.startsWith('/api/import/') || req.path === '/api/estimating/import' || req.path === '/api/estimating/price-list' || /^\/api\/estimating\/(bids\/\d+\/takeoff|takeoffs\/\d+\/files)$/.test(req.path) ? importJson : smallJson)(req, res, next));
 
   // ------------------------------------------------------------ helpers

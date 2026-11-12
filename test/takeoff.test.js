@@ -12,7 +12,19 @@ const { createApp } = require('../server/app');
 // The Claude API is replaced by a fake that records each request and returns a made-up takeoff.
 const calls = [];
 let reply = null;
-Takeoff.setClientFactory(apiKey => ({ beta: { messages: { stream: params => { calls.push({ apiKey, params }); return { finalMessage: async () => reply(params) }; } } } }));
+// Files API stand-in: remembers what was uploaded and deleted
+const uploads = [], deletes = [];
+let failNextWith404 = false;
+Takeoff.setClientFactory(apiKey => ({
+  files: {
+    upload: async ({ file, expires_in_seconds }) => { const id = `file_test_${uploads.length + 1}`; uploads.push({ id, name: file.name, type: file.type, expires_in_seconds }); return { id }; },
+    delete: async id => { deletes.push(id); return { id }; },
+  },
+  beta: { messages: { stream: params => { calls.push({ apiKey, params });
+    if (failNextWith404) { failNextWith404 = false; const A = require('@anthropic-ai/sdk'); const C = A.default || A;
+      return { finalMessage: async () => { throw new C.NotFoundError(404, { error: { message: 'File not found' } }, 'File not found', new Headers()); } }; }
+    return { finalMessage: async () => reply(params) }; } } },
+}));
 const takeoffJson = {
   project_name: 'Test Office TI', plans_basis: 'Made-up test plans E1.1 and E2.1', scope_summary: 'Lighting and power for a small office suite', sheets_reviewed: ['E1.1 Lighting', 'E2.1 Power'],
   lines: [
@@ -68,7 +80,7 @@ test('runs the takeoff: request shape, pricing from the price book first, Claude
   assert.equal(calls.at(-1).apiKey, 'sk-test-not-real');
   assert.equal(p.model, 'claude-opus-5-5'); assert.deepEqual(p.thinking, { type: 'adaptive' }); assert.equal(p.fallbacks, 'default');
   assert.equal(p.output_config.format.type, 'json_schema');
-  assert.equal(p.messages[0].content[0].type, 'document'); assert.equal(p.messages[0].content[0].source.media_type, 'application/pdf');
+  assert.equal(p.messages[0].content[0].type, 'document'); assert.equal(p.messages[0].content[0].source.type, 'file'); assert.match(p.messages[0].content[0].source.file_id, /^file_test_/);
   assert.match(p.system[0].text, /COMMERCIAL bid/); assert.match(p.system[0].text, /LT-24 \| 2x4 LED troffer/); assert.match(p.system[0].text, /\n0810 /);
   const [lt, rec, feeder] = t.lines;
   assert.equal(lt.priced_from, 'price book'); assert.equal(lt.material_unit, 85); assert.equal(lt.hours_unit, 0.75);
@@ -183,7 +195,7 @@ test('several files per takeoff: PDFs and images go to Claude together; add, rem
   let t = await waitDone(id);
   const content = calls.at(-1).params.messages[0].content;
   assert.deepEqual(content.map(b => b.type), ['document', 'document', 'image', 'text']);
-  assert.equal(content[1].title, 'Specs.pdf'); assert.equal(content[2].source.media_type, 'image/png');
+  assert.equal(content[1].title, 'Specs.pdf'); assert.equal(content[2].type, 'image'); assert.equal(content[2].source.type, 'file');
   assert.match(content[3].text, /3 files are: 1\. E-sheets\.pdf; 2\. Specs\.pdf; 3\. panel photo\.png \(image\)/);
   assert.deepEqual(t.files.map(f => f.filename), ['E-sheets.pdf', 'Specs.pdf', 'panel photo.png']);
   // add an addendum, remove the photo, run again: Claude gets the new set
@@ -197,8 +209,8 @@ test('several files per takeoff: PDFs and images go to Claude together; add, rem
   const txt = 'data:text/plain;base64,' + Buffer.from('hello').toString('base64');
   const r1 = await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: [{ file: pdf, filename: 'a.pdf' }, { file: txt, filename: 'notes.txt' }] });
   assert.equal(r1.status, 400); assert.match(r1.data.error, /notes\.txt is not a PDF or an image/);
-  const many = Array.from({ length: 21 }, (_, i) => ({ file: pdf, filename: `s${i}.pdf` }));
-  assert.match((await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: many })).data.error, /Up to 20 files/);
+  const many = Array.from({ length: 41 }, (_, i) => ({ file: pdf, filename: `s${i}.pdf` }));
+  assert.match((await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: many })).data.error, /Up to 40 files/);
   const one = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', files: [{ file: pdf, filename: 'only.pdf' }] })).data.id;
   await waitDone(one);
   assert.equal((await call('admin', 'DELETE', `/estimating/takeoffs/${one}/files/0`)).status, 400);
@@ -289,4 +301,37 @@ test('commercial proposal template: Word import, standard text saved, signature 
   assert.equal(p.layout, 'commercial'); assert.deepEqual(p.std.unit_rates, r.unit_rates); assert.equal(p.me.name, 'Owner');
   assert.equal(p.inclusion_notes[0].scope, 'lighting'); assert.ok(p.takeoff.lines.every(l => 'phase_code' in l));
   assert.ok(Takeoff.SCHEMA.required.includes('inclusion_notes'));
+});
+
+
+test('large plan sets: files go up one at a time as raw bytes, then to Anthropic once (90 days) and are referred to by id', async () => {
+  reply = okReply;
+  const big = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('1 0 obj << /Type /Page >> endobj\n'.repeat(3)), Buffer.alloc(25 * 1024 * 1024, 0x20), Buffer.from('%%EOF')]);   // 25 MB, 3 pages
+  const { id } = (await call('admin', 'POST', `/estimating/bids/${bidId}/takeoff`, { kind: 'commercial', pending: true, notes: 'test notes' })).data;
+  let t = (await call('admin', 'GET', `/estimating/takeoffs/${id}`)).data;
+  assert.equal(t.status, 'pending'); assert.equal(t.files.length, 0);
+  assert.match((await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`)).data.error, /Add the plan files first/);
+  const up = async (buf, name) => { const r = await fetch(`${base}/api/estimating/takeoffs/${id}/upload?filename=${encodeURIComponent(name)}`, { method: 'POST', headers: { Authorization: 'Bearer ' + tok.admin, 'Content-Type': 'application/pdf' }, body: buf }); return { status: r.status, data: await r.json() }; };
+  for (const n of ['E-sheets part 1.pdf', 'E-sheets part 2.pdf']) assert.equal((await up(big, n)).status, 200, 'over the old 20 MB total');
+  assert.match((await up(Buffer.from('not a pdf'), 'notes.txt')).data.error, /not a PDF or an image/);
+  t = (await call('admin', 'GET', `/estimating/takeoffs/${id}`)).data;
+  assert.deepEqual(t.files.map(f => [f.filename, f.pages]), [['E-sheets part 1.pdf', 3], ['E-sheets part 2.pdf', 3]]);
+  const before = uploads.length;
+  await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`);
+  t = await waitDone(id);
+  assert.equal(t.status, 'done', t.error);
+  assert.equal(uploads.length - before, 2); assert.equal(uploads.at(-1).expires_in_seconds, 90 * 24 * 3600);
+  const ids = calls.at(-1).params.messages[0].content.filter(b => b.type === 'document').map(b => b.source.file_id);
+  assert.deepEqual(ids, uploads.slice(-2).map(u => u.id));
+  // running again re-uses the uploaded files
+  await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`); await waitDone(id);
+  assert.equal(uploads.length - before, 2, 'no second upload');
+  // a stored file gone at Anthropic (expired, new key): uploaded again and retried once
+  failNextWith404 = true;
+  await call('admin', 'POST', `/estimating/takeoffs/${id}/rerun`); t = await waitDone(id);
+  assert.equal(t.status, 'done', t.error); assert.equal(uploads.length - before, 4);
+  // removing a file also removes it at Anthropic
+  await call('admin', 'DELETE', `/estimating/takeoffs/${id}/files/1`);
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(deletes.includes(uploads.at(-1).id));
 });

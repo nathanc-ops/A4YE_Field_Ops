@@ -1069,6 +1069,10 @@ const MIGRATIONS = [
   },
   // 37: a takeoff can read several files (plan sets, specs, addenda, photos)
   db => { addColumn(db, 'takeoffs', 'files', 'TEXT'); },
+  // 38: a takeoff can wait for its files ('pending') while the browser uploads them one at a time
+  Object.assign(function (db) {
+    rebuildTable(db, 'takeoffs', sql => sql.replace("CHECK (status IN ('running','done','error'))", "CHECK (status IN ('pending','running','done','error'))"));
+  }, { foreignKeysOff: true }),
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

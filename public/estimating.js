@@ -165,7 +165,7 @@ function estImport() {
 }
 
 // ---------------------------------------------------------------- plan takeoff (Claude)
-const PLAN_MAX_MB = 20, PLAN_MAX_FILES = 20;
+const PLAN_MAX_MB = 500, PLAN_MAX_FILE_MB = 150, PLAN_MAX_FILES = 40, PLAN_MAX_PAGES = 600;
 const mb = n => n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`;
 const planOk = f => /\.(pdf|png|jpe?g|webp|gif)$/i.test(f.name) || /^(application\/pdf|image\/(png|jpeg|webp|gif))$/.test(f.type);
 function planListHtml(files, haveBytes = 0) {
@@ -202,45 +202,74 @@ function fileCollector(root, { haveCount = 0, haveBytes = 0 } = {}) {
 }
 function planCheck(files, have = { count: 0, bytes: 0 }) {
   const badF = files.find(f => !planOk(f)); if (badF) throw new Error(`${badF.name} is not a PDF or an image`);
+  const big = files.find(f => f.size > PLAN_MAX_FILE_MB * 1048576); if (big) throw new Error(`${big.name} is ${mb(big.size)} — the limit is ${PLAN_MAX_FILE_MB} MB per file`);
   if (files.length + have.count > PLAN_MAX_FILES) throw new Error(`Up to ${PLAN_MAX_FILES} files per takeoff`);
   const total = files.reduce((s, f) => s + f.size, 0) + have.bytes;
-  if (total > PLAN_MAX_MB * 1048576) throw new Error(`Those files come to ${mb(total)} — the limit is ${PLAN_MAX_MB} MB together. Leave out sheets that aren't electrical.`);
+  if (total > PLAN_MAX_MB * 1048576) throw new Error(`Those files come to ${mb(total)} — the limit is ${PLAN_MAX_MB} MB for one takeoff`);
 }
+// send files to a takeoff one at a time as raw bytes, showing progress; returns how many made it
+async function uploadPlanFiles(takeoffId, files, onStep) {
+  let n = 0;
+  for (const f of files) {
+    if (onStep) onStep(n + 1, files.length, f.name);
+    const res = await fetch(`/api/estimating/takeoffs/${takeoffId}/upload?filename=${encodeURIComponent(f.name)}`, { method: 'POST',
+      headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': f.type || 'application/octet-stream' }, body: f });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`${f.name}: ${data.error || (res.status === 413 ? 'too large for the server' : `upload failed (${res.status})`)}`);
+    n++;
+  }
+  return n;
+}
+function uploadNote(text) { let el = $('#upnote'); if (!el) { el = document.createElement('div'); el.id = 'upnote'; el.className = 'upnote'; document.body.append(el); } el.textContent = text; if (!text) el.remove(); }
 const readFile = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok({ file: r.result, filename: f.name }); r.onerror = no; r.readAsDataURL(f); });
 async function startTakeoff(bidId, kind, files, notes = '') {
   try { planCheck(files); } catch (e) { toast(e.message, true); return null; }
-  const payload = await Promise.all(files.map(readFile));
-  return act(() => POST(`/estimating/bids/${bidId}/takeoff`, { kind, files: payload, notes }), `${files.length > 1 ? `${files.length} files` : 'Plans'} sent — Claude is doing the takeoff`).catch(() => null);
+  const t = await act(() => POST(`/estimating/bids/${bidId}/takeoff`, { kind, notes, pending: true })).catch(() => null); if (!t) return null;
+  try { await uploadPlanFiles(t.id, files, (i, n, name) => uploadNote(`Uploading ${i} of ${n}: ${name}…`)); }
+  catch (e) { uploadNote(''); toast(`${e.message}. The takeoff is saved — add the files on its Plans & instructions tab and run it.`, true); return t; }
+  uploadNote('');
+  await act(() => POST(`/estimating/takeoffs/${t.id}/rerun`), `${files.length > 1 ? `${files.length} files` : 'Plans'} sent — Claude is doing the takeoff`).catch(() => null);
+  return t;
 }
 function planFilesCard(t, id) {
   const have = t.files || [], bytes = have.reduce((s, f) => s + (f.size || 0), 0);
-  return `<div class="card"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">Plan files (${have.length})</h2><span class="small muted">${bytes ? `${mb(bytes)} of ${PLAN_MAX_MB} MB` : ''}</span></div>
-    ${table([{ label: 'File', html: f => `${f.mime === 'application/pdf' ? '📄' : '🖼'} ${esc(f.filename)}` }, { label: 'Size', num: 1, get: f => f.size ? mb(f.size) : '' },
+  const pages = have.reduce((s, f) => s + (f.pages || 0), 0), unknown = have.some(f => f.pages == null);
+  return `<div class="card"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">Plan files (${have.length})</h2><span class="small ${pages > PLAN_MAX_PAGES ? 'pill bad' : 'muted'}">${bytes ? `${mb(bytes)}` : ''}${pages ? ` · about ${pages}${unknown ? '+' : ''} page(s) of ${PLAN_MAX_PAGES} per run` : ''}${pages > PLAN_MAX_PAGES ? ' — over the limit: remove sheets that aren\'t electrical' : ''}</span></div>
+    ${table([{ label: 'File', html: f => `${f.mime === 'application/pdf' ? '📄' : '🖼'} ${esc(f.filename)}` }, { label: 'Pages', num: 1, get: f => f.pages ?? '' }, { label: 'Size', num: 1, get: f => f.size ? mb(f.size) : '' },
       { label: '', html: f => have.length > 1 ? `<button class="btn sm" data-frm="${f.index}" aria-label="Remove ${esc(f.filename)}">Remove</button>` : '' }], have, { empty: 'No files' })}
     <div id="toaddf" style="margin-top:10px"></div>
     <label class="f full" style="margin-top:10px"><span>Instructions for Claude on this estimate</span>
       <textarea id="tonotes" rows="5" maxlength="4000" placeholder="e.g. MC cable above ceilings, EMT where exposed. Owner furnishes fixtures (labor only). Only the restroom areas are in our scope. Exclude fire alarm.">${esc(t.notes || '')}</textarea>
       <span class="small muted">What to count and how; Claude follows these over the ${esc(t.kind)} template. Saved with this estimate and used each time it runs. Crew rates, productivity factor and markups are under Assumptions.</span></label>
     <button class="btn sm" id="tonotesave" style="margin-top:4px">Save instructions</button>
-    <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn" id="toaddfgo">Add these files</button><button class="btn primary" id="torerun2">Run the takeoff again with all files</button></div>
-    <p class="small muted">Add specifications, addenda or photos of sheets, then run it again: Claude reads every file as one set, and a later addendum overrides what it changes. Running again replaces the line edits on this takeoff.</p></div>`;
+    <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn" id="toaddfgo">Upload the picked files</button><button class="btn primary" id="torerun2">${t.status === 'pending' ? 'Run the takeoff' : 'Run the takeoff again'} with all files</button></div>
+    <p class="small muted">Pick drawings, specifications, addenda or photos, then run: picked files are uploaded first. Claude reads every file as one set (up to ${PLAN_MAX_PAGES} pages per run), and a later addendum overrides what it changes.${t.status === 'done' ? ' Running again replaces the line edits on this takeoff.' : ''}</p></div>`;
 }
 function wirePlanFiles(t, id) {
   const have = t.files || [], bytes = have.reduce((s, f) => s + (f.size || 0), 0);
   const box = $('#toaddf'); if (!box) return;
   const fc = fileCollector(box, { haveCount: have.length, haveBytes: bytes });
-  $('#toaddfgo').onclick = async () => {
-    const files = fc.files(); if (!files.length) return toast('Choose the files to add', true);
-    try { planCheck(files, { count: have.length, bytes }); } catch (e) { return toast(e.message, true); }
-    const payload = await Promise.all(files.map(readFile));
-    await act(() => POST(`/estimating/takeoffs/${id}/files`, { files: payload }), `${files.length} file(s) added`);
-    viewTakeoff(id);
+  // upload whatever is picked; true when there was nothing to do or it all went up
+  const sendPicked = async () => {
+    const files = fc.files(); if (!files.length) return true;
+    try { planCheck(files, { count: have.length, bytes }); } catch (e) { toast(e.message, true); return false; }
+    const btns = $$('#toaddfgo, #torerun2'); btns.forEach(b => { b.disabled = true; });
+    try { await uploadPlanFiles(id, files, (i, n, name) => uploadNote(`Uploading ${i} of ${n}: ${name}…`)); uploadNote(''); toast(`${files.length} file(s) added`); fc.clear(); return true; }
+    catch (e) { uploadNote(''); toast(e.message, true); return false; }
+    finally { btns.forEach(b => { b.disabled = false; }); }
   };
+  $('#toaddfgo').onclick = async () => { if (!fc.files().length) return toast('Pick the files first (Choose files… or drag them in)', true); if (await sendPicked()) viewTakeoff(id); };
   $$('[data-frm]').forEach(b => b.onclick = async () => { const f = have.find(x => String(x.index) === b.dataset.frm);
     if (!confirm(`Remove ${f.filename} from this takeoff?`)) return; await act(() => DEL(`/estimating/takeoffs/${id}/files/${f.index}`), 'Removed'); viewTakeoff(id); });
   const saveNotes = () => PUT(`/estimating/takeoffs/${id}/instructions`, { notes: $('#tonotes').value });
   $('#tonotesave').onclick = () => act(saveNotes, 'Instructions saved');
-  $('#torerun2').onclick = async () => { if (!confirm(`Run the takeoff again with ${have.length} file(s)${$('#tonotes').value.trim() ? ' and your instructions' : ''}? Your line edits on this takeoff are replaced.`)) return; await act(saveNotes); await act(() => POST(`/estimating/takeoffs/${id}/rerun`)); viewTakeoff(id); };
+  $('#torerun2').onclick = async () => {
+    const picked = fc.files().length, total = have.length + picked;
+    if (!total) return toast('Add the plan files first', true);
+    if (!confirm(`Run the takeoff with ${total} file(s)${picked ? ` (${picked} new, uploaded first)` : ''}${$('#tonotes').value.trim() ? ' and your instructions' : ''}?${t.status === 'done' ? ' Your line edits on this takeoff are replaced.' : ''}`)) return;
+    if (!(await sendPicked())) return;
+    await act(saveNotes); await act(() => POST(`/estimating/takeoffs/${id}/rerun`)); viewTakeoff(id);
+  };
 }
 // ---------------------------------------------------------------- estimate (A4YE quote workbook model)
 const EST_SCOPES = [['distribution', 'Electrical - Distribution'], ['lighting', 'Electrical - Lighting'], ['power', 'Electrical - Power'], ['fire_alarm', 'Fire Alarm'], ['data', 'Data & Telecom'], ['demo', 'Demolition - Electrical']];
@@ -260,13 +289,16 @@ async function viewTakeoff(id) {
   const t = await GET('/estimating/takeoffs/' + id);
   const bids = await GET('/estimating'); const bid = bids.bids.find(b => b.id === t.bid_id) || {};
   const kindL = t.kind === 'commercial' ? 'Commercial' : 'Residential';
-  const head = setTop(`Estimate · ${esc(bid.project_name || 'Bid')}`, `<a class="btn" href="#/estimating">‹ Estimating</a>${t.status === 'done' ? `<button class="btn" id="toas">Assumptions</button><button class="btn" id="toxl">Workbook (.xlsx)</button><a class="btn" href="#/estimating/proposal/${id}">Proposal letter</a>` : ''}${t.status !== 'running' ? '<button class="btn" id="torerun">Run again</button><button class="btn danger" id="todel">Delete</button>' : ''}`,
+  const head = setTop(`Estimate · ${esc(bid.project_name || 'Bid')}`, `<a class="btn" href="#/estimating">‹ Estimating</a>${t.status === 'done' ? `<button class="btn" id="toas">Assumptions</button><button class="btn" id="toxl">Workbook (.xlsx)</button><a class="btn" href="#/estimating/proposal/${id}">Proposal letter</a>` : ''}${t.status !== 'running' && t.status !== 'pending' ? '<button class="btn" id="torerun">Run again</button><button class="btn danger" id="todel">Delete</button>' : ''}`,
     `${esc(kindL)} · ${(t.files || []).length > 1 ? `${t.files.length} files` : esc(t.filename || '')}${bid.bid_number ? ` · Bid ${esc(bid.bid_number)}` : ''}`);
   if (t.status === 'running') {
     $('#view').innerHTML = head + `<div class="card"><h2>Claude is reading the plans…</h2><p>Started ${fmtDT(t.created_at)}. A full plan set can take several minutes; this page checks every few seconds. You can leave and come back.</p><div class="tobusy" aria-hidden="true"></div></div>`;
     return setTimeout(() => { if (location.hash.startsWith('#/estimating/takeoff/' + id)) viewTakeoff(id); }, 5000);
   }
-  if (t.status === 'error') {
+  if (t.status === 'pending') {
+    $('#view').innerHTML = head + `<div class="card"><div class="alert info">Not run yet. Add the plan files below, then run the takeoff.</div></div><div style="margin-top:14px">${planFilesCard(t, id)}</div>`;
+    wirePlanFiles(t, id);
+  } else if (t.status === 'error') {
     $('#view').innerHTML = head + `<div class="card"><div class="alert">⚠ ${esc(t.error || 'The takeoff failed')}</div></div><div style="margin-top:14px">${planFilesCard(t, id)}</div>`;
     wirePlanFiles(t, id);
   } else {

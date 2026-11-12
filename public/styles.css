@@ -714,3 +714,5 @@ table.pl-rates td { padding: 2px 14px; color: #111; }
   table.pl-run > thead { display: table-header-group; }
   .pl-keep { break-inside: avoid; } .pl-tbl tr, .pl-c h3 { break-inside: avoid; } .pl-c h3 { break-after: avoid; }
 }
+
+.upnote { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; box-shadow: var(--shadow, 0 4px 16px rgba(0,0,0,.3)); z-index: 1000; font-size: 14px; }
