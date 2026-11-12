@@ -952,6 +952,17 @@ module.exports = function routesExt(app, db, X) {
     res.json({ connected: true, ...(await Ply.jobPly(db, +req.params.id)) });
   }));
   // link (or unlink) a job to a Ply job by hand, when the numbers don't match; then bring in its POs
+  // search Ply's jobs by name or number while picking which one a job is (Ply searches part of the name)
+  app.get('/api/integrations/ply/jobs', office, wrap(async (req, res) => {
+    if (!Ply.config(db)) throw bad('Ply is not connected (Settings → Integrations – Ply)');
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    if (q.length < 2) return res.json([]);
+    const one = async active => (await Ply.request(db, 'GET', '/jobs', null, { query: { textToSearch: q, active, page: 0, size: 25, sort: 'name,asc' }, quiet: true })).data || [];
+    const found = [...await one(true), ...(req.query.archived === '1' ? await one(false) : [])];
+    const linked = new Map(all(db, 'SELECT id, number, ply_id FROM jobs WHERE ply_id IS NOT NULL').map(x => [String(x.ply_id), x]));
+    res.json(found.slice(0, 40).map(x => ({ id: x.id, name: x.name, number: x.number || null, active: x.active !== false,
+      address: x.address ? [x.address.address, x.address.city].filter(Boolean).join(', ') : null, linked_to: linked.has(String(x.id)) ? linked.get(String(x.id)).number : null })));
+  }));
   app.put('/api/jobs/:id/ply-link', office, wrap(async (req, res) => {
     const job = mustGet('jobs', +req.params.id), pid = req.body.ply_id ? String(req.body.ply_id) : null;
     if (pid) { const other = get(db, 'SELECT number FROM jobs WHERE ply_id = ? AND id != ?', pid, job.id); if (other) throw bad(`That Ply job is already linked to ${other.number}`); }

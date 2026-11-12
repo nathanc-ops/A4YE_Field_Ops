@@ -53,7 +53,7 @@ async function request(db, method, path, body, { query, quiet } = {}) {
     }
     if (!quiet || !res.ok) log(db, 'out', `${method} ${path}`, res.ok ? 'ok' : `http_${res.status}`, { request: body, response: data });
     if (res.ok) {
-      const left = Number(res.headers.get('x-ratelimit-remaining'));
+      const rl = res.headers.get('x-ratelimit-remaining'), left = rl == null || rl === '' ? NaN : Number(rl);   // no header: don't guess, carry on
       if (Number.isFinite(left) && left < 3) await sleep(Math.min(60, Number(res.headers.get('x-ratelimit-reset')) || 10) * 1000);
       return data;
     }

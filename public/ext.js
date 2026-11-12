@@ -714,11 +714,9 @@ async function plyJobCard(j) {
   if (!r.connected) { el.innerHTML = ''; return; }
   const errs = (r.errors || []).length ? `<div class="alert" style="margin:8px 0">${r.errors.map(esc).join('<br>')}</div>` : '';
   if (!r.linked) {
-    el.innerHTML = `<div class="card"><h2>In Ply for this job</h2>${errs}<p>This job isn't linked to a Ply job, so POs and pick lists made in Ply can't be matched to it. Field Ops links automatically when the Ply job has the same job number (or the number in its name).</p>
-      <div class="row" style="gap:8px;flex-wrap:wrap"><select id="plylinksel" style="width:auto;min-width:280px"><option value="">${r.suggestions.length ? 'Pick the Ply job…' : 'No likely Ply jobs found'}</option>${r.suggestions.map(x => `<option value="${esc(x.id)}">${esc(x.name)}${x.number ? ` (#${esc(x.number)})` : ''}</option>`).join('')}</select>
-      <button class="btn primary" id="plylink">Link</button><button class="btn" id="plypush">Create it in Ply instead</button></div></div>`;
-    $('#plylink').onclick = async () => { const v = $('#plylinksel').value; if (!v) return toast('Pick the Ply job', true); const x = await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: v }));
-      toast(`Linked${x.imported && x.imported.imported ? ` · ${x.imported.imported} PO(s) brought in` : ''}`); route(); };
+    el.innerHTML = `<div class="card"><h2>In Ply for this job</h2>${errs}<p>This job isn't linked to a Ply job, so POs and pick lists made in Ply can't be matched to it. Field Ops links automatically when the Ply job has the same job number (or the number in its name). Otherwise find it here:</p>
+      <div id="plypick"></div><div class="row" style="margin-top:8px"><button class="btn" id="plypush">Not in Ply? Create it there</button></div></div>`;
+    plyJobPicker($('#plypick'), j, r.suggestions);
     $('#plypush').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job created in Ply and linked'); route(); };
     return;
   }
@@ -734,7 +732,40 @@ async function plyJobCard(j) {
       { label: 'Items', num: 1, get: p => p.items }, { label: 'Status', html: p => `${plyPill(p.status)}${p.completed_at ? `<div class="small muted">${fmtDate(String(p.completed_at).slice(0, 10))}</div>` : p.request_date ? `<div class="small muted">for ${fmtDate(p.request_date)}</div>` : ''}` }],
       r.pick_lists, { empty: 'No Ply pick lists going to this job (the newest 300 were checked)' })}</div>`;
   if ($('#plypos2')) $('#plypos2').onclick = async () => { const x = await act(() => POST('/integrations/ply/import-pos')); toast(x.imported ? `${x.imported} PO(s) brought in` : (x.errors[0] || 'Nothing new'), !x.imported && !!x.errors.length); route(); };
-  $('#plyunlink').onclick = async e => { e.preventDefault(); if (!confirm('Unlink this job from its Ply job? You can then pick a different one.')) return; await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: null }), 'Unlinked'); route(); };
+  $('#plyunlink').onclick = e => {
+    e.preventDefault();
+    const m = modal(`<h2>Which Ply job is ${esc(j.number)}?</h2><p class="small muted">Now linked to <b>${esc((r.ply_job && r.ply_job.name) || 'a Ply job')}</b>. Search for the right one, or unlink.</p><div id="plypick2"></div>
+      <div class="actions"><button type="button" class="btn danger" id="plyunl">Unlink</button><button type="button" class="btn" data-x>Close</button></div>`, { wide: true });
+    plyJobPicker($('#plypick2', m.el), j, [], () => m.close());
+    $('[data-x]', m.el).onclick = m.close;
+    $('#plyunl', m.el).onclick = async () => { if (!confirm('Unlink this job from its Ply job?')) return; await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: null }), 'Unlinked'); m.close(); route(); };
+  };
+}
+// type to search Ply's jobs (by name or number, Ply-side search); click one to link it
+function plyJobPicker(el, j, suggestions = [], onDone) {
+  el.innerHTML = `<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><input id="plyq" type="search" placeholder="Type part of the Ply job name or number…" autocomplete="off" style="flex:1;min-width:260px">
+    <label class="small" style="display:inline-flex;gap:6px;align-items:center;white-space:nowrap"><input type="checkbox" id="plyarch" style="width:auto;margin:0"> include archived</label></div><div class="plyres" id="plyres"></div>`;
+  const out = $('#plyres', el), q = $('#plyq', el);
+  const draw = (list, msg) => {
+    out.innerHTML = list.length ? list.map(x => `<button type="button" class="plyhit" data-pid="${esc(x.id)}" ${x.linked_to ? 'disabled' : ''}>
+      <b>${esc(x.name)}</b>${x.number ? ` <span class="muted">#${esc(x.number)}</span>` : ''}${x.active === false ? ' <span class="pill">archived</span>' : ''}
+      ${x.address ? `<div class="small muted">${esc(x.address)}</div>` : ''}${x.linked_to ? `<div class="small warn">already linked to ${esc(x.linked_to)}</div>` : ''}</button>`).join('') : `<p class="small muted">${msg}</p>`;
+    $$('[data-pid]', out).forEach(b => b.onclick = async () => {
+      if (!confirm(`Link ${j.number} to the Ply job "${b.querySelector('b').textContent}"?`)) return;
+      const x = await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: b.dataset.pid }));
+      toast(`Linked${x.imported && x.imported.imported ? ` · ${x.imported.imported} PO(s) brought in` : ''}`); if (onDone) onDone(); route();
+    });
+  };
+  draw(suggestions, suggestions.length ? '' : 'Type at least 2 letters.');
+  if (suggestions.length) out.insertAdjacentHTML('afterbegin', '<p class="small muted" style="margin:6px 0 2px">Likely matches:</p>');
+  let t, seq = 0;
+  const run = () => { clearTimeout(t); t = setTimeout(async () => {
+    const term = q.value.trim(); if (term.length < 2) return draw(suggestions, 'Type at least 2 letters.');
+    const my = ++seq; out.innerHTML = '<p class="small muted">Searching Ply…</p>';
+    try { const list = await GET('/integrations/ply/jobs' + qs({ q: term, archived: $('#plyarch', el).checked ? '1' : '' })); if (my === seq) draw(list, `No Ply jobs match "${esc(term)}".`); }
+    catch (e) { if (my === seq) out.innerHTML = `<p class="bad small">${esc(e.message)}</p>`; }
+  }, 300); };
+  q.oninput = run; $('#plyarch', el).onchange = run; q.focus();
 }
 function jobPurchasingTab(j, T) {
   const plyOn = S.settings.ply_enabled === '1';

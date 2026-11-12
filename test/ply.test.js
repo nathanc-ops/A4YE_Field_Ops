@@ -29,7 +29,8 @@ const plyServer = http.createServer((req, res) => {
     if (req.method === 'GET' && path === '/jobs') {
       if (ply.noJobsRead) return send(403, { code: 'FORBIDDEN', message: 'Missing scope jobs:read', status: 403 });
       const q = (u.searchParams.get('textToSearch') || '').toLowerCase();
-      return send(200, page(ply.jobs.filter(x => !q || String(x.name).toLowerCase().includes(q)), u.searchParams));
+      const act = u.searchParams.get('active') !== 'false';   // Ply: active defaults to true (archived jobs left out)
+      return send(200, page(ply.jobs.filter(x => (x.active !== false) === act && (!q || String(x.name).toLowerCase().includes(q))), u.searchParams));
     }
     if (req.method === 'GET' && (m = path.match(/^\/jobs\/([\w-]+)$/))) { const x = ply.jobs.find(j => j.id === m[1]); return x ? send(200, x) : send(404, { message: 'not found' }); }
     if (req.method === 'GET' && path === '/pick-lists') return send(200, page([...ply.picks].reverse(), u.searchParams));
@@ -270,4 +271,16 @@ test('Ply job matching by name, a job listing refused, linking by hand, and the 
   const sent = db.prepare('SELECT * FROM pick_lists WHERE ply_id IS NOT NULL').get();
   if (sent) { const x = ply.picks.find(k => k.id === sent.ply_id); x.status = 'ASSEMBLED'; db.prepare("UPDATE pick_lists SET status = 'open' WHERE id = ?").run(sent.id);
     await call('POST', '/integrations/ply/sync'); assert.equal(db.prepare('SELECT ply_status FROM pick_lists WHERE id = ?').get(sent.id).ply_status, 'ASSEMBLED'); }
+});
+
+test('search Ply jobs by name while linking: open ones, archived on request, and which are already linked', async () => {
+  ply.jobs.push({ id: uuid(), name: 'Westside clinic remodel', number: 'W-77', active: true, address: { address: '9 Elm St', city: 'Springfield' } },
+    { id: uuid(), name: 'Westside clinic phase 1', active: false });
+  assert.deepEqual((await call('GET', '/integrations/ply/jobs?q=w')).data, [], 'needs 2 letters');
+  let r = (await call('GET', '/integrations/ply/jobs?q=westside')).data;
+  assert.deepEqual(r.map(x => x.name), ['Westside clinic remodel']); assert.equal(r[0].number, 'W-77'); assert.equal(r[0].address, '9 Elm St, Springfield'); assert.equal(r[0].linked_to, null);
+  r = (await call('GET', '/integrations/ply/jobs?q=westside&archived=1')).data;
+  assert.deepEqual(r.map(x => [x.name, x.active]), [['Westside clinic remodel', true], ['Westside clinic phase 1', false]]);
+  const linked = ply.jobs.find(x => db.prepare('SELECT 1 FROM jobs WHERE ply_id = ?').get(x.id));
+  if (linked) { const hit = (await call('GET', '/integrations/ply/jobs?q=' + encodeURIComponent(linked.name.slice(0, 6)))).data.find(x => x.id === linked.id); if (hit) assert.ok(hit.linked_to, 'shows it is taken'); }
 });
