@@ -1143,6 +1143,8 @@ const MIGRATIONS = [
   db => {
     for (const [c, d] of [['status', "TEXT NOT NULL DEFAULT 'approved'"], ['requested_by', 'INTEGER'], ['decided_by', 'INTEGER'], ['decided_at', 'TEXT'], ['decision_note', 'TEXT']]) addColumn(db, 'attendance', c, d);
   },
+  // 48: a pick list remembers its status in Ply (shown on the job)
+  db => { addColumn(db, 'pick_lists', 'ply_status', 'TEXT'); addColumn(db, 'pick_lists', 'ply_completed_at', 'TEXT'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

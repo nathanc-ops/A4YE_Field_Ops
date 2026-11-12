@@ -181,7 +181,7 @@ async function pushPickList(db, plId, { createMissing = false } = {}) {
   let plyId = p.ply_id;
   if (!plyId) { const r = await request(db, 'POST', '/pick-lists', { ...h, fromLocationId: c.fromLocation, toLocationId: toJob }); plyId = r.id; }
   else await request(db, 'PUT', `/pick-lists/${encodeURIComponent(plyId)}`, h);
-  run(db, "UPDATE pick_lists SET ply_id = ?, ply_synced_at = datetime('now') WHERE id = ?", String(plyId), plId);
+  run(db, "UPDATE pick_lists SET ply_id = ?, ply_status = COALESCE(ply_status, 'NEED_REFILL'), ply_synced_at = datetime('now') WHERE id = ?", String(plyId), plId);
   for (const [l, mid] of ids) {
     const r = await request(db, 'POST', `/pick-lists/${encodeURIComponent(plyId)}/materials`, { materialId: mid, quantity: l.qty, note: [l.note, matCode(l.ply_code, l.cost_code)].filter(Boolean).join(' · ') || undefined });
     run(db, 'UPDATE pick_list_lines SET ply_line_id = ? WHERE id = ?', String(r.id), l.id);
@@ -265,19 +265,72 @@ async function addNewItems(db, po) {
 const PLY_PO_STATUS = { DRAFT: 'draft', WAITING_FOR_APPROVAL: 'draft', SENT: 'submitted', CONFIRMED: 'submitted', PAID: 'submitted', PARTIALLY_RECEIVED: 'submitted', RECEIVED: 'submitted', ARCHIVED: 'submitted',
   CANCELED: 'cancelled', DECLINED: 'cancelled', EXPIRED: 'cancelled' };
 
+// Which Ply job is this one: same job number, else a Ply job name that carries our job number ("J-1068 Panel upgrade"),
+// else a Ply job name that is our title. Only an unambiguous match counts.
+const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+function matchPlyJob(j, plyJobs) {
+  const num = norm(j.number), title = norm(j.title);
+  const one = list => (list.length === 1 ? list[0] : null);
+  return one(plyJobs.filter(x => x.number && norm(x.number) === num))
+    || (num ? one(plyJobs.filter(x => (` ${norm(x.name)} `).includes(` ${num} `))) : null)
+    || (title.length >= 6 ? one(plyJobs.filter(x => norm(x.name) === title || norm(x.name).endsWith(` ${title}`))) : null);
+}
+
+// Everything Ply has for one job, read live for the job's Purchasing tab: its Ply job, POs delivered there (and whether
+// each is here yet), and pick lists going there with their status. Each part says why if it can't be read.
+async function jobPly(db, jobId) {
+  const j = get(db, 'SELECT id, number, title, ply_id FROM jobs WHERE id = ?', jobId);
+  const out = { linked: !!j.ply_id, ply_job: null, suggestions: [], pos: [], pick_lists: [], errors: [] };
+  const note = (what, scope, e) => out.errors.push(`${what}: ${e.message}${/permission|scope/i.test(e.message) ? ` — add ${scope} to the Ply API key` : ''}`);
+  if (!j.ply_id) {
+    try {
+      // by job number, then each main word of the title (Ply matches part of the name)
+      const words = [...new Set(norm(j.title).split(' ').filter(w => w.length > 3 && !/^(the|and|with|from|install|replace|repair|service)$/.test(w)))].slice(0, 3);
+      const found = [];
+      for (const q of [j.number, ...words]) found.push(...await listAll(db, '/jobs', { textToSearch: q }));
+      const taken = new Set(all(db, 'SELECT ply_id FROM jobs WHERE ply_id IS NOT NULL').map(x => x.ply_id));
+      const seen = new Set(); out.suggestions = found.filter(x => !seen.has(x.id) && seen.add(x.id) && !taken.has(String(x.id))).slice(0, 12).map(x => ({ id: x.id, name: x.name, number: x.number || null }));
+    } catch (e) { note('Looking up Ply jobs', 'jobs:read', e); }
+    return out;
+  }
+  try { const r = await request(db, 'GET', `/jobs/${encodeURIComponent(j.ply_id)}`, null, { quiet: true }); out.ply_job = { id: r.id, name: r.name, number: r.number || null, active: r.active !== false }; }
+  catch (e) { note('Reading the Ply job', 'jobs:read', e); }
+  try {
+    const pos = await listAll(db, '/purchase-orders', { locationId: j.ply_id });
+    out.pos = pos.map(p => { const here = get(db, 'SELECT id, number, status FROM purchase_orders WHERE ply_id = ?', String(p.id));
+      return { id: p.id, order_number: p.orderNumber || null, status: p.status, supplier: p.supplier && p.supplier.name, total: p.totalCost ?? p.subtotal ?? null, created_at: p.createdAt, due_date: p.dueDate || null,
+        received_at: p.receivedAt || null, here: here ? { id: here.id, number: here.number, status: here.status } : null }; });
+  } catch (e) { note('Reading POs', 'purchase_orders:read', e); }
+  try {
+    // the API can't filter pick lists by destination: read the newest few hundred and keep the ones going to this job
+    const picks = [];
+    for (let page = 0; page < 3; page++) {
+      const r = await request(db, 'GET', '/pick-lists', null, { query: { page, size: 100, sort: 'createdAt,desc' }, quiet: true });
+      picks.push(...(r.data || [])); if (!r.pagination || page + 1 >= r.pagination.totalPages) break;
+    }
+    out.pick_lists = picks.filter(p => p.toLocation && String(p.toLocation.id) === String(j.ply_id)).map(p => {
+      const here = get(db, 'SELECT id, number FROM pick_lists WHERE ply_id = ?', String(p.id));
+      return { id: p.id, name: p.name, status: p.status, from: p.fromLocation && p.fromLocation.name, items: (p.materialCount || 0) + (p.kitCount || 0),
+        request_date: p.requestDate || null, completed_at: p.completedAt || null, created_at: p.createdAt, here: here ? { id: here.id, number: here.number } : null };
+    });
+  } catch (e) { note('Reading pick lists', 'pick_lists:read', e); }
+  return out;
+}
+
 // POs created in Ply for a job (delivered to the job's Ply location) → a PO on the job here, logged in the job's notes.
 // One listing call covers every job; open jobs not yet linked to Ply are linked when Ply has a job with the same number.
 async function importJobPOs(db, H, { days = 180 } = {}) {
   const out = { imported: 0, linked_jobs: 0, received_lines: 0, skipped: 0, errors: [] };
   // link open jobs to Ply jobs made by hand in Ply (same job number)
-  const unlinked = all(db, "SELECT id, number FROM jobs WHERE ply_id IS NULL AND status NOT IN ('cancelled')");
+  const unlinked = all(db, "SELECT id, number, title FROM jobs WHERE ply_id IS NULL AND status NOT IN ('cancelled')");
   if (unlinked.length) {
-    const plyJobs = await listAll(db, '/jobs');
-    const byNum = new Map(plyJobs.filter(x => x.number).map(x => [String(x.number).trim().toLowerCase(), x]));
-    for (const j of unlinked) {
-      const m = byNum.get(String(j.number).trim().toLowerCase());
-      if (m && !get(db, 'SELECT 1 x FROM jobs WHERE ply_id = ?', String(m.id))) { run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', String(m.id), j.id); out.linked_jobs++; }
-    }
+    try {
+      const plyJobs = await listAll(db, '/jobs');
+      for (const j of unlinked) {
+        const m = matchPlyJob(j, plyJobs);
+        if (m && !get(db, 'SELECT 1 x FROM jobs WHERE ply_id = ?', String(m.id))) { run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', String(m.id), j.id); out.linked_jobs++; }
+      }
+    } catch (e) { out.errors.push(`Linking jobs to Ply: ${e.message}${/permission|scope/i.test(e.message) ? ' (the key needs jobs:read)' : ''}`); }   // jobs already linked still get their POs
   }
   const jobs = new Map(all(db, "SELECT id, number, ply_id FROM jobs WHERE ply_id IS NOT NULL").map(j => [String(j.ply_id), j]));
   if (!jobs.size) return out;
@@ -334,6 +387,7 @@ async function syncStatus(db, H) {
   for (const pl of all(db, "SELECT * FROM pick_lists WHERE ply_id IS NOT NULL AND status IN ('open','picking')")) {
     try {
       const r = await request(db, 'GET', `/pick-lists/${encodeURIComponent(pl.ply_id)}`, null, { quiet: true });
+      run(db, 'UPDATE pick_lists SET ply_status = ?, ply_completed_at = ?, ply_synced_at = datetime(\'now\') WHERE id = ?', r.status || null, r.completedAt || null, pl.id);
       if (r.status === 'COMPLETED') {
         run(db, 'UPDATE pick_list_lines SET qty_picked = qty WHERE pick_list_id = ? AND ply_line_id IS NOT NULL AND (qty_picked IS NULL OR qty_picked = 0)', pl.id);
         H.completePickList(pl.id, null); out.picks_completed++;
@@ -344,4 +398,4 @@ async function syncStatus(db, H) {
   return out;
 }
 
-module.exports = { config, request, listAll, test, pullItems, pushJob, pushPO, pushPickList, syncStatus, importJobPOs, log, toPlyPO, toPlyPickList, toPlyJob, BASES };
+module.exports = { config, request, listAll, test, pullItems, pushJob, pushPO, pushPickList, syncStatus, importJobPOs, jobPly, matchPlyJob, log, toPlyPO, toPlyPickList, toPlyJob, BASES };

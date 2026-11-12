@@ -944,6 +944,19 @@ module.exports = function routesExt(app, db, X) {
   }));
   app.post('/api/integrations/ply/sync', admin, wrap(async (req, res) => res.json(await Ply.syncStatus(db, H))));
   // the office can check Ply for new job POs from a job's Purchasing tab (also runs with every hourly sync)
+  // what Ply has for one job (live): its Ply job, POs delivered there, pick lists going there
+  app.get('/api/jobs/:id/ply', office, wrap(async (req, res) => {
+    mustGet('jobs', +req.params.id);
+    if (!Ply.config(db)) return res.json({ connected: false });
+    res.json({ connected: true, ...(await Ply.jobPly(db, +req.params.id)) });
+  }));
+  // link (or unlink) a job to a Ply job by hand, when the numbers don't match; then bring in its POs
+  app.put('/api/jobs/:id/ply-link', office, wrap(async (req, res) => {
+    const job = mustGet('jobs', +req.params.id), pid = req.body.ply_id ? String(req.body.ply_id) : null;
+    if (pid) { const other = get(db, 'SELECT number FROM jobs WHERE ply_id = ? AND id != ?', pid, job.id); if (other) throw bad(`That Ply job is already linked to ${other.number}`); }
+    run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', pid, job.id);
+    res.json({ ok: true, imported: pid ? await Ply.importJobPOs(db, H) : null });
+  }));
   app.post('/api/integrations/ply/import-pos', office, wrap(async (req, res) => {
     if (!Ply.config(db)) throw bad('Ply is not connected (Settings → Integrations – Ply)');
     res.json(await Ply.importJobPOs(db, H));

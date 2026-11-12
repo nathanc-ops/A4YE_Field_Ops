@@ -5,7 +5,9 @@ Field Ops connects to Ply through the **Ply Public API** (https://docs.getply.co
 ## Set up (about 5 minutes)
 
 1. **In Ply:** go to **Settings → Workspace → API Keys → Create API Key**. The Public API is a Ply add-on; if you don't see API Keys, ask your Ply account manager. Name the key something like `Field Ops` and tick these scopes:
+   - `jobs:read` (to find and link Ply jobs; without it, POs made in Ply can't be matched to jobs)
    - `jobs:write`
+   - `pick_lists:read` (pick list status on the job)
    - `pick_lists:write`
    - `purchase_orders:write`
    - `purchase_orders:read` (to bring in POs written in Ply)
@@ -50,3 +52,7 @@ Every Ply line must be a Ply catalog material. When a pick list or PO has lines 
   - Only POs created in the last 180 days, and delivered to a job's Ply location, are brought in. POs to a warehouse or truck are left alone.
   - The API gives one total, so tax and shipping arrive together as one amount (Ply total minus the lines).
   - Edits to a line's quantity or price in Ply after import aren't copied. Fix them on the PO here.
+- **A job's POs or pick lists from Ply aren't showing:** open the job → Purchasing → **In Ply for this job**.
+  - It shows the Ply job the job is linked to, every Ply PO delivered to it (marked *not brought in yet* until imported), and the Ply pick lists going there, each with its Ply status.
+  - Not linked: pick the Ply job from the list, or create it in Ply. Jobs link automatically only when the Ply job has the same job number, or the number in its name.
+  - A message about a missing permission names the scope to add to the key.

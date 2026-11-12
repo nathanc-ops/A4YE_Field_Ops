@@ -9,7 +9,7 @@ const D = require('../server/db');
 
 // ------------------------------------------------------------ fake Ply
 const KEY = 'k_test.secret';
-const ply = { calls: [], locations: [], materials: [], suppliers: [], jobs: [], picks: [], pickItems: {}, pos: [], poItems: {}, received: {}, rateLimitOnce: false };
+const ply = { noJobsRead: false, calls: [], locations: [], materials: [], suppliers: [], jobs: [], picks: [], pickItems: {}, pos: [], poItems: {}, received: {}, rateLimitOnce: false };
 const uuid = () => crypto.randomUUID();
 const page = (arr, q) => { const p = Number(q.get('page') || 0), size = Math.min(100, Number(q.get('size') || 20)); return { data: arr.slice(p * size, p * size + size), pagination: { page: p, size, totalElements: arr.length, totalPages: Math.max(1, Math.ceil(arr.length / size)) } }; };
 const plyServer = http.createServer((req, res) => {
@@ -26,7 +26,13 @@ const plyServer = http.createServer((req, res) => {
     if (req.method === 'POST' && path === '/materials') { if (!body.name) return bad('name required'); const x = { id: uuid(), active: true, serialized: false, categories: body.categoryNames || [], tags: [], ...body }; ply.materials.push(x); return send(201, x); }
     if (req.method === 'GET' && path === '/materials/availability') return send(200, page(ply.materials.map(x => ({ id: x.id, name: x.name, itemNumber: x.itemNumber, costForBusiness: x.costForBusiness, inventory: x.inventory || [], totalQuantity: (x.inventory || []).reduce((t, i) => t + i.quantity, 0) })), u.searchParams));
     if (req.method === 'GET' && path === '/suppliers') { const s = (u.searchParams.get('search') || '').toLowerCase(); return send(200, page(ply.suppliers.filter(x => x.businessName.toLowerCase().includes(s)), u.searchParams)); }
-    if (req.method === 'GET' && path === '/jobs') return send(200, page(ply.jobs, u.searchParams));
+    if (req.method === 'GET' && path === '/jobs') {
+      if (ply.noJobsRead) return send(403, { code: 'FORBIDDEN', message: 'Missing scope jobs:read', status: 403 });
+      const q = (u.searchParams.get('textToSearch') || '').toLowerCase();
+      return send(200, page(ply.jobs.filter(x => !q || String(x.name).toLowerCase().includes(q)), u.searchParams));
+    }
+    if (req.method === 'GET' && (m = path.match(/^\/jobs\/([\w-]+)$/))) { const x = ply.jobs.find(j => j.id === m[1]); return x ? send(200, x) : send(404, { message: 'not found' }); }
+    if (req.method === 'GET' && path === '/pick-lists') return send(200, page([...ply.picks].reverse(), u.searchParams));
     if (req.method === 'POST' && path === '/jobs') { if (!body.name) return bad('name required'); const x = { id: uuid(), active: true, ...body }; ply.jobs.push(x); return send(200, x); }
     if (req.method === 'PUT' && (m = path.match(/^\/jobs\/([\w-]+)$/))) { const x = ply.jobs.find(j => j.id === m[1]); Object.assign(x, body); return send(200, x); }
     if (req.method === 'POST' && path === '/pick-lists') {
@@ -221,4 +227,47 @@ test('POs made in Ply for a job are logged on the job; a Ply job with the same n
   assert.equal(db.prepare('SELECT status FROM purchase_orders WHERE id = ?').get(po.id).status, 'received');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM job_materials WHERE job_id = ?').get(jobId).n, 3, 'received to the job: charged as job materials');
   assert.equal(db.prepare("SELECT COUNT(*) n FROM purchase_orders WHERE notes LIKE 'Ply PLY-78%'").get().n, 0, 'warehouse PO not put on a job');
+});
+
+test('Ply job matching by name, a job listing refused, linking by hand, and the job\'s live Ply panel (POs + pick list status)', async () => {
+  const cust = (await call('POST', '/customers', { name: 'Sample Utility Co' })).data.id;
+  const jobA = (await call('POST', '/jobs', { customer_id: cust, title: 'Riverside arc flash study' })).data.id;
+  const jobB = (await call('POST', '/jobs', { customer_id: cust, title: 'Pump station feeder' })).data.id;
+  // Ply has jobs with no number: one named like our title, one named something else
+  const pA = { id: uuid(), name: 'Riverside Arc Flash Study', active: true }, pB = { id: uuid(), name: 'Pump stn - feeder replacement', active: true };
+  ply.jobs.push(pA, pB);
+  const sup = { id: uuid(), name: 'Valley Electric Supply' };
+  const poA = { id: uuid(), createdAt: new Date().toISOString().slice(0, 19), orderNumber: 'PLY-201', status: 'RECEIVED', supplier: sup, location: { id: pA.id }, totalCost: 100, itemCount: 1, receivedAt: new Date().toISOString() };
+  const poB = { id: uuid(), createdAt: poA.createdAt, orderNumber: 'PLY-202', status: 'SENT', supplier: sup, location: { id: pB.id }, totalCost: 50, itemCount: 1 };
+  ply.pos.push(poA, poB);
+  ply.poItems[poA.id] = [{ id: uuid(), material: { id: uuid(), name: 'Arc flash labels' }, quantity: 10, price: 10 }]; ply.received[poA.id] = [{ id: uuid(), purchaseOrderItemId: ply.poItems[poA.id][0].id, quantity: 10 }];
+  ply.poItems[poB.id] = [{ id: uuid(), material: { id: uuid(), name: '500 kcmil' }, quantity: 1, price: 50 }]; ply.received[poB.id] = [];
+  // 1) the key can't list jobs: already-linked jobs still import, and the reason is reported
+  ply.noJobsRead = true;
+  let s = (await call('POST', '/integrations/ply/sync')).data;
+  assert.ok(s.errors.some(e => /jobs:read/.test(e)), JSON.stringify(s.errors));
+  ply.noJobsRead = false;
+  // 2) matched by name (title), received PO lands on the job, received
+  s = (await call('POST', '/integrations/ply/sync')).data;
+  assert.equal(db.prepare('SELECT ply_id FROM jobs WHERE id = ?').get(jobA).ply_id, pA.id);
+  const here = db.prepare('SELECT * FROM purchase_orders WHERE ply_id = ?').get(poA.id);
+  assert.equal(here.job_id, jobA); assert.equal(here.status, 'received');
+  // 3) not matched → the panel offers likely Ply jobs; link by hand brings its PO in
+  assert.equal(db.prepare('SELECT ply_id FROM jobs WHERE id = ?').get(jobB).ply_id, null);
+  let p = (await call('GET', `/jobs/${jobB}/ply`)).data;
+  assert.equal(p.linked, false); assert.ok(p.suggestions.some(x => x.id === pB.id), JSON.stringify(p.suggestions));
+  assert.match((await call('PUT', `/jobs/${jobB}/ply-link`, { ply_id: pA.id })).data.error, /already linked/);
+  const lk = (await call('PUT', `/jobs/${jobB}/ply-link`, { ply_id: pB.id })).data;
+  assert.equal(lk.imported.imported, 1);
+  // 4) the live panel: Ply job, its POs (here or not), pick lists going there with status
+  ply.picks.push({ id: uuid(), name: 'Feeder lugs', status: 'ASSEMBLED', materialCount: 2, kitCount: 0, fromLocation: { id: ply.locations[0].id, name: 'Main Warehouse', type: 'WAREHOUSE' }, toLocation: { id: pB.id, name: pB.name, type: 'JOB' }, createdAt: new Date().toISOString() });
+  ply.picks.push({ id: uuid(), name: 'Other job pick', status: 'NEED_REFILL', materialCount: 1, kitCount: 0, toLocation: { id: uuid(), name: 'x', type: 'JOB' }, createdAt: new Date().toISOString() });
+  p = (await call('GET', `/jobs/${jobB}/ply`)).data;
+  assert.equal(p.linked, true); assert.equal(p.ply_job.name, pB.name);
+  assert.deepEqual(p.pos.map(x => [x.order_number, x.status, !!x.here]), [['PLY-202', 'SENT', true]]);
+  assert.deepEqual(p.pick_lists.map(x => [x.name, x.status, x.from, x.items]), [['Feeder lugs', 'ASSEMBLED', 'Main Warehouse', 2]]);
+  // 5) our own pick lists keep their Ply status from the sync
+  const sent = db.prepare('SELECT * FROM pick_lists WHERE ply_id IS NOT NULL').get();
+  if (sent) { const x = ply.picks.find(k => k.id === sent.ply_id); x.status = 'ASSEMBLED'; db.prepare("UPDATE pick_lists SET status = 'open' WHERE id = ?").run(sent.id);
+    await call('POST', '/integrations/ply/sync'); assert.equal(db.prepare('SELECT ply_status FROM pick_lists WHERE id = ?').get(sent.id).ply_status, 'ASSEMBLED'); }
 });

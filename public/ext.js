@@ -694,6 +694,40 @@ function jobBudgetTab(j, T) {
   };
 }
 
+// Ply statuses in plain words
+const PLY_WORDS = { NEED_REFILL: ['Needs picking', 'warn'], ASSEMBLED: ['Picked', 'info'], WAITING: ['Waiting', 'warn'], COMPLETED: ['Delivered', 'good'], ARCHIVED: ['Archived', ''],
+  DRAFT: ['Draft', ''], WAITING_FOR_APPROVAL: ['Needs approval', 'warn'], SENT: ['Sent', 'info'], CONFIRMED: ['Confirmed', 'info'], PAID: ['Paid', 'info'],
+  PARTIALLY_RECEIVED: ['Part received', 'warn'], RECEIVED: ['Received', 'good'], CANCELED: ['Cancelled', 'bad'], EXPIRED: ['Expired', 'bad'], DECLINED: ['Declined', 'bad'] };
+const plyPill = st => { if (!st) return '<span class="small muted">—</span>'; const [l, c] = PLY_WORDS[st] || [label(String(st).toLowerCase()), '']; return `<span class="pill ${c}" title="Ply: ${esc(st)}">${esc(l)}</span>`; };
+// what Ply has for this job, read live: the Ply job it's linked to (or pick one), POs delivered there, pick lists going there
+async function plyJobCard(j) {
+  const el = $('#plyjobcard'); if (!el) return;
+  let r; try { r = await GET(`/jobs/${j.id}/ply`); } catch (e) { el.innerHTML = `<div class="card"><h2>In Ply for this job</h2><p class="bad">${esc(e.message)}</p></div>`; return; }
+  if (!r.connected) { el.innerHTML = ''; return; }
+  const errs = (r.errors || []).length ? `<div class="alert" style="margin:8px 0">${r.errors.map(esc).join('<br>')}</div>` : '';
+  if (!r.linked) {
+    el.innerHTML = `<div class="card"><h2>In Ply for this job</h2>${errs}<p>This job isn't linked to a Ply job, so POs and pick lists made in Ply can't be matched to it. Field Ops links automatically when the Ply job has the same job number (or the number in its name).</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap"><select id="plylinksel" style="width:auto;min-width:280px"><option value="">${r.suggestions.length ? 'Pick the Ply job…' : 'No likely Ply jobs found'}</option>${r.suggestions.map(x => `<option value="${esc(x.id)}">${esc(x.name)}${x.number ? ` (#${esc(x.number)})` : ''}</option>`).join('')}</select>
+      <button class="btn primary" id="plylink">Link</button><button class="btn" id="plypush">Create it in Ply instead</button></div></div>`;
+    $('#plylink').onclick = async () => { const v = $('#plylinksel').value; if (!v) return toast('Pick the Ply job', true); const x = await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: v }));
+      toast(`Linked${x.imported && x.imported.imported ? ` · ${x.imported.imported} PO(s) brought in` : ''}`); route(); };
+    $('#plypush').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job created in Ply and linked'); route(); };
+    return;
+  }
+  const notHere = r.pos.filter(p => !p.here).length;
+  el.innerHTML = `<div class="card"><div class="row spread"><h2 style="margin:0">In Ply for this job</h2><span class="small muted">Ply job: <b>${esc((r.ply_job && r.ply_job.name) || 'linked')}</b>${r.ply_job && r.ply_job.active === false ? ' (archived in Ply)' : ''} · <a href="#" id="plyunlink">change</a></span></div>${errs}
+    <h3 style="margin:12px 0 4px">Purchase orders (${r.pos.length})</h3>
+    ${table([{ label: 'Ply PO', html: p => `<b>${esc(p.order_number || '—')}</b><div class="small muted">${esc(p.supplier || '')}</div>` }, { label: 'Status', html: p => `${plyPill(p.status)}${p.received_at ? `<div class="small muted">${fmtDate(String(p.received_at).slice(0, 10))}</div>` : ''}` },
+      { label: 'Total', num: 1, get: p => p.total != null ? money(p.total) : '—' }, { label: 'Here', html: p => p.here ? `<a href="#/purchasing/po/${p.here.id}">${esc(p.here.number)}</a> ${pill(p.here.status)}` : '<span class="pill warn">not brought in yet</span>' }],
+      r.pos, { empty: 'No Ply POs delivered to this job' })}
+    ${notHere ? `<div class="row" style="margin-top:8px"><button class="btn sm primary" id="plypos2">Bring in ${notHere} PO(s) now</button></div>` : ''}
+    <h3 style="margin:14px 0 4px">Pick lists (${r.pick_lists.length})</h3>
+    ${table([{ label: 'Pick list', html: p => `<b>${esc(p.name)}</b>${p.here ? ` <a class="small" href="#/pick/${p.here.id}">${esc(p.here.number)}</a>` : ' <span class="small muted">made in Ply</span>'}` }, { label: 'From', get: p => p.from || '—' },
+      { label: 'Items', num: 1, get: p => p.items }, { label: 'Status', html: p => `${plyPill(p.status)}${p.completed_at ? `<div class="small muted">${fmtDate(String(p.completed_at).slice(0, 10))}</div>` : p.request_date ? `<div class="small muted">for ${fmtDate(p.request_date)}</div>` : ''}` }],
+      r.pick_lists, { empty: 'No Ply pick lists going to this job (the newest 300 were checked)' })}</div>`;
+  if ($('#plypos2')) $('#plypos2').onclick = async () => { const x = await act(() => POST('/integrations/ply/import-pos')); toast(x.imported ? `${x.imported} PO(s) brought in` : (x.errors[0] || 'Nothing new'), !x.imported && !!x.errors.length); route(); };
+  $('#plyunlink').onclick = async e => { e.preventDefault(); if (!confirm('Unlink this job from its Ply job? You can then pick a different one.')) return; await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: null }), 'Unlinked'); route(); };
+}
 function jobPurchasingTab(j, T) {
   const plyOn = S.settings.ply_enabled === '1';
   T.innerHTML = `<div class="grid g2">
@@ -701,8 +735,12 @@ function jobPurchasingTab(j, T) {
       ${table([{ label: 'PO', html: p => `${esc(p.number)}${p.source === 'ply' ? ` <span class="pill info" title="Written in Ply${p.ply_number ? ` as ${esc(p.ply_number)}` : ''}">Ply${p.ply_number ? ` ${esc(p.ply_number)}` : ''}</span>` : ''}` }, { label: 'Vendor', key: 'vendor_name' }, { label: 'Status', html: p => pill(p.status) }, { label: 'Total', num: 1, get: p => money(p.total) }, { label: 'Received', num: 1, get: p => money(p.received_value) }],
         j.purchase_orders || [], { onClick: p => go('#/purchasing/po/' + p.id), empty: 'No POs for this job' })}</div>` : ''}
     <div class="card"><div class="row spread"><h2>Pick lists</h2>${isOffice() || !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn sm primary" id="newpick">+ Pick list</button>' : ''}</div>
-      ${table([{ label: '#', key: 'number' }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }], j.pick_lists, { onClick: p => go('#/pick/' + p.id), empty: 'No pick lists' })}</div></div>`;
+      ${table([{ label: '#', key: 'number' }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) },
+        ...(plyOn ? [{ label: 'In Ply', html: p => p.ply_id ? `${plyPill(p.ply_status)}${p.ply_completed_at ? `<div class="small muted">${fmtDate(p.ply_completed_at.slice(0, 10))}</div>` : ''}` : '<span class="small muted">not sent</span>' }] : [])],
+        j.pick_lists, { onClick: p => go('#/pick/' + p.id), empty: 'No pick lists' })}</div></div>
+    ${plyOn && isOffice() ? '<div id="plyjobcard" style="margin-top:14px"><div class="card"><h2>In Ply for this job</h2><p class="muted">Checking Ply…</p></div></div>' : ''}`;
   if (!isOffice()) { if ($('#newpick')) $('#newpick').onclick = () => techPickForm(j.id); return; }
+  if (plyOn) plyJobCard(j);
   if (plyOn) $('#plyjob').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job sent to Ply'); };
   if (plyOn) $('#plypos').onclick = async () => {
     const r = await act(() => POST('/integrations/ply/import-pos'));
