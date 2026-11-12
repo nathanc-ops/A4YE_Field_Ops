@@ -617,6 +617,73 @@ async function commCard(el, scope, { phone, contact, rollup } = {}) {
   draw();
 }
 
+// ---- Reports → Jobs: a filterable job list; a job opens as a printable one-page summary
+async function jobsReport(R, { params, from, to, sub, setCsv }) {
+  const jobId = params.get('job');
+  if (jobId) return jobSheet(R, jobId, setCsv);
+  const f = { date_by: params.get('date_by') || 'created', status: params.get('status') || '', job_type: params.get('job_type') || '', tech_id: params.get('tech_id') || '', kind: params.get('kind') || '' };
+  const d = await GET('/reports/jobs' + qs({ from, to, ...f }));
+  const costs = can('see_costs'), T = d.totals;
+  const techs = (S.users || []).filter(u => u.active && u.role === 'tech');
+  R.innerHTML = `<form id="jf" class="row no-print" style="gap:8px;flex-wrap:wrap;margin:-4px 0 14px">
+      <label class="small">Dates are <select name="date_by" style="width:auto">${[['created', 'Created'], ['scheduled', 'Scheduled / start'], ['completed', 'Completed']].map(([k, l]) => `<option value="${k}" ${k === f.date_by ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <select name="status" style="width:auto"><option value="">All but cancelled</option><option value="open" ${f.status === 'open' ? 'selected' : ''}>Open (not done)</option>${JOB_STATUSES.map(s => `<option value="${s}" ${s === f.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
+      <select name="job_type" style="width:auto"><option value="">All types</option>${JOB_TYPES.map(s => `<option value="${s}" ${s === f.job_type ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
+      <select name="kind" style="width:auto"><option value="">Service & projects</option><option value="service" ${f.kind === 'service' ? 'selected' : ''}>Service only</option><option value="project" ${f.kind === 'project' ? 'selected' : ''}>Projects only</option></select>
+      <select name="tech_id" style="width:auto"><option value="">All techs</option>${techs.map(u => `<option value="${u.id}" ${String(u.id) === f.tech_id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
+      <button class="btn">Apply</button></form>
+    <div class="grid g4">${kpi('Jobs', T.jobs, `${label(f.date_by)} ${sub}`)}${kpi('Hours', num(T.hours, 1))}${kpi('Invoiced', money0(T.revenue), `${money0(T.collected)} collected`)}${costs ? kpi('Profit', money0(T.profit), `${money0(T.total_cost)} cost`) : kpi('Contract value', money0(T.contract_amount))}</div>
+    <p class="small" style="margin:10px 0">${Object.entries(d.by_status).map(([s, n]) => `${pill(s)} ${n}`).join(' &nbsp; ') || ''}</p>
+    <div class="card"><h2>Jobs — ${sub}</h2><p class="small muted no-print">Click a job for its one-page report.</p>
+      ${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b> ${esc(j.title || '')}${j.is_project ? ' <span class="pill">project</span>' : ''}<div class="small muted">${esc(j.customer_name)}</div>` },
+        { label: 'Type', get: j => label(j.job_type) }, { label: 'Techs', get: j => j.tech_names || '—' },
+        { label: 'Status', html: j => `${pill(j.status)}${j.status === 'on_hold' ? `<div class="small muted">${esc((j.hold_reason || '').slice(0, 50))}</div><div class="small ${j.hold_follow_up && j.hold_follow_up < todayStr() ? 'bad' : 'muted'}">${j.days_on_hold != null ? `${j.days_on_hold}d on hold · ` : ''}follow up ${fmtDate(j.hold_follow_up)}${j.hold_assignee_name ? ` (${esc(j.hold_assignee_name)})` : ''}</div>` : ''}` },
+        { label: 'Created', get: j => fmtDate(String(j.created_at).slice(0, 10)) }, { label: 'Scheduled', get: j => j.scheduled_start ? fmtDate(j.scheduled_start) : (j.start_date ? fmtDate(j.start_date) : '—') },
+        { label: 'Completed', get: j => j.completed_at ? fmtDate(String(j.completed_at).slice(0, 10)) : '—' }, { label: 'Hours', num: 1, get: j => num(j.hours, 1) },
+        { label: 'Contract', num: 1, get: j => j.contract_amount ? money0(j.contract_amount) : '—' }, { label: 'Invoiced', num: 1, get: j => money0(j.revenue) },
+        ...(costs ? [{ label: 'Cost', num: 1, get: j => money0(j.total_cost) }, { label: 'Margin', num: 1, html: j => j.margin_pct == null ? '—' : `<span class="${j.margin_pct < 0 ? 'bad' : ''}">${pct(j.margin_pct)}</span>` }] : [])],
+        d.rows, { onClick: j => go('#/reports' + qs({ r: 'jobs', from, to, job: j.id })), empty: 'No jobs match' })}</div>`;
+  $('#jf').onsubmit = e => { e.preventDefault(); const v = Object.fromEntries(new FormData(e.target)); go('#/reports' + qs({ r: 'jobs', from, to, ...v })); };
+  const D10 = v => v ? String(v).slice(0, 10) : '';
+  setCsv(() => toCSV([['Job', 'number'], ['Title', 'title'], ['Customer', 'customer_name'], ['Type', x => label(x.job_type)], ['Project', x => x.is_project ? 'yes' : ''], ['Status', x => label(x.status)],
+    ['Hold reason', 'hold_reason'], ['Follow-up', 'hold_follow_up'], ['Follow-up with', 'hold_assignee_name'], ['Techs', 'tech_names'], ['Visits', 'visits'], ['Created', x => D10(x.created_at)],
+    ['Scheduled', x => D10(x.scheduled_start) || x.start_date || ''], ['Completed', x => D10(x.completed_at)], ['Hours', 'hours'], ['Contract', 'contract_amount'], ['Invoiced', 'revenue'], ['Collected', 'collected'],
+    ...(costs ? [['Cost', 'total_cost'], ['Profit', 'profit'], ['Margin %', 'margin_pct']] : [])].map(([l, g]) => typeof g === 'function' ? { label: l, csv: g } : { label: l, key: g }), d.rows, `jobs_${from}_${to}.csv`));
+}
+async function jobSheet(R, id, setCsv) {
+  const [j, cm] = await Promise.all([GET('/jobs/' + id), GET('/comms' + qs({ job_id: id })).catch(() => ({ items: [] }))]);
+  const k = j.costing || {}, costs = can('see_costs'), loc = j.location || {};
+  const addr = [loc.address, loc.city, loc.state, loc.zip].filter(Boolean).join(', ');
+  const hrsBy = {}; for (const t of j.time || []) { const h = t.clock_out ? (new Date(t.clock_out) - new Date(t.clock_in)) / 36e5 : 0; hrsBy[t.user_name || '—'] = (hrsBy[t.user_name || '—'] || 0) + Math.max(0, h); }
+  const sec = (h, body) => `<div class="js-sec"><h3>${h}</h3>${body}</div>`;
+  const list = (rows, cols, empty) => rows.length ? `<table class="js-t"><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${c.label}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${cols.map(c => `<td class="${c.num ? 'num' : ''}">${c.html ? c.html(r) : esc(String(c.get(r) ?? ''))}</td>`).join('')}</tr>`).join('')}</tbody></table>` : `<p class="muted small">${empty}</p>`;
+  R.innerHTML = `<div class="row no-print" style="margin-bottom:10px;gap:8px"><button class="btn" onclick="history.back()">‹ Back to the list</button><a class="btn" href="#/jobs/${j.id}">Open job</a><button class="btn primary" onclick="print()">Print / save as PDF</button></div>
+    <div class="card js-sheet">
+      <div class="row spread" style="align-items:flex-start"><div><div class="small muted">${esc(S.settings.company_name || '')} · Job report · ${fmtDate(todayStr())}</div><h2 style="margin:4px 0">${esc(j.number)} · ${esc(j.title || '')}</h2>
+        <div>${pill(j.status)} ${billingPill(j.billing_type)} · ${esc(label(j.job_type))}${j.is_project ? ' · project' : ''}</div></div>
+        <div class="kpis-mini">${[['Hours', num(k.hours, 1)], ['Contract', k.contract_amount ? money0(k.contract_amount) : '—'], ['Invoiced', money0(k.revenue)], ['Collected', money0(k.collected)], ...(costs ? [['Cost', money0(k.total_cost)], ['Profit', `${money0(k.profit)}${k.margin_pct != null ? ` (${pct(k.margin_pct)})` : ''}`]] : [])].map(([l, v]) => `<div><span class="small muted">${l}</span><b>${v}</b></div>`).join('')}</div></div>
+      ${j.status === 'on_hold' ? `<div class="alert" style="margin-top:10px"><b>On hold${j.hold_at ? ` since ${fmtDate(j.hold_at.slice(0, 10))}` : ''}:</b> ${esc(j.hold_reason || '')} · follow up ${fmtDate(j.hold_follow_up)}${j.hold_assignee_name ? ` (${esc(j.hold_assignee_name)})` : ''}</div>` : ''}
+      ${j.status === 'cancelled' ? `<div class="alert" style="margin-top:10px"><b>Cancelled:</b> ${esc(j.cancel_reason || '')}</div>` : ''}
+      <div class="js-grid">
+        ${sec('Customer & site', `<dl class="kv"><dt>Customer</dt><dd>${esc(j.customer_name)}${j.customer_phone ? ` · ${esc(j.customer_phone)}` : ''}</dd><dt>Address</dt><dd>${esc(addr || '—')}</dd>${j.po_number ? `<dt>PO #</dt><dd>${esc(j.po_number)}</dd>` : ''}<dt>Techs</dt><dd>${esc(j.tech_names || 'Unassigned')}</dd></dl>`)}
+        ${sec('Dates', `<dl class="kv"><dt>Created</dt><dd>${fmtDate(String(j.created_at).slice(0, 10))}</dd><dt>Scheduled</dt><dd>${j.scheduled_start ? fmtDT(j.scheduled_start) : 'Not scheduled'}</dd><dt>Completed</dt><dd>${j.completed_at ? fmtDate(String(j.completed_at).slice(0, 10)) : '—'}</dd>${j.signoff_name ? `<dt>Signed off</dt><dd>${esc(j.signoff_name)}${j.signoff_at ? `, ${fmtDate(j.signoff_at.slice(0, 10))}` : ''}</dd>` : ''}</dl>`)}
+      </div>
+      ${j.description ? sec('Scope', `<div style="white-space:pre-wrap">${esc(j.description)}</div>`) : ''}
+      ${j.completion_notes ? sec('Completion notes', `<div style="white-space:pre-wrap">${esc(j.completion_notes)}</div>`) : ''}
+      ${sec(`Visits (${(j.appointments || []).length})`, list(j.appointments || [], [{ label: 'When', get: a => `${fmtDT(a.start)} – ${fmtTime(a.end)}` }, { label: 'Techs', get: a => a.tech_names || '' }, { label: 'Status', html: a => pill(a.status) }], 'No visits'))}
+      ${sec(`Hours (${num(k.hours, 1)})`, list(Object.entries(hrsBy), [{ label: 'Who', get: r => r[0] }, { label: 'Hours', num: 1, get: r => num(r[1], 1) }], 'No time logged'))}
+      ${sec(`Materials (${(j.materials || []).length})`, list(j.materials || [], [{ label: 'Item', get: m => m.description || m.name || '' }, { label: 'Qty', num: 1, get: m => num(m.qty, 2) }, { label: 'Price', num: 1, get: m => money(m.unit_price) }, ...(costs ? [{ label: 'Cost', num: 1, get: m => money(m.unit_cost) }] : [])], 'No materials'))}
+      ${(j.permits || []).length ? sec('Permits', list(j.permits, [{ label: 'Permit', get: p => p.permit_number || p.type || '' }, { label: 'Jurisdiction', get: p => p.jurisdiction || '' }, { label: 'Status', html: p => pill(p.status) }], '')) : ''}
+      ${(j.estimates || []).length || (j.invoices || []).length ? sec('Estimates & invoices', list([...(j.estimates || []).map(e => ({ k: e.change_order ? 'Change order' : 'Estimate', ...e })), ...(j.invoices || []).map(i => ({ k: 'Invoice', ...i }))],
+        [{ label: '', get: x => x.k }, { label: '#', get: x => x.number }, { label: 'Status', html: x => pill(x.status) }, { label: 'Total', num: 1, get: x => money(x.total) }, { label: 'Balance', num: 1, get: x => x.k === 'Invoice' ? money(x.balance) : '' }], '')) : ''}
+      ${sec(`Emails & calls (${cm.items.length})`, list(cm.items.slice(0, 25), [{ label: 'When', get: x => fmtDT(x.at) }, { label: '', get: x => x.type === 'email' ? 'Email sent' : `${(COMM_KIND[x.kind] || x.kind).replace(/^\S+\s/, '')} ${x.direction === 'in' ? 'in' : 'out'}` },
+        { label: 'Detail', get: x => x.type === 'email' ? `${x.subject} → ${x.to}` : [x.contact, x.outcome, x.body].filter(Boolean).join(' · ') }], 'None logged'))}
+      ${sec(`Notes (${(j.notes || []).length})`, list((j.notes || []).slice(0, 30), [{ label: 'When', get: n => fmtDT(n.created_at) }, { label: 'Who', get: n => n.user_name || '' }, { label: 'Note', html: n => `<span style="white-space:pre-wrap">${esc(n.body)}</span>` }], 'No notes'))}
+      <p class="small muted">${(j.attachments || []).length} photo(s)/file(s) and ${(j.forms || []).filter(x => x.completed_at).length}/${(j.forms || []).length} checklist(s) on the job.</p>
+    </div>`;
+  setCsv(null);
+}
+
 // after a hold change: say whether the calendar invite went
 function inviteToast(r, fallback) {
   const i = r && r.invite;
@@ -1549,7 +1616,7 @@ async function viewReports() {
   const [defFrom, defTo] = presetRange('mtd');
   const from = params.get('from') || defFrom, to = params.get('to') || defTo;
   const REPORT_PERM = { hours: 'timesheets', payroll: 'timesheets', permits: 'jobs' };
-  const tabs = [['pl', 'Profit & Loss'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled'], ['permits', 'Permits']]
+  const tabs = [['pl', 'Profit & Loss'], ['jobs', 'Jobs'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled'], ['permits', 'Permits']]
     .filter(([k]) => can(REPORT_PERM[k] || 'reports'));
   if (!tabs.length) { $('#view').innerHTML = setTop('Reports') + '<div class="card empty">You don\'t have access to any reports. Ask the owner to turn some on under Team.</div>'; return; }
   if (!tabs.some(([k]) => k === r)) return go('#/reports' + qs({ r: tabs[0][0], from: params.get('from'), to: params.get('to') }));
@@ -1569,6 +1636,7 @@ async function viewReports() {
   $('#csv').onclick = () => csv ? csv() : toast('Nothing to export on this report', true);
   const sub = `${fmtDate(from)} – ${fmtDate(to)}`;
 
+  if (r === 'jobs') return jobsReport(R, { params, from, to, sub, setCsv: f => { csv = f; } });
   if (r === 'pl') {
     const [p, trend] = await Promise.all([GET('/reports/pl' + qs({ from, to })), GET('/reports/trend?months=12')]);
     const line = (l, v, cls = '', indent = 0) => `<tr class="${cls}"><td style="padding-left:${10 + indent * 18}px">${l}</td><td class="num">${money(v)}</td><td class="num muted">${p.revenue ? pct(v / p.revenue * 100) : ''}</td></tr>`;

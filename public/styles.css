@@ -737,3 +737,11 @@ table.pl-rates td { padding: 2px 14px; color: #111; }
 .cm-body { white-space: pre-wrap; font-size: 13px; margin-top: 4px; max-height: 320px; overflow: auto; }
 .linkbtn { border: 0; background: none; color: var(--series-1); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
 .grid > .full { grid-column: 1 / -1; }
+
+/* ===== reports → jobs: one-page job sheet ===== */
+.js-sheet h3 { margin: 16px 0 6px; font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.js-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+.kpis-mini { display: flex; flex-wrap: wrap; gap: 6px 18px; } .kpis-mini > div { display: flex; flex-direction: column; align-items: flex-end; }
+.js-t { width: 100%; border-collapse: collapse; font-size: 13px; } .js-t th, .js-t td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; } .js-t .num { text-align: right; }
+@media (max-width: 700px) { .js-grid { grid-template-columns: 1fr; } .kpis-mini > div { align-items: flex-start; } }
+@media print { .js-sheet { border: 0; box-shadow: none; padding: 0; } .js-sec { break-inside: avoid; } }

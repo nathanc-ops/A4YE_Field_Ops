@@ -136,6 +136,14 @@ Putting a job **on hold** (status menu, Edit, or a tech's phone) requires a **re
 - The person with the task gets an all-day **calendar invite** by email. After saving, a message says whether it was emailed or why not (email not set up, no email on their user, or the provider refused it); every attempt is listed on the job’s **Emails & calls** tab. Moving the date updates the same event; taking the job off hold cancels it.
 - Every change is written to the job's notes, so the history stays after the hold ends.
 
+## Reports → Jobs
+
+A list of every job in the date range. **Dates are** picks which date counts: created, scheduled/start, or completed.
+- Filters: status (or "Open"), job type, service vs projects, and tech.
+- Each row shows techs, status, on-hold reason with days on hold, follow-up date and who has it, created/scheduled/completed dates, hours, contract, invoiced amount, and cost and margin for people allowed to see costs.
+- The top cards show totals, with a count of jobs per status underneath. **Export CSV** downloads the list.
+- **Click a job** for its one-page report: customer and site, dates, scope and completion notes, visits, hours by person, materials, permits, estimates and invoices, emails and calls, and notes. Use **Print / save as PDF** to print or save it.
+
 ## Emails & calls
 
 Each **customer**, **job** (tab **Emails & calls**), **estimate** (under the lines) and **Estimating takeoff** (tab **Calls & emails**) has a communication log.

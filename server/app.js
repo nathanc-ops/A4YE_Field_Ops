@@ -1355,6 +1355,34 @@ function createApp(db) {
     } });
   }));
   app.get('/api/reports/estimates', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.estimateConversion(db, from, to)); }));
+  // Jobs report: every job in a date range (by created / scheduled / completed date) with filters, status,
+  // hold details, hours and money. Cost fields are removed for people without "see costs".
+  app.get('/api/reports/jobs', office, wrap((req, res) => {
+    const { from, to } = range(req), q = req.query;
+    const by = { created: 'j.created_at', scheduled: 'COALESCE(j.scheduled_start, j.start_date)', completed: 'j.completed_at' }[q.date_by] || 'j.created_at';
+    const where = [`date(${by}) BETWEEN ? AND ?`], args = [from, to];
+    if (q.status === 'open') where.push("j.status NOT IN ('completed','invoiced','cancelled')");
+    else if (q.status) { const st = String(q.status).split(',').filter(Boolean); where.push(`j.status IN (${st.map(() => '?').join(',')})`); args.push(...st); }
+    else where.push("j.status != 'cancelled'");
+    if (q.job_type) { where.push('j.job_type = ?'); args.push(q.job_type); }
+    if (q.customer_id) { where.push('j.customer_id = ?'); args.push(+q.customer_id); }
+    if (q.tech_id) { where.push('EXISTS (SELECT 1 FROM job_techs t WHERE t.job_id = j.id AND t.user_id = ?)'); args.push(+q.tech_id); }
+    if (q.kind === 'project') where.push('j.is_project = 1'); else if (q.kind === 'service') where.push('COALESCE(j.is_project, 0) = 0');
+    const rows = all(db, `SELECT j.id, j.number, j.title, j.status, j.job_type, j.billing_type, j.is_project, j.created_at, j.scheduled_start, j.completed_at, j.start_date,
+        j.hold_reason, j.hold_follow_up, j.hold_at, c.id customer_id, c.name customer_name, ha.name hold_assignee_name,
+        (SELECT GROUP_CONCAT(u.name, ', ') FROM job_techs t JOIN users u ON u.id = t.user_id WHERE t.job_id = j.id) tech_names,
+        (SELECT COUNT(*) FROM appointments a WHERE a.job_id = j.id AND a.status != 'cancelled') visits
+      FROM jobs j JOIN customers c ON c.id = j.customer_id LEFT JOIN users ha ON ha.id = j.hold_assignee
+      WHERE ${where.join(' AND ')} ORDER BY ${by} DESC, j.id DESC LIMIT 2000`, ...args);
+    const out = rows.map(j => {
+      const k = C.jobCosting(db, j.id);
+      return { ...j, hours: k.hours, contract_amount: k.contract_amount, revenue: k.revenue, collected: k.collected, total_cost: k.total_cost, profit: k.profit, margin_pct: k.margin_pct,
+        days_on_hold: j.status === 'on_hold' && j.hold_at ? Math.max(0, Math.floor((Date.now() - new Date(j.hold_at)) / 864e5)) : null };
+    });
+    const sum = f => Math.round(out.reduce((s, r) => s + (Number(r[f]) || 0), 0) * 100) / 100;
+    const by_status = {}; for (const r of out) by_status[r.status] = (by_status[r.status] || 0) + 1;
+    res.json({ rows: out, totals: { jobs: out.length, hours: sum('hours'), contract_amount: sum('contract_amount'), revenue: sum('revenue'), collected: sum('collected'), total_cost: sum('total_cost'), profit: sum('profit') }, by_status });
+  }));
   app.get('/api/reports/job-costing', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.jobCostingReport(db, from, to)); }));
   app.get('/api/reports/lead-sources', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.revenueBySource(db, from, to)); }));
 

@@ -89,3 +89,18 @@ test('bids keep their own log; a missing record is a 404', async () => {
   assert.equal(r.length, 1); assert.equal(r[0].bid_name, 'Test Plaza'); assert.equal(r[0].customer_id, null);
   assert.equal((await call('admin', 'GET', '/comms?job_id=99999')).status, 404);
 });
+
+test('Reports → Jobs: filters, hold details, totals; office only', async () => {
+  const d = new Date(); d.setDate(d.getDate() + 4); const fu = d.toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  const hold = (await call('admin', 'POST', '/jobs', { customer_id: other, title: 'Meter base', job_type: 'install', status: 'on_hold', hold_reason: 'Utility', hold_follow_up: fu })).data.id;
+  const all = (await call('admin', 'GET', `/reports/jobs?from=${today}&to=${today}`)).data;
+  assert.ok(all.rows.length >= 2); assert.equal(all.totals.jobs, all.rows.length);
+  const h = all.rows.find(r => r.id === hold);
+  assert.equal(h.hold_reason, 'Utility'); assert.equal(h.hold_follow_up, fu); assert.equal(h.days_on_hold, 0); assert.ok('hours' in h && 'revenue' in h);
+  assert.deepEqual((await call('admin', 'GET', `/reports/jobs?from=${today}&to=${today}&status=on_hold`)).data.rows.map(r => r.id), [hold]);
+  assert.deepEqual((await call('admin', 'GET', `/reports/jobs?from=${today}&to=${today}&tech_id=${techId}`)).data.rows.map(r => r.id), [jobId]);
+  assert.ok((await call('admin', 'GET', `/reports/jobs?from=${today}&to=${today}&job_type=install`)).data.rows.every(r => r.job_type === 'install'));
+  assert.equal((await call('admin', 'GET', `/reports/jobs?from=2000-01-01&to=2000-01-31`)).data.rows.length, 0);
+  assert.equal((await call('tech', 'GET', `/reports/jobs?from=${today}&to=${today}`)).status, 403);
+});
