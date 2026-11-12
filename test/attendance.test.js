@@ -124,3 +124,15 @@ test('time-off requests: anyone asks; the Settings people are emailed; only appr
   assert.equal((await call('desk', 'POST', `/attendance/${r3}/withdraw`)).status, 403);
   assert.equal((await call('dana', 'POST', `/attendance/${r3}/withdraw`)).status, 200);
 });
+
+test('everyone selected gets every request, including a request they made themselves; the result names them', async () => {
+  await call('admin', 'PUT', '/settings', { timeoff_notify: `${ids.desk},${ids.dana}` });
+  const d = new Date(); d.setDate(d.getDate() + 90); const day = d.toISOString().slice(0, 10);
+  const r = (await call('dana', 'POST', '/attendance/request', { start_date: day })).data;
+  assert.ok(r.email.to.includes('dana@x.com'), 'the person asking is on the list, so they get it too');
+  assert.ok(r.email.to.includes('desk@x.com'));
+  assert.ok(r.email.names.includes('Dana Tech') && r.email.names.includes('Desk Person'));
+  assert.equal(r.email.status, 'not_configured'); assert.match(r.email.error, /Settings → Email/);
+  const sent = db.prepare("SELECT to_email FROM outbox WHERE related = ? ORDER BY id DESC").get(`attendance:${r.id}`);
+  assert.match(sent.to_email, /dana@x\.com/);
+});

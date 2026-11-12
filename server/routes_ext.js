@@ -286,20 +286,21 @@ module.exports = function routesExt(app, db, X) {
       booked.length ? `Already booked those days: ${[...new Set(booked.map(b => b.job_number))].join(', ')}` : ''].filter(Boolean);
     let to, subject, text;
     if (kind === 'request') {
-      const ids = [...new Set([...idList('timeoff_notify'), ...approverIds()])].filter(id => id !== row.user_id);
+      const ids = [...new Set([...idList('timeoff_notify'), ...approverIds()])];   // everyone selected, every request (the person asking included, as a copy)
       to = all(db, `SELECT email FROM users WHERE active = 1 AND email IS NOT NULL AND id IN (${ids.map(() => '?').join(',') || 'NULL'})`, ...ids).map(u => u.email);
       subject = `Time-off request: ${who.name}, ${span(row)}`;
       text = `${who.name} asked for time off.\n\n${lines.join('\n')}\n\nApprove or deny it on the Schedule (Week view): ${link}`;
     } else {
-      const ids = idList('timeoff_notify').filter(id => id !== decider.id);
+      const ids = [...new Set([...idList('timeoff_notify'), ...approverIds()])];
       to = [who.email, ...all(db, `SELECT email FROM users WHERE active = 1 AND email IS NOT NULL AND id IN (${ids.map(() => '?').join(',') || 'NULL'})`, ...ids).map(u => u.email)].filter(Boolean);
       subject = `Time off ${row.status}: ${who.name}, ${span(row)}`;
       text = `${decider.name} ${row.status} ${who.name}'s time off.\n\n${lines.join('\n')}${row.decision_note ? `\n\n${decider.name}: ${row.decision_note}` : ''}\n\nSchedule: ${link}`;
     }
-    to = [...new Set(to.filter(Boolean))];
-    if (!to.length) return { status: 'no_one', error: 'Nobody to email: set "Email time-off requests to" in Settings, and make sure those people have an email on their user' };
+    to = [...new Set(to.filter(Boolean).map(e => String(e).trim().toLowerCase()))];
+    const names = to.map(e => (get(db, 'SELECT name FROM users WHERE lower(email) = ?', e) || {}).name || e);
+    if (!to.length) return { status: 'no_one', to: [], names: [], error: 'Nobody to email: tick people under Settings → Scheduling & accounting defaults → Email time-off requests to, and make sure they have an email on their user (Team)' };
     const r = await mailer.send(db, { to: to.join(', '), subject, text, related: `attendance:${row.id}` });
-    return { status: r.status, to, error: r.error || (r.status === 'not_configured' ? 'Email isn\'t set up (Settings → Email)' : null) };
+    return { status: r.status, to, names, error: r.error || (r.status === 'not_configured' ? 'Email isn\'t set up on the server (Settings → Email)' : null) };
   }
   app.get('/api/attendance/requests', wrap((req, res) => {
     const approver = canApprove(req.user), seesAll = approver || idList('timeoff_notify').includes(req.user.id);

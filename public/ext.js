@@ -111,13 +111,20 @@ function requestTimeOffForm(after) {
     extra: '<p class="small muted">Your request is emailed for approval and shows on the schedule as requested. You get an email when it\'s approved or denied.</p>',
     submit: async v => {
       const r = await POST('/attendance/request', v);
-      toast(r.email && r.email.status === 'sent' ? 'Request sent — you\'ll get an email when it\'s decided' : `Request saved and on the schedule, but the email didn't go: ${(r.email && r.email.error) || 'unknown'}`, !(r.email && r.email.status === 'sent'));
-      after ? after() : route();
+      const e = r.email || {}, ok = e.status === 'sent';
+      // a clear result, not a toast that's gone in a few seconds
+      const m = modal(`<h2>${ok ? '✓ Request sent' : '⚠ Request saved, but not emailed'}</h2>
+        ${ok ? `<p>Emailed to <b>${esc((e.names || e.to || []).join(', '))}</b>. You'll get an email when it's approved or denied.</p>`
+          : `<p>Your request is on the schedule as <i>requested</i>, but the email didn't go out:</p><p class="bad">${esc(e.error || e.status || 'unknown reason')}</p>
+             ${e.names && e.names.length ? `<p class="small muted">It was meant for: ${esc(e.names.join(', '))}</p>` : ''}
+             <p class="small muted">${isAdmin() ? 'Settings → Email shows every email the app tried to send, with the error, and has a <b>Send test email</b> button.' : 'Tell the office so they can check Settings → Email.'}</p>`}
+        <div class="actions"><button type="button" class="btn primary" data-x>OK</button></div>`);
+      $('[data-x]', m.el).onclick = () => { m.close(); after ? after() : route(); };
     } });
 }
 function decideTimeOff(a, decision, after) {
   if (decision === 'approved') return act(() => POST(`/attendance/${a.id}/decide`, { decision })).then(r => {
-    toast(`Approved${r.booked && r.booked.length ? ` — but ${a.user_name} is booked then: ${[...new Set(r.booked.map(b => b.job_number))].join(', ')}. Move or reassign those visits.` : ''}${r.email && r.email.status !== 'sent' ? ` · email not sent: ${r.email.error || r.email.status}` : ''}`, !!(r.booked && r.booked.length) || !!(r.email && r.email.status !== 'sent'));
+    toast(`Approved${r.booked && r.booked.length ? ` — but ${a.user_name} is booked then: ${[...new Set(r.booked.map(b => b.job_number))].join(', ')}. Move or reassign those visits.` : ''}${r.email && r.email.status === 'sent' ? ` · emailed ${(r.email.names || []).join(', ')}` : r.email ? ` · email NOT sent: ${r.email.error || r.email.status}` : ''}`, !!(r.booked && r.booked.length) || !!(r.email && r.email.status !== 'sent'));
     after ? after() : route();
   }).catch(() => null);
   formModal({ title: `Deny ${a.user_name}'s time off`, okLabel: 'Deny', fields: [{ name: 'note', label: 'Why? (they get this by email)', type: 'textarea', full: true, required: true }],
