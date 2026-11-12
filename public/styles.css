@@ -725,3 +725,15 @@ table.pl-rates td { padding: 2px 14px; color: #111; }
 .fchip { display: block; font-size: 12px; padding: 4px 6px; margin-top: 4px; border-radius: 6px; background: var(--warn-soft); color: var(--text); border-left: 3px solid var(--warn); }
 .fchip:hover { text-decoration: none; filter: brightness(.97); }
 @media (max-width: 700px) { .wk-fgrid { grid-template-columns: 1fr; } .wk-fgrid > div:not(:has(.fchip)) { display: none; } }
+
+/* ===== emails & calls ===== */
+.comms .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.comms .seg button { border: 0; background: none; padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; color: var(--text); }
+.comms .seg button.on { background: var(--series-1); color: #fff; }
+.cm-list { margin-top: 10px; }
+.cm-item { border-left: 3px solid var(--border); padding: 6px 10px; margin-top: 8px; background: var(--surface-2, transparent); border-radius: 0 6px 6px 0; }
+.cm-item.email { border-left-color: var(--series-1); } .cm-item.log { border-left-color: var(--warn); } .cm-item.internal { opacity: .7; }
+.cm-item .row.spread { gap: 8px; flex-wrap: wrap; }
+.cm-body { white-space: pre-wrap; font-size: 13px; margin-top: 4px; max-height: 320px; overflow: auto; }
+.linkbtn { border: 0; background: none; color: var(--series-1); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+.grid > .full { grid-column: 1 / -1; }

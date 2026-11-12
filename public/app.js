@@ -569,6 +569,54 @@ async function viewJobs() {
   if (isOffice()) { $('#new').onclick = () => jobForm({}); if (params.get('new')) jobForm({}, { customerId: params.get('customer_id') }); }
 }
 
+// ---- emails & calls: what the app emailed (automatic) and calls / texts / meetings logged by hand
+const COMM_KIND = { call: '📞 Call', text: '💬 Text', email: '✉️ Email', meeting: '🤝 Meeting' };
+const COMM_OUTCOMES = ['Talked', 'Left voicemail', 'No answer', 'Wrong number', 'Scheduled', 'Approved', 'Declined', 'Wants a callback'];
+async function commCard(el, scope, { phone, contact, rollup } = {}) {
+  if (!el) return;
+  const { params } = hashParams(); let show = params.get('comms') || 'all';
+  el.innerHTML = '<div class="card"><h2>Emails & calls</h2><p class="muted">Loading…</p></div>';
+  let r;
+  try { r = await GET('/comms' + qs(scope)); } catch (e) { el.innerHTML = `<div class="card"><h2>Emails & calls</h2><p class="bad">${esc(e.message)}</p></div>`; return; }
+  const draw = () => {
+    const items = r.items.filter(x => show === 'all' || (show === 'email' ? x.type === 'email' : x.type === 'log'));
+    const nE = r.items.filter(x => x.type === 'email').length, nL = r.items.length - nE;
+    const where = x => rollup ? [x.job_number && `<a href="#/jobs/${x.job_id}">${esc(x.job_number)}</a>`, x.estimate_number && `<a href="#/estimates/${x.estimate_id}">Est ${esc(x.estimate_number)}</a>`].filter(Boolean).join(' · ') : '';
+    const relLink = rel => { const [k, id] = String(rel || '').split(':'); const href = { job: '#/jobs/', estimate: '#/estimates/', invoice: '#/invoices/' }[k];
+      return rollup || scope.job_id ? (href ? `<a href="${href}${id}">${esc(label(k))}</a>` : `<span>${esc(label(k))}</span>`) : ''; };
+    el.innerHTML = `<div class="card comms"><div class="row spread" style="flex-wrap:wrap;gap:8px"><h2 style="margin:0">${r.emails ? 'Emails & calls' : 'Calls'}</h2>
+      <div class="row" style="gap:6px;flex-wrap:wrap">${r.emails ? `<div class="seg">${[['all', `All (${r.items.length})`], ['email', `Emails (${nE})`], ['log', `Calls & notes (${nL})`]].map(([k, l]) => `<button type="button" class="${k === show ? 'on' : ''}" data-show="${k}">${l}</button>`).join('')}</div>` : ''}
+        ${phone ? `<a class="btn sm" href="tel:${esc(phone)}" id="cm-dial">📞 ${esc(phone)}</a>` : ''}<button type="button" class="btn sm primary" id="cm-add">+ Log a call</button></div></div>
+      ${r.emails ? '<p class="small muted" style="margin:6px 0 0">Emails are the ones this app sent (estimates, invoices, visit notices, reports). Replies and mail sent from Outlook aren\'t captured, so log anything important with “+ Log a call” → Email.</p>' : ''}
+      <div class="cm-list">${items.map(x => x.type === 'email' ? `<div class="cm-item email ${x.internal ? 'internal' : ''}">
+          <div class="row spread"><span><b>✉️ Email sent</b> to ${esc(x.to)}${x.internal ? ' <span class="pill">staff</span>' : ''} ${relLink(x.related)}</span><span class="small muted">${fmtDT(x.at)}</span></div>
+          <div>${esc(x.subject)} ${x.status === 'sent' ? '' : `<span class="pill ${x.status === 'failed' ? 'bad' : 'warn'}" title="${esc(x.error || '')}">${esc(label(x.status))}</span>`}</div>
+          <details><summary class="small">Show message</summary><div class="cm-body">${esc(x.body || '')}</div></details></div>`
+        : `<div class="cm-item log"><div class="row spread"><span><b>${COMM_KIND[x.kind] || esc(x.kind)}</b> ${x.direction === 'in' ? 'from' : 'to'} ${esc(x.contact || 'customer')}${x.phone ? ` · ${esc(x.phone)}` : ''}${x.outcome ? ` · <span class="pill">${esc(x.outcome)}</span>` : ''}${x.duration_min ? ` · ${x.duration_min} min` : ''} ${where(x)}</span>
+          <span class="small muted">${fmtDT(x.at)}${x.user_name ? ` · ${esc(x.user_name)}` : ''}${x.user_id === S.user.id || isAdmin() || S.user.role === 'manager' ? ` <button type="button" class="linkbtn" data-cedit="${x.id}">edit</button>` : ''}</span></div>
+          ${x.body ? `<div class="cm-body">${esc(x.body)}</div>` : ''}</div>`).join('') || `<p class="muted">${r.items.length ? 'Nothing of this kind' : `No ${r.emails ? 'emails or calls' : 'calls'} yet`}</p>`}</div></div>`;
+    $$('[data-show]', el).forEach(b => b.onclick = () => { show = b.dataset.show; draw(); });
+    $('#cm-add', el).onclick = () => logForm();
+    $$('[data-cedit]', el).forEach(b => b.onclick = () => logForm(r.items.find(x => x.type === 'log' && x.id === +b.dataset.cedit)));
+    if ($('#cm-dial', el)) $('#cm-dial', el).addEventListener('click', () => setTimeout(() => logForm(null, { direction: 'out', phone }), 400));
+  };
+  const reload = async () => { r = await GET('/comms' + qs(scope)); draw(); };
+  const logForm = (x, pre = {}) => {
+    const fields = [{ name: 'kind', label: 'Type', type: 'select', blank: false, options: Object.entries(COMM_KIND) },
+      { name: 'direction', label: 'Direction', type: 'select', blank: false, options: [['out', 'We contacted them'], ['in', 'They contacted us']] },
+      { name: 'contact', label: 'Who', placeholder: 'Name' }, { name: 'phone', label: 'Phone / email' },
+      { name: 'outcome', label: 'Outcome', list: 'cm-outcomes', placeholder: 'e.g. Left voicemail' }, { name: 'duration_min', label: 'Minutes', type: 'number' },
+      { name: 'occurred_at', label: 'When', type: 'datetime', required: true },
+      { name: 'body', label: 'Notes', type: 'textarea', full: true, placeholder: 'What was said, what was promised, next step' }];
+    const m = formModal({ title: x ? 'Edit log entry' : 'Log a call, text, email or meeting', okLabel: x ? 'Save' : 'Log it',
+      values: x || { kind: 'call', direction: 'out', contact: contact || '', occurred_at: new Date().toISOString(), ...pre }, fields,
+      extra: `<datalist id="cm-outcomes">${COMM_OUTCOMES.map(o => `<option value="${esc(o)}">`).join('')}</datalist>${x ? '<div class="row" style="margin-top:8px"><button type="button" class="btn sm danger" id="cm-del">Delete entry</button></div>' : ''}`,
+      submit: async v => { if (x) await PUT('/comms/' + x.id, v); else await POST('/comms', { ...scope, ...v }); toast(x ? 'Saved' : 'Logged'); await reload(); } });
+    if (x && $('#cm-del', m.el)) $('#cm-del', m.el).onclick = async () => { if (!confirm('Delete this log entry?')) return; await act(() => DEL('/comms/' + x.id), 'Deleted'); m.close(); reload(); };
+  };
+  draw();
+}
+
 // on hold: a reason and a follow-up date are required; resolves to the fields to send, or null if cancelled
 function holdPrompt(j) {
   return new Promise(resolve => {
@@ -635,7 +683,7 @@ async function viewJob(id) {
   const c = j.costing;
   const formsDone = j.forms.filter(f => f.completed_at).length;
   const tabs = [['overview', 'Overview'], ['forms', `Checklists (${formsDone}/${j.forms.length})`], ['photos', `Photos & files (${j.attachments.length})`], ['time', `Time (${j.time.length})`],
-    ['materials', `Materials (${j.materials.length})`], ['equipment', `Equipment (${j.equipment.length})`], ['permits', `Permits (${j.permits.length})`]];
+    ['materials', `Materials (${j.materials.length})`], ['equipment', `Equipment (${j.equipment.length})`], ['permits', `Permits (${j.permits.length})`], ['comms', isOffice() ? 'Emails & calls' : 'Calls']];
   if (j.is_project) tabs.splice(1, 0, ['project', 'Project']);
   if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Billing'], ...(can('see_costs') ? [['costs', 'Other costs'], ['costing', 'Job costing']] : []));
   else if (j.pick_lists.length) tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
@@ -689,6 +737,7 @@ async function viewJob(id) {
   };
 
   const T = $('#tab');
+  if (tab === 'comms') return commCard(T, { job_id: j.id }, { phone: j.customer_phone, contact: j.customer_name });
   if (tab === 'overview') {
     T.innerHTML = `<div class="grid g2"><div class="card stack">
       <h2>Site</h2><dl class="kv">
@@ -893,10 +942,12 @@ async function viewCustomer(id) {
       ${customerEquipmentCard(c)}
       <div class="card"><h2>Estimates</h2>${table([{ label: '#', key: 'number' }, { label: 'Title', key: 'title' }, { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }], c.estimates, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>
       <div class="card"><h2>Invoices</h2>${table([{ label: '#', key: 'number' }, { label: 'Date', get: i => fmtDate(i.issue_date) }, { label: 'Status', html: i => pill(i.status) }, { label: 'Balance', num: 1, get: i => money(i.balance) }], c.invoices, { onClick: i => go('#/invoices/' + i.id), empty: 'No invoices' })}</div>
+      <div class="full" id="comms"></div>
       ${c.agreements.length ? `<div class="card"><h2>Service agreements</h2>${table([{ label: 'Plan', key: 'name' }, { label: 'Price', get: a => `${money(a.price)} / ${a.billing_frequency}` }, { label: 'Next visit', get: a => fmtDate(a.next_visit) }, { label: 'Status', html: a => pill(a.status) }], c.agreements, { onClick: () => go('#/agreements') })}</div>` : ''}
     </div>`;
   $('#edit').onclick = () => customerForm(c);
   $('#addloc').onclick = () => locationForm(c.id);
+  commCard($('#comms'), { customer_id: c.id }, { phone: c.phone, contact: c.company ? c.name : '', rollup: true });
 }
 
 // ============================================================ estimates & invoices (shared editor)
@@ -1043,6 +1094,7 @@ async function viewDoc(kind, id) {
     ${isEst && id !== 'new' && !doc.change_order ? `<div class="card no-print" style="margin-top:14px" id="estvisits"><div class="row spread"><h2>Site visits (${(doc.visits || []).length})</h2>${!techMode && can('jobs') && !['cancelled', 'declined', 'expired'].includes(doc.status) ? '<button type="button" class="btn sm primary" id="addestvisit">+ Schedule visit</button>' : ''}</div><p class="small muted">Walkthroughs to see the work and price it. They show on the schedule board marked EST.</p>${table([{ label: 'When', html: v => `<b>${fmtDT(v.start)}</b> – ${fmtTime(v.end)}` }, { label: 'Techs', get: v => v.tech_names || 'Unassigned' }, { label: 'Status', html: v => pill(v.status) }, { label: 'Notes', get: v => v.notes || '' }], doc.visits || [], { empty: 'No visit booked yet', onClick: !techMode && can('jobs') ? v => apptForm({ ...v, estimate_title: doc.title }) : null })}</div>` : ''}
     ${isEst && (doc.signature_name || doc.approved_option_id) ? `<div class="card" style="margin-top:14px"><h2>Customer approval</h2>${doc.approved_option_id ? `Chose <b>${esc((doc.options.find(o => o.id === doc.approved_option_id) || {}).name || '')}</b> — ${money(doc.total)}. ` : ''}${doc.signature_name ? `Signed by <b>${esc(doc.signature_name)}</b> on ${fmtDT(doc.approved_at)}` : ''}</div>` : ''}`;
 
+  if (isEst && id !== 'new' && isOffice()) { const box = document.createElement('div'); box.style.marginTop = '14px'; $('#view').appendChild(box); commCard(box, { estimate_id: doc.id }, { phone: (doc.customer || {}).phone, contact: (doc.customer || {}).name }); }
   const form = $('#docform');
   const tbody = $('#items');
   if ($('#addestvisit')) $('#addestvisit').onclick = () => apptForm({ estimate_id: doc.id, estimate_number: doc.number, customer_name: (doc.customer || {}).name, estimate_title: doc.title,

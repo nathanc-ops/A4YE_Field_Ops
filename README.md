@@ -136,6 +136,14 @@ Putting a job **on hold** (status menu, Edit, or a tech's phone) requires a **re
 - The person with the task gets an all-day **calendar invite** by email (when email is set up). Moving the date updates the same event; taking the job off hold cancels it.
 - Every change is written to the job's notes, so the history stays after the hold ends.
 
+## Emails & calls
+
+Each **customer**, **job** (tab **Emails & calls**), **estimate** (under the lines) and **Estimating takeoff** (tab **Calls & emails**) has a communication log.
+- **Emails** appear automatically: every email this app sent about that record (estimates, invoices, visit confirmations, project reports, hold follow-up invites), with the send status and the full text. The customer page rolls up everything sent about their jobs, estimates and invoices. Emails to staff are tagged **staff**.
+- **Calls, texts, emails sent from Outlook and meetings** are logged by hand with **+ Log a call**: direction, who, outcome (Left voicemail, Talked, Scheduled…), minutes and notes. Tapping the phone number on the card offers to log the call. A call logged on an estimate or job also shows on the customer.
+- Not captured: **replies, incoming mail, and mail sent from Outlook**. The app doesn't read a mailbox. **Phone calls aren't recorded automatically** either; there is no phone-system connection. Log the ones that matter.
+- Techs see a **Calls** tab on jobs they're assigned to and can log calls there; they don't see emails. Only whoever logged an entry (or an admin/manager) can edit or delete it.
+
 ## Lists: filter and sort
 
 Customers, Jobs, Estimates and Invoices: click a column heading to sort (click again to flip). Filters sit above each list; the URL keeps filters, sort and page, so Back and bookmarks work.
@@ -380,6 +388,7 @@ Spellings like "Journeyman Electrician", "JW", "1st-year apprentice" and "Helper
 - **Live bank feeds.** Statements are imported as files (CSV, OFX, QFX). Pulling transactions in automatically needs a bank-data aggregator such as Plaid: a paid account, API keys and their approval. Imported transactions already flow into the same matching, so a feed can be added later without changing the review or reconcile steps.
 - **Payroll tax filing.** Labor is accrued at loaded cost and you record what payroll actually paid. Gross-to-net, tax deposits and W-2s still need a payroll provider.
 - **Ply, live.** The connector follows Ply's published API (OpenAPI spec at docs.getply.com) and is tested against a stand-in that enforces it, but hasn't run against a live Ply account yet. Try it on one pick list and one PO first.
+- **Automatic call and inbox capture.** Calls and replies are logged by hand on the Emails & calls card; there's no phone system or mailbox connection.
 - **SMS and offline mode.** The tech view is mobile-friendly but needs a signal.
 - **Excel files and direct connections to the old system.** Imports take CSV files (the project Estimate Import also takes rows pasted straight from Excel). Save other Excel sheets as CSV first. There's no live connection to ServiceTitan or Successware.
 - **Multi-company and audit log.** It's single-company, and edits are not versioned.

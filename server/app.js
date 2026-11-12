@@ -1204,6 +1204,81 @@ function createApp(db) {
 
   app.get('/api/outbox', office, wrap((req, res) => res.json(all(db, 'SELECT * FROM outbox ORDER BY id DESC LIMIT 200'))));
 
+  // ------------------------------------------------------------ communication log
+  // Emails the app sent (outbox, matched by its related key) plus calls/texts/meetings logged by hand,
+  // for one customer (everything on their jobs, estimates and invoices too), job, estimate or bid.
+  // The office sees it all; a tech sees and logs calls on jobs they're assigned to (no emails).
+  const COMM_KINDS = ['call', 'text', 'email', 'meeting'];
+  function commScope(q, user) {
+    const n = k => (q[k] != null && q[k] !== '' ? Number(q[k]) : null);
+    const s = { customer_id: n('customer_id'), job_id: n('job_id'), estimate_id: n('estimate_id'), bid_id: n('bid_id') };
+    const set = Object.entries(s).filter(([, v]) => v != null);
+    if (set.length !== 1 || !Number.isInteger(set[0][1])) throw bad('Say which customer, job, estimate or bid');
+    const isOff = ['admin', 'manager', 'office'].includes(user.role);
+    if (!isOff) {
+      if (!s.job_id || !get(db, 'SELECT 1 FROM job_techs WHERE job_id = ? AND user_id = ?', s.job_id, user.id)) throw bad('Not assigned to this job', 403);
+    }
+    const exists = { customer_id: 'customers', job_id: 'jobs', estimate_id: 'estimates', bid_id: 'bids' }[set[0][0]];
+    if (!get(db, `SELECT 1 FROM ${exists} WHERE id = ?`, set[0][1])) throw bad('Not found', 404);
+    return { ...s, key: set[0][0], id: set[0][1], office: isOff };
+  }
+  function commEmails(sc) {
+    const id = sc.id;
+    let keys;   // SQL that yields the outbox.related values belonging to this record
+    if (sc.key === 'customer_id') keys = [`SELECT 'job:' || id FROM jobs WHERE customer_id = ${id}`, `SELECT 'estimate:' || id FROM estimates WHERE customer_id = ${id}`,
+      `SELECT 'invoice:' || id FROM invoices WHERE customer_id = ${id}`, `SELECT 'appointment:' || a.id FROM appointments a JOIN jobs j ON j.id = a.job_id WHERE j.customer_id = ${id}`,
+      `SELECT 'report:' || r.id FROM project_reports r JOIN jobs j ON j.id = r.job_id WHERE j.customer_id = ${id}`];
+    else if (sc.key === 'job_id') keys = [`SELECT 'job:${id}'`, `SELECT 'estimate:' || id FROM estimates WHERE job_id = ${id}`, `SELECT 'invoice:' || id FROM invoices WHERE job_id = ${id}`,
+      `SELECT 'appointment:' || id FROM appointments WHERE job_id = ${id}`, `SELECT 'report:' || id FROM project_reports WHERE job_id = ${id}`];
+    else if (sc.key === 'estimate_id') keys = [`SELECT 'estimate:${id}'`];
+    else keys = [`SELECT 'bid:${id}'`];
+    const staff = new Set(all(db, 'SELECT lower(email) e FROM users WHERE email IS NOT NULL').map(r => r.e));
+    return all(db, `SELECT id, to_email, subject, body, status, error, related, created_at FROM outbox WHERE related IN (${keys.join(' UNION ALL ')}) ORDER BY id DESC LIMIT 300`)
+      .map(o => ({ type: 'email', id: o.id, at: o.created_at.replace(' ', 'T') + 'Z', direction: 'out', to: o.to_email, subject: o.subject, body: o.body, status: o.status, error: o.error, related: o.related,
+        internal: String(o.to_email).split(/,\s*/).every(a => staff.has(a.trim().toLowerCase())) }));
+  }
+  function commLogs(sc) {
+    const where = sc.key === 'customer_id' ? 'l.customer_id = ?' : `l.${sc.key} = ?`;
+    return all(db, `SELECT l.*, u.name user_name, j.number job_number, e.number estimate_number, b.project_name bid_name FROM comm_log l
+      LEFT JOIN users u ON u.id = l.user_id LEFT JOIN jobs j ON j.id = l.job_id LEFT JOIN estimates e ON e.id = l.estimate_id LEFT JOIN bids b ON b.id = l.bid_id
+      WHERE ${where} ORDER BY l.occurred_at DESC, l.id DESC LIMIT 300`, sc.id).map(l => ({ type: 'log', ...l, at: l.occurred_at }));
+  }
+  app.get('/api/comms', wrap((req, res) => {
+    const sc = commScope(req.query, req.user);
+    const items = [...(sc.office ? commEmails(sc) : []), ...commLogs(sc)].sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    res.json({ items, emails: sc.office });
+  }));
+  function commData(body, prev) {
+    const d = pick(body, ['kind', 'direction', 'contact', 'phone', 'outcome', 'body', 'duration_min', 'occurred_at']);
+    if (d.kind !== undefined && !COMM_KINDS.includes(d.kind)) throw bad('Pick call, text, email or meeting');
+    if (d.direction !== undefined && !['in', 'out'].includes(d.direction)) throw bad('Incoming or outgoing?');
+    for (const k of ['contact', 'phone', 'outcome']) if (d[k] !== undefined) d[k] = String(d[k] ?? '').trim().slice(0, 200) || null;
+    if (d.body !== undefined) d.body = String(d.body ?? '').trim().slice(0, 5000) || null;
+    if (d.duration_min !== undefined) { const m = Math.round(Number(d.duration_min)); d.duration_min = d.duration_min === '' || d.duration_min == null || !Number.isFinite(m) || m < 0 ? null : Math.min(m, 1440); }
+    if (d.occurred_at !== undefined) { const t = new Date(d.occurred_at); if (!d.occurred_at || isNaN(t)) throw bad('When was it?'); if (t > new Date(Date.now() + 5 * 60e3)) throw bad('That time is in the future'); d.occurred_at = t.toISOString(); }
+    const m = { ...prev, ...d };
+    if (!m.outcome && !m.body) throw bad('Add what it was about (an outcome or notes)');
+    return d;
+  }
+  app.post('/api/comms', wrap((req, res) => {
+    const sc = commScope(req.body, req.user);
+    const d = commData({ kind: 'call', direction: 'out', occurred_at: new Date().toISOString(), ...req.body });
+    // tie it to the customer too, so the customer page rolls everything up
+    let customer = sc.customer_id;
+    if (sc.job_id) customer = get(db, 'SELECT customer_id FROM jobs WHERE id = ?', sc.job_id).customer_id;
+    if (sc.estimate_id) { const e = get(db, 'SELECT customer_id, job_id FROM estimates WHERE id = ?', sc.estimate_id); customer = e.customer_id; d.job_id = e.job_id || null; }
+    const id = insert('comm_log', { ...d, customer_id: customer || null, job_id: sc.job_id ?? d.job_id ?? null, estimate_id: sc.estimate_id, bid_id: sc.bid_id, user_id: req.user.id });
+    res.json({ id });
+  }));
+  const commRow = req => {
+    const l = get(db, 'SELECT * FROM comm_log WHERE id = ?', +req.params.id);
+    if (!l) throw bad('Not found', 404);
+    if (!(['admin', 'manager'].includes(req.user.role) || l.user_id === req.user.id)) throw bad('Only who logged it (or an admin) can change it', 403);
+    return l;
+  };
+  app.put('/api/comms/:id', wrap((req, res) => { const l = commRow(req); update('comm_log', l.id, commData(req.body, l)); res.json({ ok: true }); }));
+  app.delete('/api/comms/:id', wrap((req, res) => { const l = commRow(req); run(db, 'DELETE FROM comm_log WHERE id = ?', l.id); res.json({ ok: true }); }));
+
   // ------------------------------------------------------------ dashboard & reports
   app.get('/api/dashboard', office, wrap((req, res) => {
     const t = today();

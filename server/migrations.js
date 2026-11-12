@@ -1080,6 +1080,32 @@ const MIGRATIONS = [
   },
   // 40: an on-hold follow-up is a task for someone (default: Settings → Jobs on hold)
   db => { addColumn(db, 'jobs', 'hold_assignee', 'INTEGER'); db.exec('UPDATE jobs SET hold_assignee = hold_by WHERE hold_assignee IS NULL AND hold_by IS NOT NULL'); },
+  // 41: calls (and texts, emails sent outside the app, meetings) logged by hand on a customer, job, estimate or bid;
+  //     shown next to the emails the app sent (outbox.related)
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS comm_log (
+      id INTEGER PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'call' CHECK (kind IN ('call','text','email','meeting')),
+      direction TEXT NOT NULL DEFAULT 'out' CHECK (direction IN ('in','out')),
+      customer_id INTEGER REFERENCES customers(id) ON DELETE CASCADE,
+      job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+      estimate_id INTEGER REFERENCES estimates(id) ON DELETE SET NULL,
+      bid_id INTEGER REFERENCES bids(id) ON DELETE CASCADE,
+      contact TEXT,
+      phone TEXT,
+      outcome TEXT,
+      body TEXT,
+      duration_min INTEGER,
+      occurred_at TEXT NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_comm_customer ON comm_log(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_comm_job ON comm_log(job_id);
+    CREATE INDEX IF NOT EXISTS idx_comm_estimate ON comm_log(estimate_id);
+    CREATE INDEX IF NOT EXISTS idx_comm_bid ON comm_log(bid_id);
+    CREATE INDEX IF NOT EXISTS idx_outbox_related ON outbox(related);`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

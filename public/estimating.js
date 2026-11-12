@@ -311,12 +311,13 @@ async function viewTakeoff(id) {
         ${kpi('Total quote', money0(B.total), `O&P ${num(B.op_pct, 2)}% · contingency ${num(B.contingency_pct, 2)}%`)}</div>
       ${flags.length ? `<div class="alert" style="margin-top:12px">${flags.map(esc).join(' · ')}</div>` : ''}
       ${t.applied_at ? `<p class="small"><span class="pill good">✓ Used as the bid value ${fmtDT(t.applied_at)}</span></p>` : ''}
-      <div class="tabs" style="margin-top:14px">${[['lines', `Lines (${t.lines.filter(l => !l.derived).length})`], ['estimate', 'Estimate summary'], ['notes', `RFIs & notes (${(t.questions || []).length})`], ['files', `Plans & instructions (${(t.files || []).length})`]].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tt="${k}">${l}</button>`).join('')}</div>
+      <div class="tabs" style="margin-top:14px">${[['lines', `Lines (${t.lines.filter(l => !l.derived).length})`], ['estimate', 'Estimate summary'], ['notes', `RFIs & notes (${(t.questions || []).length})`], ['comms', 'Calls & emails'], ['files', `Plans & instructions (${(t.files || []).length})`]].map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tt="${k}">${l}</button>`).join('')}</div>
       <div id="tobody"></div>`;
     $$('[data-tt]').forEach(b => b.onclick = () => go(`#/estimating/takeoff/${id}?tab=${b.dataset.tt}`));
     const body = $('#tobody');
     if (tab === 'estimate') body.innerHTML = estimateSummaryHtml(t);
     else if (tab === 'files') { body.innerHTML = planFilesCard(t, id); wirePlanFiles(t, id); }
+    else if (tab === 'comms') commCard(body, { bid_id: t.bid_id });
     else if (tab === 'notes') body.innerHTML = `<div class="grid g2">${[['Questions for the GC (RFIs)', t.questions], ['Assumptions', t.clarifications], ['Exclusions', t.exclusions], ['Sheets reviewed', t.sheets_reviewed]]
       .map(([h, list]) => `<div class="card"><h2>${h}</h2>${(list || []).length ? `<ul>${list.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '<div class="empty">None</div>'}</div>`).join('')}</div>
       ${(t.scope_checklist || []).length ? `<div class="card" style="margin-top:14px"><h2>Scope coverage</h2><p class="small muted">What Claude says it carried for each part of a complete bid. Check anything “not shown” against the plans before you bid.</p>
