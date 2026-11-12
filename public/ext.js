@@ -652,13 +652,18 @@ function jobBudgetTab(j, T) {
 function jobPurchasingTab(j, T) {
   const plyOn = S.settings.ply_enabled === '1';
   T.innerHTML = `<div class="grid g2">
-    ${isOffice() ? `<div class="card"><div class="row spread"><h2>Purchase orders</h2><div class="row"><a class="btn sm primary" href="#/purchasing/po/new?job_id=${j.id}">+ PO for this job</a>${plyOn ? '<button class="btn sm" id="plyjob">Send job to Ply</button>' : ''}</div></div>
-      ${table([{ label: 'PO', key: 'number' }, { label: 'Vendor', key: 'vendor_name' }, { label: 'Status', html: p => pill(p.status) }, { label: 'Total', num: 1, get: p => money(p.total) }, { label: 'Received', num: 1, get: p => money(p.received_value) }],
+    ${isOffice() ? `<div class="card"><div class="row spread"><h2>Purchase orders</h2><div class="row"><a class="btn sm primary" href="#/purchasing/po/new?job_id=${j.id}">+ PO for this job</a>${plyOn ? '<button class="btn sm" id="plypos" title="Bring in POs written in Ply for this job">Check Ply for POs</button><button class="btn sm" id="plyjob">Send job to Ply</button>' : ''}</div></div>
+      ${table([{ label: 'PO', html: p => `${esc(p.number)}${p.source === 'ply' ? ` <span class="pill info" title="Written in Ply${p.ply_number ? ` as ${esc(p.ply_number)}` : ''}">Ply${p.ply_number ? ` ${esc(p.ply_number)}` : ''}</span>` : ''}` }, { label: 'Vendor', key: 'vendor_name' }, { label: 'Status', html: p => pill(p.status) }, { label: 'Total', num: 1, get: p => money(p.total) }, { label: 'Received', num: 1, get: p => money(p.received_value) }],
         j.purchase_orders || [], { onClick: p => go('#/purchasing/po/' + p.id), empty: 'No POs for this job' })}</div>` : ''}
     <div class="card"><div class="row spread"><h2>Pick lists</h2>${isOffice() || !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn sm primary" id="newpick">+ Pick list</button>' : ''}</div>
       ${table([{ label: '#', key: 'number' }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }], j.pick_lists, { onClick: p => go('#/pick/' + p.id), empty: 'No pick lists' })}</div></div>`;
   if (!isOffice()) { if ($('#newpick')) $('#newpick').onclick = () => techPickForm(j.id); return; }
   if (plyOn) $('#plyjob').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job sent to Ply'); };
+  if (plyOn) $('#plypos').onclick = async () => {
+    const r = await act(() => POST('/integrations/ply/import-pos'));
+    toast(r.imported ? `${r.imported} PO(s) brought in from Ply${r.received_lines ? `, ${r.received_lines} received line(s)` : ''}` : `No new Ply POs${r.linked_jobs ? ` · ${r.linked_jobs} job(s) linked to Ply` : ''}${r.errors.length ? ` · ${r.errors[0]}` : ''}`, !!r.errors.length);
+    route();
+  };
   $('#newpick').onclick = () => formModal({
     title: 'New pick list', okLabel: 'Create',
     fields: [{ name: 'from_estimate', label: 'Pull material lines from the approved estimate', type: 'checkbox', default: (j.estimates || []).some(e => e.status === 'approved') ? 1 : 0, full: true },

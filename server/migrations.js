@@ -1137,6 +1137,8 @@ const MIGRATIONS = [
     for (const [c, d] of [['owner_id', 'INTEGER'], ['next_step', 'TEXT'], ['next_step_date', 'TEXT'], ['close_date', 'TEXT'], ['lost_reason', 'TEXT']]) addColumn(db, 'estimates', c, d);
     for (const [c, d] of [['pipeline_owner_id', 'INTEGER'], ['next_step', 'TEXT'], ['next_step_date', 'TEXT']]) addColumn(db, 'jobs', c, d);
   },
+  // 46: POs created in Ply for a job are imported and logged on the job
+  db => { addColumn(db, 'purchase_orders', 'source', 'TEXT'); addColumn(db, 'purchase_orders', 'ply_number', 'TEXT'); db.exec('CREATE INDEX IF NOT EXISTS idx_po_ply ON purchase_orders(ply_id)'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

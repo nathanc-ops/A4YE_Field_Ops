@@ -41,10 +41,15 @@ const plyServer = http.createServer((req, res) => {
       if (!ply.materials.some(x => x.id === body.materialId)) return bad('material not found');
       const x = { id: uuid(), material: { id: body.materialId }, quantity: body.quantity, note: body.note }; ply.pickItems[m[1]].push(x); return send(201, x);
     }
+    if (req.method === 'GET' && path === '/purchase-orders') {
+      const loc = u.searchParams.get('locationId'), after = u.searchParams.get('createdAfter');
+      if (after && !/^\d{4}-\d\d-\d\d$/.test(after)) return bad('createdAfter must be a date');
+      return send(200, page(ply.pos.filter(p => (!loc || (p.location && p.location.id === loc)) && (!after || String(p.createdAt || '9999') >= after)), u.searchParams));
+    }
     if (req.method === 'POST' && path === '/purchase-orders') {
       if (!body.orderNumber) return bad('orderNumber required');
       for (const it of body.items || []) if (!it.materialId || !(it.quantity > 0) || !(it.price >= 0)) return bad('items need materialId, quantity > 0 and price >= 0');
-      const x = { id: uuid(), status: 'DRAFT', orderNumber: body.orderNumber, supplier: body.supplierId ? { id: body.supplierId } : null, location: body.locationId ? { id: body.locationId } : null, itemCount: (body.items || []).length };
+      const x = { id: uuid(), createdAt: new Date().toISOString().slice(0, 19), status: 'DRAFT', orderNumber: body.orderNumber, supplier: body.supplierId ? { id: body.supplierId } : null, location: body.locationId ? { id: body.locationId } : null, itemCount: (body.items || []).length };
       ply.pos.push(x); ply.poItems[x.id] = (body.items || []).map(it => ({ id: uuid(), material: { id: it.materialId }, quantity: it.quantity, price: it.price, note: it.note })); ply.received[x.id] = [];
       return send(201, x);
     }
@@ -172,4 +177,48 @@ test('PO → Ply: supplier matched by name, delivered to the job, prices sent; r
   // the old webhook address now explains itself
   const hook = await fetch(base + '/hooks/ply', { method: 'POST' });
   assert.equal(hook.status, 410);
+});
+
+test('POs made in Ply for a job are logged on the job; a Ply job with the same number gets linked; receipts charge the job', async () => {
+  // a job that was set up in Ply by hand, with the same number, and a PO a foreman wrote in Ply
+  const cust = (await call('POST', '/customers', { name: 'Ply Hand Customer' })).data.id;
+  const jobId = (await call('POST', '/jobs', { customer_id: cust, title: 'Hand job' })).data.id;
+  const num = db.prepare('SELECT number FROM jobs WHERE id = ?').get(jobId).number;
+  const plyJob = { id: uuid(), name: `${num} Hand job`, number: num, active: true }; ply.jobs.push(plyJob);
+  const mat = ply.materials[0];
+  const pbLinked = db.prepare('SELECT id FROM pricebook WHERE ply_item_id = ?').get(mat.id);
+  const supplier = { id: uuid(), name: 'Valley Electric Supply' };
+  const handPo = { id: uuid(), createdAt: new Date().toISOString().slice(0, 19), orderNumber: 'PLY-77', status: 'SENT', supplier, location: { id: plyJob.id, name: plyJob.name }, totalCost: 262.5, itemCount: 2, note: 'Rush' };
+  ply.pos.push(handPo);
+  ply.poItems[handPo.id] = [{ id: uuid(), material: { id: mat.id, name: mat.name }, quantity: 5, price: 20 }, { id: uuid(), material: { id: uuid(), name: '3/4 EMT strap' }, variation: { id: uuid(), name: '1-hole' }, quantity: 50, price: 3 }];
+  ply.received[handPo.id] = [];
+  // and one to the warehouse, which isn't a job's
+  ply.pos.push({ id: uuid(), createdAt: handPo.createdAt, orderNumber: 'PLY-78', status: 'SENT', supplier, location: { id: ply.locations[0].id }, itemCount: 0 });
+  ply.poItems[ply.pos[ply.pos.length - 1].id] = [];
+  let s = (await call('POST', '/integrations/ply/sync')).data;
+  assert.equal(s.imported_pos, 1, JSON.stringify(s)); assert.ok(s.linked_jobs >= 1);
+  assert.equal(db.prepare('SELECT ply_id FROM jobs WHERE id = ?').get(jobId).ply_id, plyJob.id);
+  const po = db.prepare('SELECT * FROM purchase_orders WHERE ply_id = ?').get(handPo.id);
+  assert.equal(po.job_id, jobId); assert.equal(po.status, 'submitted'); assert.equal(po.source, 'ply'); assert.equal(po.ply_number, 'PLY-77');
+  assert.equal(po.shipping, 12.5, 'tax / shipping = Ply total − lines'); assert.match(po.notes, /Ply PLY-77 — Rush/);
+  assert.equal(db.prepare('SELECT name FROM vendors WHERE id = ?').get(po.vendor_id).name, 'Valley Electric Supply');
+  const lines = db.prepare('SELECT * FROM po_lines WHERE po_id = ? ORDER BY sort').all(po.id);
+  assert.deepEqual(lines.map(l => [l.description, l.qty, l.unit_cost]), [[mat.name, 5, 20], ['3/4 EMT strap — 1-hole', 50, 3]]);
+  if (pbLinked) assert.equal(lines[0].pricebook_id, pbLinked.id, 'linked to the price book item');
+  const note = db.prepare('SELECT body FROM job_notes WHERE job_id = ? ORDER BY id DESC').get(jobId).body;
+  assert.match(note, new RegExp(`${po.number} logged from Ply \\(PLY-77\\): Valley Electric Supply, 2 line\\(s\\), \\$262.50 — sent`));
+  assert.equal((await call('GET', `/jobs/${jobId}`)).data.purchase_orders.length, 1, 'on the job\'s Purchasing tab');
+  // a second sync doesn't duplicate; a line added in Ply comes in; receipts charge the job
+  ply.poItems[handPo.id].push({ id: uuid(), material: { id: uuid(), name: 'Ground rod' }, quantity: 1, price: 18 });
+  s = (await call('POST', '/integrations/ply/sync')).data;
+  assert.equal(s.imported_pos, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM purchase_orders WHERE ply_id = ?').get(handPo.id).n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM po_lines WHERE po_id = ?').get(po.id).n, 3);
+  handPo.status = 'RECEIVED';
+  for (const it of ply.poItems[handPo.id]) ply.received[handPo.id].push({ id: uuid(), purchaseOrderItemId: it.id, quantity: it.quantity });
+  s = (await call('POST', '/integrations/ply/sync')).data;
+  assert.equal(s.received_lines, 3);
+  assert.equal(db.prepare('SELECT status FROM purchase_orders WHERE id = ?').get(po.id).status, 'received');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM job_materials WHERE job_id = ?').get(jobId).n, 3, 'received to the job: charged as job materials');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM purchase_orders WHERE notes LIKE 'Ply PLY-78%'").get().n, 0, 'warehouse PO not put on a job');
 });

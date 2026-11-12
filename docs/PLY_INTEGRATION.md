@@ -8,6 +8,7 @@ Field Ops connects to Ply through the **Ply Public API** (https://docs.getply.co
    - `jobs:write`
    - `pick_lists:write`
    - `purchase_orders:write`
+   - `purchase_orders:read` (to bring in POs written in Ply)
    - `materials:write`
    - `materials_availability:read`
    - `locations:read`
@@ -31,6 +32,7 @@ Keep the key out of email, chat and source code. It lives only in the server's s
 | **Send to Ply** on a pick list | A Ply **pick list** from your chosen warehouse or truck **to the job**, with each line as a catalog material. A line's cost code is noted as the material code, e.g. `0810-M`. Re-sending adds only new lines. |
 | **Send to Ply** on a PO | A Ply **purchase order**, left as **Draft** so you send it to the supplier from Ply. The supplier is matched by name; the PO is delivered to the job (or your shop location) with your prices. |
 | **Pull materials & stock** | Price book cost, client price, unit, and stock on hand. Stock counts warehouses and trucks, not material already at jobs. |
+| **PO written in Ply** for a job (delivered to the job's Ply location) | Brought in hourly, or with **Check Ply for POs** on the job's Purchasing tab. It becomes a PO on the job (badge **Ply** plus Ply's order number), its supplier is matched to a vendor or added, and its lines link to price-book items where the Ply material is linked. It is logged in the job's notes. Lines added in Ply later come in too, and receipts in Ply charge the job as usual. A Ply job that has the same number as a Field Ops job is linked automatically. |
 | **Sync now**, and hourly | PO status; receipts entered in Ply receive the matching PO lines here (stock or job materials, as usual); a pick list Ply marks **Completed** completes here and charges the job. |
 
 ## Items Ply doesn't have
@@ -44,3 +46,7 @@ Every Ply line must be a Ply catalog material. When a pick list or PO has lines 
 - **"Missing a permission (scope)":** edit the key in Ply and add the scope named in the message.
 - Every call is logged under Settings → Integrations – Ply → Recent activity. Click a row to see what was sent and returned.
 - Ply has no webhooks, so Field Ops pulls changes. The old `/hooks/ply` address is no longer used.
+- **POs written in Ply:**
+  - Only POs created in the last 180 days, and delivered to a job's Ply location, are brought in. POs to a warehouse or truck are left alone.
+  - The API gives one total, so tax and shipping arrive together as one amount (Ply total minus the lines).
+  - Edits to a line's quantity or price in Ply after import aren't copied. Fix them on the PO here.

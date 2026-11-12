@@ -15,7 +15,8 @@
 //
 //  Every Ply line must be a Ply catalog material. Lines are matched by Ply id, then SKU = item number,
 //  then exact name. Items Ply doesn't have are reported; with create_missing they're added to Ply's catalog.
-const { all, get, run, settings } = require('./db');
+const D = require('./db');
+const { all, get, run, settings, tx } = D;
 
 const BASES = { production: 'https://api.getply.com/api/v1', demo: 'https://demo-api.getply.com/api/v1' };
 function config(db) {
@@ -236,24 +237,97 @@ async function pushPO(db, poId, { createMissing = false } = {}) {
 }
 
 // ------------------------------------------------------------ pull changes from Ply (no webhooks)
+// receipts entered in Ply → receive the matching PO lines here (stock or job materials, as usual)
+async function pullReceipts(db, H, po) {
+  const rec = await listAll(db, `/purchase-orders/${encodeURIComponent(po.ply_id)}/reconcile-items`);
+  const byLine = new Map(); for (const x of rec) byLine.set(x.purchaseOrderItemId, (byLine.get(x.purchaseOrderItemId) || 0) + (Number(x.quantity) || 0));
+  const lines = [];
+  for (const [plyLine, q] of byLine) {
+    const l = get(db, 'SELECT * FROM po_lines WHERE po_id = ? AND ply_line_id = ?', po.id, plyLine);
+    if (l && q - l.qty_received > 1e-9) lines.push({ po_line_id: l.id, qty: Math.round((q - l.qty_received) * 1000) / 1000 });
+  }
+  if (lines.length) H.receivePO(po.id, lines, null, 'ply');
+  return lines.length;
+}
+// a Ply line → a PO line here (price-book item when the Ply material is linked to one)
+function lineFromPly(db, poId, it, sort) {
+  const pb = it.material && it.material.id ? get(db, 'SELECT id, name, cost_code_id FROM pricebook WHERE ply_item_id = ?', it.material.id) : null;
+  const name = [it.material && it.material.name, it.variation && it.variation.name].filter(Boolean).join(' — ') || (pb && pb.name) || it.note || 'Ply item';
+  run(db, 'INSERT INTO po_lines (po_id, pricebook_id, description, qty, unit_cost, cost_code_id, sort, ply_line_id) VALUES (?,?,?,?,?,?,?,?)',
+    poId, pb ? pb.id : null, String(name).slice(0, 300), Number(it.quantity) || 0, Math.max(0, Number(it.price) || 0), pb ? pb.cost_code_id : null, sort, String(it.id));
+}
+async function addNewItems(db, po) {
+  const have = new Set(all(db, 'SELECT ply_line_id FROM po_lines WHERE po_id = ? AND ply_line_id IS NOT NULL', po.id).map(x => x.ply_line_id));
+  const items = await listAll(db, `/purchase-orders/${encodeURIComponent(po.ply_id)}/items`);
+  let n = all(db, 'SELECT COUNT(*) n FROM po_lines WHERE po_id = ?', po.id)[0].n;
+  for (const it of items) if (!have.has(String(it.id))) lineFromPly(db, po.id, it, n++);
+}
+const PLY_PO_STATUS = { DRAFT: 'draft', WAITING_FOR_APPROVAL: 'draft', SENT: 'submitted', CONFIRMED: 'submitted', PAID: 'submitted', PARTIALLY_RECEIVED: 'submitted', RECEIVED: 'submitted', ARCHIVED: 'submitted',
+  CANCELED: 'cancelled', DECLINED: 'cancelled', EXPIRED: 'cancelled' };
+
+// POs created in Ply for a job (delivered to the job's Ply location) → a PO on the job here, logged in the job's notes.
+// One listing call covers every job; open jobs not yet linked to Ply are linked when Ply has a job with the same number.
+async function importJobPOs(db, H, { days = 180 } = {}) {
+  const out = { imported: 0, linked_jobs: 0, received_lines: 0, skipped: 0, errors: [] };
+  // link open jobs to Ply jobs made by hand in Ply (same job number)
+  const unlinked = all(db, "SELECT id, number FROM jobs WHERE ply_id IS NULL AND status NOT IN ('cancelled')");
+  if (unlinked.length) {
+    const plyJobs = await listAll(db, '/jobs');
+    const byNum = new Map(plyJobs.filter(x => x.number).map(x => [String(x.number).trim().toLowerCase(), x]));
+    for (const j of unlinked) {
+      const m = byNum.get(String(j.number).trim().toLowerCase());
+      if (m && !get(db, 'SELECT 1 x FROM jobs WHERE ply_id = ?', String(m.id))) { run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', String(m.id), j.id); out.linked_jobs++; }
+    }
+  }
+  const jobs = new Map(all(db, "SELECT id, number, ply_id FROM jobs WHERE ply_id IS NOT NULL").map(j => [String(j.ply_id), j]));
+  if (!jobs.size) return out;
+  const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+  const pos = await listAll(db, '/purchase-orders', { createdAfter: since });
+  for (const p of pos) {
+    const job = p.location && jobs.get(String(p.location.id));
+    if (!job) continue;                                                       // to a warehouse, truck or someone else's job
+    if (get(db, 'SELECT 1 x FROM purchase_orders WHERE ply_id = ?', String(p.id))) continue;   // ours, or already imported
+    try {
+      // supplier → vendor (by Ply link, then exact name; added if new)
+      let vendor = p.supplier && p.supplier.id ? get(db, 'SELECT id FROM vendors WHERE ply_vendor_id = ?', String(p.supplier.id)) : null;
+      const sname = (p.supplier && p.supplier.name) || 'Ply supplier (not named)';
+      if (!vendor) vendor = get(db, 'SELECT id FROM vendors WHERE lower(trim(name)) = lower(trim(?))', sname);
+      if (vendor && p.supplier && p.supplier.id) run(db, 'UPDATE vendors SET ply_vendor_id = COALESCE(ply_vendor_id, ?) WHERE id = ?', String(p.supplier.id), vendor.id);
+      const vendorId = vendor ? vendor.id : Number(run(db, 'INSERT INTO vendors (name, ply_vendor_id, notes) VALUES (?,?,?)', sname, p.supplier ? String(p.supplier.id) : null, 'Added from a Ply purchase order').lastInsertRowid);
+      const items = await listAll(db, `/purchase-orders/${encodeURIComponent(p.id)}/items`);
+      const sub = items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.price) || 0), 0);
+      const extra = Math.max(0, Math.round(((Number(p.totalCost) || 0) - sub) * 100) / 100);   // tax / shipping, which the API doesn't break out
+      const poId = tx(db, () => {
+        const id = Number(run(db, `INSERT INTO purchase_orders (number, vendor_id, job_id, status, deliver_to, order_date, expected_date, shipping, notes, ply_id, ply_status, ply_synced_at, source, ply_number)
+          VALUES (?,?,?,?, 'job', ?, ?, ?, ?, ?, ?, datetime('now'), 'ply', ?)`, D.nextNumber(db, 'purchase_orders', 'PO'), vendorId, job.id, PLY_PO_STATUS[p.status] || 'submitted',
+          String(p.createdAt || '').slice(0, 10) || null, p.dueDate || null, extra, [p.orderNumber ? `Ply ${p.orderNumber}` : 'From Ply', p.note].filter(Boolean).join(' — '),
+          String(p.id), p.status || null, p.orderNumber || null).lastInsertRowid);
+        items.forEach((it, i) => lineFromPly(db, id, it, i));
+        const num = get(db, 'SELECT number FROM purchase_orders WHERE id = ?', id).number;
+        run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', job.id, null,
+          `${num} logged from Ply${p.orderNumber ? ` (${p.orderNumber})` : ''}: ${sname}, ${items.length} line(s), $${(Number(p.totalCost) || sub).toFixed(2)} — ${String(p.status || '').toLowerCase().replace(/_/g, ' ')}`);
+        return id;
+      });
+      out.imported++;
+      if (['PARTIALLY_RECEIVED', 'RECEIVED'].includes(p.status)) out.received_lines += await pullReceipts(db, H, get(db, 'SELECT * FROM purchase_orders WHERE id = ?', poId));
+    } catch (e) { out.errors.push(`${p.orderNumber || p.id}: ${e.message}`); }
+  }
+  log(db, 'in', 'import_job_pos', out.errors.length ? 'partial' : 'ok', out);
+  return out;
+}
+
 async function syncStatus(db, H) {
   const out = { pos: 0, received_lines: 0, picks_completed: 0, errors: [] };
+  try { const im = await importJobPOs(db, H); out.imported_pos = im.imported; out.linked_jobs = im.linked_jobs; out.received_lines += im.received_lines; out.errors.push(...im.errors); }
+  catch (e) { out.errors.push(`Importing job POs: ${e.message}`); }
   for (const po of all(db, "SELECT * FROM purchase_orders WHERE ply_id IS NOT NULL AND status NOT IN ('received','cancelled')")) {
     try {
       const r = await request(db, 'GET', `/purchase-orders/${encodeURIComponent(po.ply_id)}`, null, { quiet: true });
       run(db, "UPDATE purchase_orders SET ply_status = ?, ply_synced_at = datetime('now') WHERE id = ?", r.status || null, po.id);
       if (['CANCELED', 'DECLINED', 'EXPIRED'].includes(r.status) && po.status === 'draft') run(db, "UPDATE purchase_orders SET status = 'cancelled' WHERE id = ?", po.id);
       if (['SENT', 'CONFIRMED', 'PAID'].includes(r.status) && po.status === 'draft') run(db, "UPDATE purchase_orders SET status = 'submitted' WHERE id = ?", po.id);
-      if (['PARTIALLY_RECEIVED', 'RECEIVED'].includes(r.status)) {
-        const rec = await listAll(db, `/purchase-orders/${encodeURIComponent(po.ply_id)}/reconcile-items`);
-        const byLine = new Map(); for (const x of rec) byLine.set(x.purchaseOrderItemId, (byLine.get(x.purchaseOrderItemId) || 0) + (Number(x.quantity) || 0));
-        const lines = [];
-        for (const [plyLine, q] of byLine) {
-          const l = get(db, 'SELECT * FROM po_lines WHERE po_id = ? AND ply_line_id = ?', po.id, plyLine);
-          if (l && q - l.qty_received > 1e-9) lines.push({ po_line_id: l.id, qty: Math.round((q - l.qty_received) * 1000) / 1000 });
-        }
-        if (lines.length) { H.receivePO(po.id, lines, null, 'ply'); out.received_lines += lines.length; }
-      }
+      if (po.source === 'ply' && !['RECEIVED', 'ARCHIVED'].includes(r.status)) await addNewItems(db, po);   // lines added in Ply after we imported it
+      if (['PARTIALLY_RECEIVED', 'RECEIVED'].includes(r.status)) out.received_lines += await pullReceipts(db, H, po);
       out.pos++;
     } catch (e) { out.errors.push(`${po.number}: ${e.message}`); }
   }
@@ -270,4 +344,4 @@ async function syncStatus(db, H) {
   return out;
 }
 
-module.exports = { config, request, listAll, test, pullItems, pushJob, pushPO, pushPickList, syncStatus, log, toPlyPO, toPlyPickList, toPlyJob, BASES };
+module.exports = { config, request, listAll, test, pullItems, pushJob, pushPO, pushPickList, syncStatus, importJobPOs, log, toPlyPO, toPlyPickList, toPlyJob, BASES };

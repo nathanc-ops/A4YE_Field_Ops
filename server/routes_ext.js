@@ -874,6 +874,11 @@ module.exports = function routesExt(app, db, X) {
     res.json(r);
   }));
   app.post('/api/integrations/ply/sync', admin, wrap(async (req, res) => res.json(await Ply.syncStatus(db, H))));
+  // the office can check Ply for new job POs from a job's Purchasing tab (also runs with every hourly sync)
+  app.post('/api/integrations/ply/import-pos', office, wrap(async (req, res) => {
+    if (!Ply.config(db)) throw bad('Ply is not connected (Settings → Integrations – Ply)');
+    res.json(await Ply.importJobPOs(db, H));
+  }));
   app.post('/api/purchase-orders/:id/send-to-ply', office, wrap(async (req, res) => { mustGet('purchase_orders', req.params.id); res.json(await Ply.pushPO(db, Number(req.params.id), { createMissing: !!req.body.create_missing })); }));
   app.post('/api/integrations/ply/pull-items', admin, wrap(async (req, res) => res.json(await Ply.pullItems(db))));
   app.post('/api/integrations/ply/push-job/:id', office, wrap(async (req, res) => res.json(await Ply.pushJob(db, Number(req.params.id)))));
