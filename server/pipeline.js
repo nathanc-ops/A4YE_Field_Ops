@@ -6,14 +6,16 @@
 //   Estimating    an estimate being written (draft / waiting for review)                   — Opportunity: Needs analysis
 //   Proposal      an estimate sent or viewed                                               — Opportunity: Proposal / quote
 //   Won           an approved estimate with no job yet, or a job not yet scheduled         — Closed won → order
-//   In progress   a job scheduled, dispatched, underway or on hold                         — Order being fulfilled
+//   In progress   a job scheduled, dispatched, underway or on hold — even when part-billed  — Order being fulfilled
+//                 (progress billing: the job card shows what's left to bill, its bills sit under Invoiced)
 //   To invoice    a job completed, not fully invoiced                                      — Order ready to bill
 //   Invoiced      an invoice sent and not paid                                             — Invoice open
 //   Paid          an invoice paid in the last 30 days                                      — Closed (cash in)
 //   Lost          an estimate declined (90 days) or a lead marked unqualified (shown on request)
 //
 // Each record appears once, at its furthest point: a customer with an estimate is the estimate; an estimate with a job
-// is the job; a job with an open invoice is the invoice. Probability gives the weighted forecast for the open stages.
+// is the job; a finished job with an open invoice is the invoice. A job still underway keeps its card while its progress
+// bills show under Invoiced, so its amount is what's left to bill (no money counted twice). Probability gives the weighted forecast for the open stages.
 const D = require('./db');
 const C = require('./calc');
 const { all, get, run } = D;
@@ -44,12 +46,11 @@ module.exports = function pipelineRoutes(app, db, { wrap, bad, office, today, ad
     // ---- invoices (furthest along)
     const invoices = all(db, "SELECT i.*, c.name customer_name, c.type customer_type FROM invoices i JOIN customers c ON c.id = i.customer_id WHERE i.status NOT IN ('void')")
       .map(i => ({ ...C.invoiceWithTotals(db, i), customer_name: i.customer_name, customer_type: i.customer_type }));
-    const jobsInvoicedOpen = new Set(), jobsWithInvoice = new Map();
+    const jobsWithInvoice = new Map();
     for (const i of invoices) {
       if (i.job_id) jobsWithInvoice.set(i.job_id, (jobsWithInvoice.get(i.job_id) || 0) + (i.subtotal - i.discount));
       if (i.status === 'draft') continue;
       if (i.balance > 0.005) {
-        if (i.job_id) jobsInvoicedOpen.add(i.job_id);
         add({ kind: 'invoice', id: i.id, stage: 'invoiced', href: `#/invoices/${i.id}`, number: i.number, title: i.title || '', customer_id: i.customer_id, customer_name: i.customer_name,
           customer_type: i.customer_type, amount: i.balance, since: i.sent_at || i.issue_date, close_date: i.due_date, job_id: i.job_id,
           flag: i.due_date && i.due_date < t ? `${Math.floor((Date.parse(t) - Date.parse(i.due_date)) / 864e5)} days past due` : '' });
@@ -69,21 +70,26 @@ module.exports = function pipelineRoutes(app, db, { wrap, bad, office, today, ad
       const est = get(db, "SELECT * FROM estimates WHERE job_id = ? AND status = 'approved' AND COALESCE(change_order, 0) = 0 ORDER BY id LIMIT 1", j.id);
       if (est) jobOfEstimate.add(est.id);
       for (const e of all(db, 'SELECT id FROM estimates WHERE job_id = ?', j.id)) jobOfEstimate.add(e.id);
-      if (jobsInvoicedOpen.has(j.id)) continue;
-      const value = Number(j.contract_amount) || (est ? approvedTotal(est) : 0);
-      const invoiced = jobsWithInvoice.get(j.id) || 0;
+      // the job's value: a fixed-price job's contract with approved change orders; otherwise its contract or approved estimate
+      const contract = j.billing_type === 'fixed' ? Number(require('./billing').contractValue(db, j).total) || 0 : 0;
+      const value = contract || Number(j.contract_amount) || (est ? approvedTotal(est) : 0);
+      const invoiced = jobsWithInvoice.get(j.id) || 0, left = Math.max(0, value - invoiced);
+      const active = ['unscheduled', 'scheduled', 'dispatched', 'in_progress', 'on_hold'].includes(j.status);
       let stage = null, since = null;
+      // Work still going on stays where the work is, even when it's been billed in part (progress billing / pay apps on a
+      // commercial project, a deposit on a service job): the bills show under Invoiced, the job shows what's left to bill.
       if (j.status === 'unscheduled') { stage = 'won'; since = est ? est.approved_at : j.created_at; }
-      else if (['scheduled', 'dispatched', 'in_progress', 'on_hold'].includes(j.status)) { stage = 'in_progress'; since = j.scheduled_start || j.start_date || j.created_at; }
-      else if (j.status === 'completed') { if (invoiced > 0 && value - invoiced <= 1) continue; stage = 'to_invoice'; since = j.completed_at; }   // fully invoiced: it's on its invoice
-      else if (j.status === 'invoiced') {
-        // invoiced and fully paid, or invoiced only in part on a fixed-price job
-        if (j.billing_type === 'fixed' && value - invoiced > 1) { stage = 'to_invoice'; since = j.completed_at || j.created_at; }
-        else continue;
+      else if (active) { stage = 'in_progress'; since = j.scheduled_start || j.start_date || j.created_at; }
+      else if (j.status === 'completed' || j.status === 'invoiced') {
+        // done: whatever isn't billed yet is to invoice; fully billed jobs are on their invoices
+        if (invoiced > 0 ? left <= 1 : j.status === 'invoiced') continue;
+        stage = 'to_invoice'; since = j.completed_at || j.created_at;
       }
       if (!stage) continue;
+      const pct = value > 0 ? Math.round(invoiced / value * 100) : null;
       add({ kind: 'job', id: j.id, stage, href: `#/jobs/${j.id}`, number: j.number, title: j.title || '', customer_id: j.customer_id, customer_name: j.customer_name, customer_type: j.customer_type,
-        amount: stage === 'to_invoice' && invoiced > 0 ? Math.max(0, value - invoiced) : value, since, owner_id: j.pipeline_owner_id || j.project_manager_id || (est && (est.owner_id || est.created_by)) || null,
+        amount: invoiced > 0 ? left : value, contract_value: value, billed: Math.round(invoiced * 100) / 100, billed_pct: invoiced > 0 ? pct : null, is_project: !!j.is_project,
+        since, owner_id: j.pipeline_owner_id || j.project_manager_id || (est && (est.owner_id || est.created_by)) || null,
         next_step: j.next_step, next_step_date: j.next_step_date, close_date: j.end_date || null,
         flag: j.status === 'on_hold' ? `on hold: ${String(j.hold_reason || '').slice(0, 60)}` : !value ? 'no contract or estimate amount' : '' });
     }

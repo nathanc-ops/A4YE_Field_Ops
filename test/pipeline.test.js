@@ -94,3 +94,29 @@ test('lost: a declined estimate with a reason, an unqualified lead; hidden unles
   assert.equal(d.cards.find(c => c.kind === 'estimate' && c.id === ids.e1).lost_reason, 'Price too high');
   assert.ok(d.totals.win_rate >= 0);
 });
+
+test('a commercial project billed in progress stays In progress (what is left to bill); its bill sits under Invoiced', async () => {
+  const cust = (await call('admin', 'POST', '/customers', { name: 'GC Builders', type: 'commercial', email: 'gc@example.com' })).data.id;
+  const job = (await call('admin', 'POST', '/jobs', { customer_id: cust, title: 'Tenant fit-out', billing_type: 'fixed', contract_amount: 50000, is_project: 1,
+    scheduled_start: new Date(Date.now() - 864e5).toISOString(), scheduled_end: new Date(Date.now() + 30 * 864e5).toISOString() })).data.id;
+  await call('admin', 'PUT', `/jobs/${job}`, { status: 'in_progress' });
+  const before = (await call('admin', 'GET', '/pipeline')).data;
+  const inv = (await call('admin', 'POST', '/invoices', { customer_id: cust, job_id: job, tax_rate: 0, items: [{ description: 'Progress billing — 30%', qty: 1, unit_price: 15000 }] })).data.id;
+  await call('admin', 'POST', `/invoices/${inv}/send`, {});
+  const d = (await call('admin', 'GET', '/pipeline')).data;
+  const card = d.cards.find(c => c.kind === 'job' && c.id === job);
+  assert.equal(card.stage, 'in_progress', 'still in progress');
+  assert.equal(card.amount, 35000); assert.equal(card.billed, 15000); assert.equal(card.billed_pct, 30);
+  assert.equal(stageOf(d, 'invoice', inv), 'invoiced');
+  assert.equal(d.totals.booked - before.totals.booked, -15000, 'booked drops by what was billed');
+  assert.equal(d.totals.billed - before.totals.billed, 15000, 'and it shows as awaiting payment: nothing counted twice');
+  assert.equal((await call('admin', 'GET', `/jobs/${job}`)).data.status, 'in_progress', 'billing in part doesn\'t change the job');
+  // finished and fully billed: only the invoice is left
+  await call('admin', 'PUT', `/jobs/${job}`, { status: 'completed' });
+  let e = (await call('admin', 'GET', '/pipeline')).data;
+  assert.equal(stageOf(e, 'job', job), 'to_invoice'); assert.equal(e.cards.find(c => c.kind === 'job' && c.id === job).amount, 35000);
+  const inv2 = (await call('admin', 'POST', '/invoices', { customer_id: cust, job_id: job, tax_rate: 0, items: [{ description: 'Final billing', qty: 1, unit_price: 35000 }] })).data.id;
+  await call('admin', 'POST', `/invoices/${inv2}/send`, {});
+  e = (await call('admin', 'GET', '/pipeline')).data;
+  assert.equal(stageOf(e, 'job', job), undefined); assert.equal(stageOf(e, 'invoice', inv2), 'invoiced');
+});

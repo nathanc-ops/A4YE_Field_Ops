@@ -778,3 +778,4 @@ a.pill.att-absent { color: var(--bad); } a.pill.att-sick, a.pill.att-late, a.pil
 .pipe-col.over { outline: 2px dashed var(--series-1); outline-offset: -2px; background: color-mix(in srgb, var(--series-1) 10%, var(--surface-2)); }
 .pipe-col.nodrop { opacity: .5; }
 .pipe-path .pp.over { outline: 2px dashed var(--series-1); outline-offset: -3px; filter: brightness(1.25); } .pipe-path .pp.nodrop { opacity: .45; }
+.billbar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; } .billbar i { display: block; height: 100%; background: var(--good, #16a34a); }

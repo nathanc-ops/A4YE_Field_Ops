@@ -34,6 +34,7 @@ async function viewPipeline() {
           <div class="row spread"><b>${esc(c.customer_name)}</b><span>${money0(c.amount)}</span></div>
           <div class="small">${c.number ? `<span class="muted">${esc(PIPE_KIND[c.kind])} ${esc(c.number)}</span> ` : `<span class="muted">${esc(label(c.lead_status || 'new'))} lead</span> `}${esc(c.title || '')}</div>
           ${c.next_step ? `<div class="small ${c.overdue ? 'bad' : ''}">→ ${esc(c.next_step)}${c.next_step_date ? ` · ${fmtDate(c.next_step_date)}` : ''}</div>` : ['lead', 'estimating', 'proposal', 'won'].includes(c.stage) ? '<div class="small muted">No next step</div>' : ''}
+          ${c.billed_pct != null ? `<div class="small muted" title="Contract ${money0(c.contract_value)} · billed ${money0(c.billed)}">${c.is_project ? 'Progress billed' : 'Billed'} ${c.billed_pct}% · ${money0(c.amount)} left to bill</div><div class="billbar"><i style="width:${Math.min(100, c.billed_pct)}%"></i></div>` : ''}
           ${c.flag ? `<div class="small warn">${esc(c.flag)}</div>` : ''}${c.lost_reason ? `<div class="small muted">Lost: ${esc(c.lost_reason)}</div>` : ''}
           <div class="row spread small muted"><span>${c.owner_name ? esc(c.owner_name) : 'No owner'}</span><span>${c.age_days != null ? `${c.age_days}d in stage` : ''}</span></div>
         </article>`).join('') || '<div class="small muted" style="padding:8px">Nothing here</div>'}</section>`;

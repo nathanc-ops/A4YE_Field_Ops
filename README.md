@@ -146,7 +146,7 @@ A Salesforce-style board of every deal, from lead to paid. Stages are worked out
 | Estimating (25%) | Estimates being written | Opportunity: needs analysis |
 | Proposal sent (50%) | Estimates sent or viewed (flagged when the price has expired) | Proposal / quote |
 | Won — to schedule | Approved estimates with no job, and unscheduled jobs | Closed won → order |
-| In progress | Jobs scheduled, dispatched, underway or on hold | Order fulfilment |
+| In progress | Jobs scheduled, dispatched, underway or on hold. This includes jobs billed in part, such as progress billing or pay apps on a commercial project, or a deposit. The card shows % billed and what is left to bill; the bills sit under Invoiced. | Order fulfilment |
 | To invoice | Completed jobs not fully invoiced | Ready to bill |
 | Invoiced | Sent invoices with a balance (flagged when past due) | Open invoice |
 | Paid | Invoices paid in the last 30 days | Cash in |
