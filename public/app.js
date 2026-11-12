@@ -1794,7 +1794,8 @@ async function viewSettings() {
     ${isAdmin() ? '<div class="card"><h2>Job numbers</h2><div id="jobnums"><div class="muted small">Loading…</div></div></div>' : ''}
     <div class="card"><h2>Appearance</h2><p class="small muted">Applies to this device only.</p><div class="seg">${[['dark', 'Dark (default)'], ['light', 'Light'], ['system', 'Match device']].map(([k, l]) => `<button type="button" data-theme="${k}" class="${themePref() === k ? 'on' : ''}">${l}</button>`).join('')}</div></div></div></div>
     <div id="settings-ext" class="stack" style="margin-top:14px"></div>`;
-  settingsExtras($('#settings-ext'));
+  // cost codes go last on the page (a long list), full width, after everything the extras add
+  settingsExtras($('#settings-ext')).then(() => { const cc = $('#newcc') && $('#newcc').closest('.card'), ext = $('#settings-ext'); if (cc && ext) { cc.id = 'costcodes'; ext.appendChild(cc); } }).catch(() => null);
   emailSetup($('#emailsetup'));
   if ($('#jobnums')) jobNumberSetup($('#jobnums'));
   if ($('#mailtpls')) emailTemplates($('#mailtpls'));

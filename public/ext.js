@@ -365,7 +365,7 @@ function crewBlocks(rows) {
 async function viewBoard(date, seg) {
   const H0 = Number(S.settings.day_start_hour) || 6, H1 = Math.max(H0 + 4, Number(S.settings.day_end_hour) || 19);
   // default zoom fits the whole working day on screen; +/- overrides and is remembered
-  const fit = Math.floor((($('#view').clientWidth || 1200) - 160 - (isOffice() ? 256 : 0) - 4) / (H1 - H0));
+  const fit = Math.floor((($('#view').clientWidth || 1200) - 160 - 4) / (H1 - H0));
   const hw = Math.max(48, Math.min(200, Number(localStorage.getItem('fo_hw')) || Math.max(56, fit)));
   const from = dayISO(date), to = dayISO(addDaysStr(date, 1));
   const disp = isOffice() ? await GET('/dispatch' + qs({ date })) : null;
@@ -405,10 +405,7 @@ async function viewBoard(date, seg) {
       <span class="seg"><button id="zout" title="Zoom out">−</button><button id="zin" title="Zoom in">+</button></span>
       <button class="btn" id="reqoff">✋ Request time off</button>${isOffice() ? '<button class="btn" id="newatt" title="Log time off, sick, absent, late or left early for anyone (no approval needed)">🌴 Log attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `${new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${appts.length} visit(s)${isOffice() ? ' · drag to move or reassign, drag the right edge to resize, click an empty slot to add' : ''}`) + `
-    <div class="hb-layout" style="${isOffice() ? '' : 'grid-template-columns:1fr'}">
-      ${isOffice() ? `<div class="card hb-queue"><h2>Needs scheduling (${disp.unscheduled.length})</h2><p class="small muted">Drag onto a tech's row.</p>
-        ${disp.unscheduled.map(j => `<div class="chip ${j.priority === 'emergency' ? 'emergency' : ''}" draggable="true" data-qjob="${j.id}" data-hours="${Math.min(8, Math.max(1, j.budget_hours || 2))}">
-          <b>${esc(j.number)}</b> ${j.priority !== 'normal' ? pill(j.priority) : ''}<br>${esc(j.customer_name)}<br><span class="muted">${esc(j.title)}</span></div>`).join('') || '<div class="empty">All caught up</div>'}</div>` : ''}
+    <div class="hb-layout">
       <div><div class="hb-wrap"><div class="hb" style="--hours:${H1 - H0};--hw:${hw}px">
         <div class="hb-head"><div class="hb-tech" style="background:var(--surface-2)"><b>Tech</b></div><div class="hb-hours">${hours}</div></div>
         ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? `${g.rows[0].items.length} visit(s)` : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + (r.booked || 0), 0), 1)}h booked`}</span></div>` : ''}
@@ -417,6 +414,9 @@ async function viewBoard(date, seg) {
             ${r.id ? `<div class="small muted">${r.clock ? `<span class="pill good">● ${r.clock.job_number ? esc(r.clock.job_number) : label(r.clock.kind)}</span>` : 'Off clock'}${r.booked != null ? ` · ${num(r.booked, 1)}h booked` : ''}</div>` : ''}</div>
           <div class="hb-lane" data-tech="${r.id}" style="height:${r.lanes * 58 + 10}px">${r.items.map(it => block(r, it)).join('')}${nowLine}</div></div>`).join('')}`).join('')}
       </div></div><div class="row spread" style="margin-top:8px">${legend()}<span class="small muted">15-minute snap</span></div></div>
+      ${isOffice() ? `<div class="card hb-queue"><h2>Needs scheduling (${disp.unscheduled.length})</h2><p class="small muted">Drag a job up onto a tech's row.</p><div class="hb-qchips">
+        ${disp.unscheduled.map(j => `<div class="chip ${j.priority === 'emergency' ? 'emergency' : ''}" draggable="true" data-qjob="${j.id}" data-hours="${Math.min(8, Math.max(1, j.budget_hours || 2))}">
+          <b>${esc(j.number)}</b> ${j.priority !== 'normal' ? pill(j.priority) : ''}<br>${esc(j.customer_name)}<br><span class="muted">${esc(j.title)}</span></div>`).join('') || '<div class="empty">All caught up</div>'}</div></div>` : ''}
     </div>`;
   bindDatePick('board');
   $('#reqoff').onclick = () => requestTimeOffForm();
@@ -597,10 +597,6 @@ async function viewDispatch(date, seg) {
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('dispatch', date, 1)}<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>`,
     `Dispatch console · refreshes every minute · ${d.unassigned.length ? `<span class="pill bad">${d.unassigned.length} visit(s) with no tech</span>` : 'every visit has a tech'}`) + `
     <div class="dc">
-      <div class="card"><h2>Needs scheduling (${d.unscheduled.length})</h2>
-        ${d.unscheduled.map(j => `<div class="tcard"><div class="row spread"><b>${esc(j.number)}</b>${pill(j.priority === 'normal' ? j.status : j.priority)}</div>
-          <div>${esc(j.customer_name)}</div><div class="small muted">${esc(j.title)}</div><div class="small muted">${esc(j.address || '')}</div>
-          <div class="row" style="margin-top:6px"><button class="btn sm primary" data-sched="${j.id}">Schedule</button><a class="btn sm" href="#/jobs/${j.id}">Open</a></div></div>`).join('') || '<div class="empty">Nothing waiting</div>'}</div>
       <div class="card"><h2>Today's visits (${appts.length})</h2>
         ${table([{ label: 'Time', get: a => `${fmtTime(a.start)}–${fmtTime(a.end)}` },
           { label: 'Job', html: a => `<a href="${a.href}"><b>${esc(a.job_number)}</b></a> ${a.priority === 'emergency' ? pill('emergency') : ''}<div>${esc(a.customer_name)}</div><div class="small muted">${esc(a.job_title)} · ${esc(a.address || '')}</div>` },
@@ -612,7 +608,12 @@ async function viewDispatch(date, seg) {
           <div class="small">${t.clock ? `<span class="pill good">● On the clock</span> ${t.clock.job_number ? `on <a href="#/jobs/${t.clock.job_id}">${esc(t.clock.job_number)}</a>` : esc(label(t.clock.kind))} since ${fmtTime(t.clock.clock_in)}` : '<span class="muted">Off the clock</span>'}</div>
           <div class="cap ${t.booked_hours > 10 ? 'over' : t.booked_hours >= 8 ? 'full' : ''}" style="margin-top:6px"><i style="width:${Math.min(100, t.booked_hours / 8 * 100)}%"></i></div>
           <div class="small muted">${num(t.booked_hours, 1)} of 8 h booked · ${t.appointments} visit(s)</div></div>`).join('')}`).join('') || '<div class="empty">No techs set up</div>'}</div>
-    </div>`;
+    </div>
+      <div class="card" style="margin-top:14px"><h2>Needs scheduling (${d.unscheduled.length})</h2><div class="hb-qchips">
+        ${d.unscheduled.map(j => `<div class="tcard dq"><div class="row spread"><b>${esc(j.number)}</b>${pill(j.priority === 'normal' ? j.status : j.priority)}</div>
+          <div>${esc(j.customer_name)}</div><div class="small muted">${esc(j.title)}</div><div class="small muted">${esc(j.address || '')}</div>
+          <div class="row" style="margin-top:6px"><button class="btn sm primary" data-sched="${j.id}">Schedule</button><a class="btn sm" href="#/jobs/${j.id}">Open</a></div></div>`).join('') || '<div class="empty">Nothing waiting</div>'}</div></div>
+`;
   bindDatePick('dispatch');
   $('#newjob').onclick = () => jobForm({});
   if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });

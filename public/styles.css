@@ -240,7 +240,7 @@ label.f > span { display: block; font-size: 12px; color: var(--text-2); margin-b
 .cap.full i { background: var(--warn); } .cap.over i { background: var(--bad); }
 
 /* dispatch console */
-.dc { display: grid; grid-template-columns: 300px minmax(0, 1fr) 280px; gap: 14px; align-items: start; }
+.dc { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-items: start; }
 .tcard { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; background: var(--surface); }
 .status-btns { display: flex; gap: 4px; flex-wrap: wrap; }
 
@@ -784,3 +784,8 @@ a.pill.att-absent { color: var(--bad); } a.pill.att-sick, a.pill.att-late, a.pil
 .tor-card { margin-bottom: 12px; } .tor-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .att-pending { border-left: 3px dashed var(--warn) !important; background: transparent; }
 .checks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0; }
+
+/* needs scheduling sits under the board */
+.hb-layout { display: block; } .hb-queue { margin-top: 14px; max-height: none; }
+.hb-qchips { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; } .hb-qchips .chip { margin: 0; }
+.hb-qchips .tcard { margin: 0; }
