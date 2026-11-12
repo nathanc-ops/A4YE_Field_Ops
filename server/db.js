@@ -286,6 +286,8 @@ const DEFAULT_SETTINGS = {
   company_website: '',
   hold_followup_assignee: '',
   notify_on_the_way: '1',
+  timeoff_notify: '',
+  timeoff_approvers: '',
   proposal_conditions: '["All work per the plans and specifications listed above.","Utility locate requests for our excavation.","Work excludes anything listed under Exclusions below."]',
   proposal_exclusions: '["Permits and permit fees unless listed as included.","Bid, performance and payment bonds.","Overtime, night or weekend work unless separately authorized in writing.","Repair of unmarked or mislocated private utilities.","Low-voltage cable, terminations and equipment unless listed as included."]',
   proposal_qualifications: '["Pricing assumes normal weekday working hours.","Material pricing is based on current market conditions at the time of estimate.","Proposal valid for 30 days.","Idaho sales tax on materials is included. Prevailing wage is not included."]',

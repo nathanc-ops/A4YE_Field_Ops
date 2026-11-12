@@ -241,7 +241,7 @@ module.exports = function kpiAuto(db, h) {
       }
       case 'att_time_off_days': case 'att_sick_days': case 'att_absent_days': case 'att_no_call': case 'att_unplanned_days': {
         const kinds = { att_time_off_days: ['time_off'], att_sick_days: ['sick'], att_absent_days: ['absent'], att_no_call: ['absent'], att_unplanned_days: ['sick', 'absent'] }[rule];
-        const rows = all(db, `SELECT a.*, u.name FROM attendance a JOIN users u ON u.id = a.user_id WHERE a.kind IN (${kinds.map(() => '?').join(',')}) AND a.start_date <= ? AND a.end_date >= ?`,
+        const rows = all(db, `SELECT a.*, u.name FROM attendance a JOIN users u ON u.id = a.user_id WHERE a.kind IN (${kinds.map(() => '?').join(',')}) AND COALESCE(a.status, 'approved') = 'approved' AND a.start_date <= ? AND a.end_date >= ?`,
           ...kinds, addDays(week, 6), week).filter(a => rule !== 'att_no_call' || a.no_call);
         let n = 0;
         for (const a of rows) {

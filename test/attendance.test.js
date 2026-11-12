@@ -88,3 +88,39 @@ test('a KPI row can be added for attendance', async () => {
   assert.match((await call('admin', 'POST', '/kpi/metrics', { owner_id: owner, metric: 'x', rule: 'nope' })).data.error, /Unknown/);
   assert.equal((await call('admin', 'POST', '/kpi/metrics', { owner_id: owner, metric: 'Typed' })).data.id, 'X2');
 });
+
+test('time-off requests: anyone asks; the Settings people are emailed; only approvers decide; pending isn\'t time off yet', async () => {
+  const ap = (await call('admin', 'POST', '/users', { name: 'Approver Person', email: 'ap@x.com', password: 'password123', role: 'office' })).data.id;
+  tok.ap = await login('ap@x.com');
+  await call('admin', 'PUT', '/settings', { timeoff_notify: `${ids.desk}`, timeoff_approvers: `${ap}` });
+  const day = n => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  assert.match((await call('dana', 'POST', '/attendance/request', { start_date: day(-3) })).data.error, /from today on/);
+  const r = (await call('dana', 'POST', '/attendance/request', { start_date: day(20), end_date: day(22), paid: 1, reason: 'Family trip', user_id: ids.sam, kind: 'sick' })).data;
+  assert.ok(r.id); assert.equal(r.email.status, 'not_configured'); assert.deepEqual(r.email.to.sort(), ['ap@x.com', 'desk@x.com']);
+  const row = db.prepare('SELECT * FROM attendance WHERE id = ?').get(r.id);
+  assert.equal(row.user_id, ids.dana, 'always your own'); assert.equal(row.kind, 'time_off'); assert.equal(row.status, 'pending'); assert.equal(row.paid, 1);
+  assert.match(db.prepare("SELECT subject FROM outbox WHERE related = ?").get(`attendance:${r.id}`).subject, /Time-off request: Dana Tech/);
+  assert.match((await call('dana', 'POST', '/attendance/request', { start_date: day(21) })).data.error, /already have time off requested/);
+  // waiting: on the schedule as requested, not counted as off
+  const reqs = (await call('ap', 'GET', '/attendance/requests')).data;
+  assert.equal(reqs.can_approve, true); assert.deepEqual(reqs.pending.map(x => x.id), [r.id]);
+  assert.equal((await call('dana', 'GET', '/attendance/requests')).data.can_approve, false);
+  assert.equal((await call('dana', 'GET', '/attendance/requests')).data.mine[0].status, 'pending');
+  // only approvers decide; an admin who isn't on the list can't
+  assert.equal((await call('admin', 'POST', `/attendance/${r.id}/decide`, { decision: 'approved' })).status, 403);
+  assert.equal((await call('desk', 'POST', `/attendance/${r.id}/decide`, { decision: 'approved' })).status, 403);
+  assert.match((await call('ap', 'POST', `/attendance/${r.id}/decide`, { decision: 'denied' })).data.error, /why/);
+  const ok = (await call('ap', 'POST', `/attendance/${r.id}/decide`, { decision: 'approved' })).data;
+  assert.equal(ok.ok, true); assert.ok(ok.email.to.includes('dana@x.com'), 'the person who asked hears back');
+  assert.equal(db.prepare('SELECT status, decided_by FROM attendance WHERE id = ?').get(r.id).decided_by, ap);
+  assert.match((await call('ap', 'POST', `/attendance/${r.id}/decide`, { decision: 'denied', note: 'x' })).data.error, /already approved/);
+  // a second request, denied with a note; then hidden from the schedule
+  const r2 = (await call('dana', 'POST', '/attendance/request', { start_date: day(40) })).data.id;
+  await call('ap', 'POST', `/attendance/${r2}/decide`, { decision: 'denied', note: 'Inspection that week' });
+  assert.equal((await call('admin', 'GET', `/attendance?from=${day(40)}&to=${day(40)}`)).data.length, 0);
+  assert.equal((await call('dana', 'GET', '/attendance/requests')).data.mine.find(x => x.id === r2).decision_note, 'Inspection that week');
+  // withdraw while waiting
+  const r3 = (await call('dana', 'POST', '/attendance/request', { start_date: day(60) })).data.id;
+  assert.equal((await call('desk', 'POST', `/attendance/${r3}/withdraw`)).status, 403);
+  assert.equal((await call('dana', 'POST', `/attendance/${r3}/withdraw`)).status, 200);
+});

@@ -220,16 +220,17 @@ module.exports = function routesExt(app, db, X) {
   const ATT_KINDS = ['time_off', 'sick', 'absent', 'late', 'left_early'];
   const OFF_KINDS = ['time_off', 'sick', 'absent'];   // the person isn't available (a full day, or `hours` of it)
   const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
-  const attRows = (where, params) => all(db, `SELECT a.*, u.name user_name, u.role user_role, cb.name created_by_name FROM attendance a JOIN users u ON u.id = a.user_id
-    LEFT JOIN users cb ON cb.id = a.created_by WHERE ${where} ORDER BY a.start_date, u.name`, ...params);
+  const attRows = (where, params) => all(db, `SELECT a.*, u.name user_name, u.role user_role, cb.name created_by_name, db_.name decided_by_name FROM attendance a JOIN users u ON u.id = a.user_id
+    LEFT JOIN users cb ON cb.id = a.created_by LEFT JOIN users db_ ON db_.id = a.decided_by WHERE ${where} ORDER BY a.start_date, u.name`, ...params);
   app.get('/api/attendance', wrap((req, res) => {
     const from = isDay(req.query.from) ? req.query.from : '0000-01-01', to = isDay(req.query.to) ? req.query.to : '9999-12-31';
     const w = ['a.start_date <= ?', 'a.end_date >= ?'], p = [to, from];
     const isOff = ['admin', 'manager', 'office'].includes(req.user.role);
     if (!isOff) { w.push('a.user_id = ?'); p.push(req.user.id); }
     else if (req.query.user_id) { w.push('a.user_id = ?'); p.push(+req.query.user_id); }
+    if (req.query.status !== 'all') w.push("COALESCE(a.status, 'approved') != 'denied'");   // denied requests stay off the schedule
     const rows = attRows(w.join(' AND '), p);
-    if (!isOff) for (const r of rows) delete r.reason;   // the office's note stays with the office
+    if (!isOff) for (const r of rows) if (r.requested_by !== req.user.id) delete r.reason;   // the office's note stays with the office (your own request's note is yours)
     res.json(rows);
   }));
   function attData(b, prev = {}) {
@@ -268,6 +269,74 @@ module.exports = function routesExt(app, db, X) {
     res.json({ ok: true, booked: attClashes(d) });
   }));
   app.delete('/api/attendance/:id', office, wrap((req, res) => { mustGet('attendance', +req.params.id); run(db, 'DELETE FROM attendance WHERE id = ?', +req.params.id); res.json({ ok: true }); }));
+
+  // ---- time-off requests: anyone asks for their own time off; it's emailed to the people in Settings, and one of the
+  //      approvers (Settings; blank = admins) approves or denies. Pending requests show on the schedule but don't
+  //      count as time off (no booking warnings, no KPI days) until approved.
+  const idList = key => String(D.settings(db)[key] || '').split(/[\s,]+/).map(Number).filter(n => n > 0);
+  const approverIds = () => { const ids = idList('timeoff_approvers'); return ids.length ? ids : all(db, "SELECT id FROM users WHERE role = 'admin' AND active = 1").map(u => u.id); };
+  const canApprove = user => approverIds().includes(user.id);
+  const span = r => `${r.start_date}${r.end_date !== r.start_date ? ` to ${r.end_date}` : ''}${r.hours ? ` (${r.hours} h)` : ''}`;
+  async function torMail(row, kind, decider, base) {
+    const mailer = require('./mailer');
+    const who = get(db, 'SELECT name, email FROM users WHERE id = ?', row.user_id) || {};
+    const link = `${base || ''}/#/schedule?view=week&date=${row.start_date}`;
+    const booked = attClashes(row);
+    const lines = [`${who.name} — ${span(row)}`, `Type: ${row.paid ? 'paid time off (PTO)' : 'unpaid time off'}`, row.reason ? `Note: ${row.reason}` : '',
+      booked.length ? `Already booked those days: ${[...new Set(booked.map(b => b.job_number))].join(', ')}` : ''].filter(Boolean);
+    let to, subject, text;
+    if (kind === 'request') {
+      const ids = [...new Set([...idList('timeoff_notify'), ...approverIds()])].filter(id => id !== row.user_id);
+      to = all(db, `SELECT email FROM users WHERE active = 1 AND email IS NOT NULL AND id IN (${ids.map(() => '?').join(',') || 'NULL'})`, ...ids).map(u => u.email);
+      subject = `Time-off request: ${who.name}, ${span(row)}`;
+      text = `${who.name} asked for time off.\n\n${lines.join('\n')}\n\nApprove or deny it on the Schedule (Week view): ${link}`;
+    } else {
+      const ids = idList('timeoff_notify').filter(id => id !== decider.id);
+      to = [who.email, ...all(db, `SELECT email FROM users WHERE active = 1 AND email IS NOT NULL AND id IN (${ids.map(() => '?').join(',') || 'NULL'})`, ...ids).map(u => u.email)].filter(Boolean);
+      subject = `Time off ${row.status}: ${who.name}, ${span(row)}`;
+      text = `${decider.name} ${row.status} ${who.name}'s time off.\n\n${lines.join('\n')}${row.decision_note ? `\n\n${decider.name}: ${row.decision_note}` : ''}\n\nSchedule: ${link}`;
+    }
+    to = [...new Set(to.filter(Boolean))];
+    if (!to.length) return { status: 'no_one', error: 'Nobody to email: set "Email time-off requests to" in Settings, and make sure those people have an email on their user' };
+    const r = await mailer.send(db, { to: to.join(', '), subject, text, related: `attendance:${row.id}` });
+    return { status: r.status, to, error: r.error || (r.status === 'not_configured' ? 'Email isn\'t set up (Settings → Email)' : null) };
+  }
+  app.get('/api/attendance/requests', wrap((req, res) => {
+    const approver = canApprove(req.user), seesAll = approver || idList('timeoff_notify').includes(req.user.id);
+    const pending = attRows(`a.status = 'pending'${seesAll ? '' : ' AND a.user_id = ?'}`, seesAll ? [] : [req.user.id]).map(r => ({ ...r, booked: attClashes(r) }));
+    const mine = attRows("a.requested_by = ? AND a.end_date >= ?", [req.user.id, addDays(today(), -60)]);
+    res.json({ can_approve: approver, pending, mine });
+  }));
+  app.post('/api/attendance/request', wrap(async (req, res) => {
+    const d = attData({ ...req.body, kind: 'time_off', user_id: req.user.id });
+    if (d.start_date < today()) throw bad('Ask for days from today on. For days already past, ask the office to log them.');
+    const clash = get(db, "SELECT start_date, end_date, status FROM attendance WHERE user_id = ? AND kind = 'time_off' AND COALESCE(status, 'approved') IN ('approved','pending') AND start_date <= ? AND end_date >= ?", req.user.id, d.end_date, d.start_date);
+    if (clash) throw bad(`You already have time off ${clash.status === 'pending' ? 'requested' : 'approved'} for ${clash.start_date}${clash.end_date !== clash.start_date ? `–${clash.end_date}` : ''}`);
+    const id = insert('attendance', { ...d, status: 'pending', requested_by: req.user.id, created_by: req.user.id });
+    const email = await torMail({ ...d, id }, 'request', null, X.baseUrl(req));
+    res.json({ id, email });
+  }));
+  app.post('/api/attendance/:id/decide', wrap(async (req, res) => {
+    if (!canApprove(req.user)) throw bad('Only the people set under Settings → Who approves time off can approve or deny requests', 403);
+    const row = mustGet('attendance', +req.params.id);
+    if (row.status !== 'pending') throw bad(`That request was already ${row.status}`);
+    const decision = req.body.decision;
+    if (!['approved', 'denied'].includes(decision)) throw bad('Approve or deny?');
+    const note = String(req.body.note || '').trim().slice(0, 500) || null;
+    if (decision === 'denied' && !note) throw bad('Say why it is denied — they get this in their email');
+    if (row.user_id === req.user.id && approverIds().length > 1) throw bad('Someone else approves your own time off');
+    run(db, "UPDATE attendance SET status = ?, decided_by = ?, decided_at = datetime('now'), decision_note = ? WHERE id = ?", decision, req.user.id, note, row.id);
+    const done = { ...row, status: decision, decision_note: note };
+    const email = await torMail(done, 'decision', req.user, X.baseUrl(req));
+    res.json({ ok: true, booked: decision === 'approved' ? attClashes(done) : [], email });
+  }));
+  // the person who asked can withdraw it while it's still waiting
+  app.post('/api/attendance/:id/withdraw', wrap((req, res) => {
+    const row = mustGet('attendance', +req.params.id);
+    if (row.requested_by !== req.user.id) throw bad('Not your request', 403);
+    if (row.status !== 'pending') throw bad(`It was already ${row.status} — ask the office to change it`);
+    run(db, 'DELETE FROM attendance WHERE id = ?', row.id); res.json({ ok: true });
+  }));
   // company time zone: dates on the schedule are the company's days, not the server's
   const companyTz = () => { const z = (D.settings(db) || {}).timezone || 'America/Boise'; try { new Intl.DateTimeFormat('en-US', { timeZone: z }); return z; } catch { return 'America/Boise'; } };
   const localToUtc = local => require('./kpi').localToUtc(local, companyTz());
@@ -277,7 +346,7 @@ module.exports = function routesExt(app, db, X) {
     const a = get(db, 'SELECT * FROM appointments WHERE id = ?', apptId); if (!a) return [];
     const d0 = localDay(a.start), d1 = localDay(new Date(Date.parse(a.end) - 1).toISOString());
     return all(db, `SELECT DISTINCT u.name, at.kind, at.start_date, at.end_date, at.hours FROM appointment_techs t JOIN attendance at ON at.user_id = t.user_id JOIN users u ON u.id = t.user_id
-      WHERE t.appointment_id = ? AND at.kind IN ('time_off','sick','absent') AND at.start_date <= ? AND at.end_date >= ?`, apptId, d1, d0);
+      WHERE t.appointment_id = ? AND at.kind IN ('time_off','sick','absent') AND COALESCE(at.status, 'approved') = 'approved' AND at.start_date <= ? AND at.end_date >= ?`, apptId, d1, d0);
   }
 
   // Overlaps for any tech on this appointment (double-booking warning, not a hard stop), plus anyone who is off that day.

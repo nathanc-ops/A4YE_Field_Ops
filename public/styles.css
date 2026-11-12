@@ -779,3 +779,8 @@ a.pill.att-absent { color: var(--bad); } a.pill.att-sick, a.pill.att-late, a.pil
 .pipe-col.nodrop { opacity: .5; }
 .pipe-path .pp.over { outline: 2px dashed var(--series-1); outline-offset: -3px; filter: brightness(1.25); } .pipe-path .pp.nodrop { opacity: .45; }
 .billbar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; } .billbar i { display: block; height: 100%; background: var(--good, #16a34a); }
+
+/* ===== time-off requests ===== */
+.tor-card { margin-bottom: 12px; } .tor-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.att-pending { border-left: 3px dashed var(--warn) !important; background: transparent; }
+.checks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 4px 0; }

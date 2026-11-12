@@ -437,9 +437,18 @@ Techs can **ask for material**: Pick Lists → **+ Ask for material**, or the jo
 - They add price-book or typed items, and can change or remove **their own** lines until picking starts.
 - Costs they type are ignored. The office sees who asked, and picks, sends to Ply, or makes a PO for shortages as usual.
 
+## Time-off requests
+
+Anyone, techs included, can tap **✋ Request time off** on the Schedule (Week view or Tech board). They choose the days, or hours of one day, PTO or unpaid, and a note.
+- **Who's told:** the people ticked under **Settings → Scheduling & accounting defaults → Email time-off requests to** get an email, along with the approvers. The email names any jobs the person is already booked on.
+- **Who decides:** only the people ticked under **Who approves time off** can approve or deny. If none are ticked, admins can. Being an admin doesn't let you approve when you're not on the list, and you can't approve your own request if someone else on the list can.
+- **On the Week view:** approvers see **Time-off requests waiting** with Approve and Deny buttons. A denial needs a reason. The person who asked, and the email list, are emailed the result.
+- **For the person who asked:** they see **My time-off requests** with each one's status, and can withdraw a request while it's waiting.
+- **Until it's approved:** the request shows on the schedule as *⏳ Time off requested*. It doesn't block booking or count on the KPI tracker. Once approved it becomes ordinary time off. Denied requests leave the schedule.
+
 ## Time off & attendance
 
-**Schedule → 🌴 Time off / attendance** (Week view or Tech board; or double-click a person's day on the Week view) logs:
+**Schedule → 🌴 Log attendance** (office; Week view or Tech board, or double-click a person's day on the Week view) logs, with no approval step:
 - **Time off** (planned; paid or unpaid; a range of days, or hours of one day)
 - **Called in sick** (paid or not)
 - **Absent** (tick **No call / no show** when they didn't call)

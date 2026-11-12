@@ -1139,6 +1139,10 @@ const MIGRATIONS = [
   },
   // 46: POs created in Ply for a job are imported and logged on the job
   db => { addColumn(db, 'purchase_orders', 'source', 'TEXT'); addColumn(db, 'purchase_orders', 'ply_number', 'TEXT'); db.exec('CREATE INDEX IF NOT EXISTS idx_po_ply ON purchase_orders(ply_id)'); },
+  // 47: time-off requests from anyone on the team: pending until an approver approves or denies
+  db => {
+    for (const [c, d] of [['status', "TEXT NOT NULL DEFAULT 'approved'"], ['requested_by', 'INTEGER'], ['decided_by', 'INTEGER'], ['decided_at', 'TEXT'], ['decision_note', 'TEXT']]) addColumn(db, 'attendance', c, d);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

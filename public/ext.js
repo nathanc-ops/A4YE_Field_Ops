@@ -95,12 +95,51 @@ async function setVisitStatus(id, st, loc) {
 // ---- attendance: time off, called in sick, absent, in late, left early (Schedule; counted by the KPI tracker)
 const ATT = { time_off: ['🌴', 'Time off'], sick: ['🤒', 'Called in sick'], absent: ['🚫', 'Absent'], late: ['⏰', 'In late'], left_early: ['🚪', 'Left early'] };
 const attOn = (list, userId, d) => (list || []).filter(a => a.user_id === userId && a.start_date <= d && a.end_date >= d);
-const attOff = (list, userId, d) => attOn(list, userId, d).some(a => ['time_off', 'sick', 'absent'].includes(a.kind) && !a.hours);
+const attOff = (list, userId, d) => attOn(list, userId, d).some(a => ['time_off', 'sick', 'absent'].includes(a.kind) && !a.hours && (a.status || 'approved') === 'approved');
 function attText(a) {
   const [, l] = ATT[a.kind] || ['', a.kind];
   return `${l}${a.kind === 'time_off' ? (a.paid ? ' (paid)' : ' (unpaid)') : a.kind === 'sick' && a.paid ? ' (paid)' : ''}${a.no_call ? ' — no call' : ''}${a.hours ? ` · ${a.hours} h` : ''}${a.minutes ? ` · ${a.minutes} min` : ''}`;
 }
-const attChip = a => `<a href="#" class="chip attchip att-${a.kind}" data-att="${a.id}" title="${esc(`${attText(a)}${a.start_date !== a.end_date ? ` · ${fmtDate(a.start_date)}–${fmtDate(a.end_date)}` : ''}${a.reason ? ' · ' + a.reason : ''}`)}"><b>${ATT[a.kind][0]} ${esc(attText(a))}</b>${a.reason ? `<br><span class="muted">${esc(a.reason.slice(0, 50))}</span>` : ''}</a>`;
+const attChip = a => a.status === 'pending' ? `<a href="#" class="chip attchip att-pending" data-att="${a.id}" data-pending="1" title="${esc(`Waiting for approval · ${attText(a)}${a.reason ? ' · ' + a.reason : ''}`)}"><b>⏳ Time off requested</b><br><span class="muted">${esc(attText(a).replace(/^Time off /, ''))}</span></a>`
+  : `<a href="#" class="chip attchip att-${a.kind}" data-att="${a.id}" title="${esc(`${attText(a)}${a.start_date !== a.end_date ? ` · ${fmtDate(a.start_date)}–${fmtDate(a.end_date)}` : ''}${a.reason ? ' · ' + a.reason : ''}`)}"><b>${ATT[a.kind][0]} ${esc(attText(a))}</b>${a.reason ? `<br><span class="muted">${esc(a.reason.slice(0, 50))}</span>` : ''}</a>`;
+// ---- time-off requests: anyone asks; the approvers in Settings approve or deny; the people in Settings get the email
+function requestTimeOffForm(after) {
+  formModal({ title: '✋ Request time off', okLabel: 'Send request', values: { start_date: addDaysStr(todayStr(), 7), paid: 1 },
+    fields: [{ name: 'start_date', label: 'First day off', type: 'date', required: true }, { name: 'end_date', label: 'Last day off (blank = one day)', type: 'date' },
+      { name: 'hours', label: 'Hours, for part of a day (blank = whole day)', type: 'number', step: '0.25' }, { name: 'paid', label: 'Use PTO (paid)', type: 'checkbox' },
+      { name: 'reason', label: 'Reason or note (optional)', type: 'textarea', full: true, placeholder: 'e.g. Family trip; doctor appointment in the morning' }],
+    extra: '<p class="small muted">Your request is emailed for approval and shows on the schedule as requested. You get an email when it\'s approved or denied.</p>',
+    submit: async v => {
+      const r = await POST('/attendance/request', v);
+      toast(r.email && r.email.status === 'sent' ? 'Request sent — you\'ll get an email when it\'s decided' : `Request saved and on the schedule, but the email didn't go: ${(r.email && r.email.error) || 'unknown'}`, !(r.email && r.email.status === 'sent'));
+      after ? after() : route();
+    } });
+}
+function decideTimeOff(a, decision, after) {
+  if (decision === 'approved') return act(() => POST(`/attendance/${a.id}/decide`, { decision })).then(r => {
+    toast(`Approved${r.booked && r.booked.length ? ` — but ${a.user_name} is booked then: ${[...new Set(r.booked.map(b => b.job_number))].join(', ')}. Move or reassign those visits.` : ''}${r.email && r.email.status !== 'sent' ? ` · email not sent: ${r.email.error || r.email.status}` : ''}`, !!(r.booked && r.booked.length) || !!(r.email && r.email.status !== 'sent'));
+    after ? after() : route();
+  }).catch(() => null);
+  formModal({ title: `Deny ${a.user_name}'s time off`, okLabel: 'Deny', fields: [{ name: 'note', label: 'Why? (they get this by email)', type: 'textarea', full: true, required: true }],
+    submit: async v => { await POST(`/attendance/${a.id}/decide`, { decision: 'denied', note: v.note }); toast('Denied — they\'ve been emailed'); after ? after() : route(); } });
+}
+function timeOffRequestsCard(r) {
+  const fmtSpan = a => `${fmtDate(a.start_date)}${a.end_date !== a.start_date ? ` – ${fmtDate(a.end_date)}` : ''}${a.hours ? ` · ${a.hours} h` : ''} · ${a.paid ? 'PTO' : 'unpaid'}`;
+  const waiting = r.pending || [], mine = (r.mine || []).filter(a => !waiting.some(w => w.id === a.id) || !r.can_approve);
+  if (!waiting.length && !mine.length) return '';
+  return `${waiting.length && (r.can_approve || isOffice()) ? `<div class="card tor-card"><h2 style="margin:0 0 6px">✋ Time-off requests waiting (${waiting.length})</h2>
+    ${waiting.map(a => `<div class="tor-row"><div><b>${esc(a.user_name)}</b> · ${fmtSpan(a)}${a.reason ? `<div class="small muted">${esc(a.reason)}</div>` : ''}
+      ${a.booked && a.booked.length ? `<div class="small warn">Booked then: ${esc([...new Set(a.booked.map(b => b.job_number))].join(', '))}</div>` : ''}<div class="small muted">asked ${fmtDT(a.created_at.replace(' ', 'T') + 'Z')}</div></div>
+      <div class="row" style="gap:6px">${r.can_approve ? `<button class="btn sm go" data-tor-ok="${a.id}">Approve</button><button class="btn sm danger" data-tor-no="${a.id}">Deny</button>` : '<span class="small muted">Waiting for an approver</span>'}</div></div>`).join('')}</div>` : ''}
+    ${mine.length ? `<div class="card tor-card"><h2 style="margin:0 0 6px">My time-off requests</h2>${mine.map(a => `<div class="tor-row"><div>${fmtSpan(a)}${a.decision_note ? `<div class="small muted">${esc(a.decided_by_name || '')}: ${esc(a.decision_note)}</div>` : ''}</div>
+      <div class="row" style="gap:6px">${pill(a.status === 'pending' ? 'waiting' : a.status)}${a.status === 'pending' ? `<button class="btn sm" data-tor-wd="${a.id}">Withdraw</button>` : ''}</div></div>`).join('')}</div>` : ''}`;
+}
+function wireTimeOff(r) {
+  const find = id => (r.pending || []).find(x => x.id === +id);
+  $$('[data-tor-ok]').forEach(b => b.onclick = () => decideTimeOff(find(b.dataset.torOk), 'approved'));
+  $$('[data-tor-no]').forEach(b => b.onclick = () => decideTimeOff(find(b.dataset.torNo), 'denied'));
+  $$('[data-tor-wd]').forEach(b => b.onclick = async () => { if (confirm('Withdraw this request?')) { await act(() => POST(`/attendance/${b.dataset.torWd}/withdraw`), 'Withdrawn'); route(); } });
+}
 function attendanceForm(a = {}, after) {
   const people = S.users.filter(u => u.active || u.id === a.user_id).map(u => [u.id, u.name]);
   const fields = [{ name: 'user_id', label: 'Employee', type: 'select', required: true, blank: false, options: people },
@@ -364,7 +403,7 @@ async function viewBoard(date, seg) {
 
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('board', date, 1)}
       <span class="seg"><button id="zout" title="Zoom out">−</button><button id="zin" title="Zoom in">+</button></span>
-      ${isOffice() ? '<button class="btn" id="newatt">🌴 Time off / attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
+      <button class="btn" id="reqoff">✋ Request time off</button>${isOffice() ? '<button class="btn" id="newatt" title="Log time off, sick, absent, late or left early for anyone (no approval needed)">🌴 Log attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `${new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${appts.length} visit(s)${isOffice() ? ' · drag to move or reassign, drag the right edge to resize, click an empty slot to add' : ''}`) + `
     <div class="hb-layout" style="${isOffice() ? '' : 'grid-template-columns:1fr'}">
       ${isOffice() ? `<div class="card hb-queue"><h2>Needs scheduling (${disp.unscheduled.length})</h2><p class="small muted">Drag onto a tech's row.</p>
@@ -380,6 +419,7 @@ async function viewBoard(date, seg) {
       </div></div><div class="row spread" style="margin-top:8px">${legend()}<span class="small muted">15-minute snap</span></div></div>
     </div>`;
   bindDatePick('board');
+  $('#reqoff').onclick = () => requestTimeOffForm();
   $('#zin').onclick = () => { localStorage.setItem('fo_hw', Math.min(200, hw + 24)); route(); };
   $('#zout').onclick = () => { localStorage.setItem('fo_hw', Math.max(48, hw - 24)); route(); };
   $('#zout').ondblclick = $('#zin').ondblclick = () => { localStorage.removeItem('fo_hw'); route(); };
@@ -470,6 +510,7 @@ async function viewWeek(date, seg) {
   const days = [...Array(7)].map((_, i) => addDaysStr(monday, i));
   const [appts, projAll, follows, att] = await Promise.all([GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) })), isOffice() ? GET('/projects?lite=1') : [],
     isOffice() ? GET('/job-follow-ups' + qs({ from: monday, to: addDaysStr(monday, 6) })) : [], GET('/attendance' + qs({ from: monday, to: addDaysStr(monday, 6) })).catch(() => [])]);
+  const tor = await GET('/attendance/requests').catch(() => ({ pending: [], mine: [] }));
   // commercial projects running this week: who's on each one, day by day (and which have nobody booked)
   const sunday = addDaysStr(monday, 6);
   const projs = projAll.filter(pj => (!pj.start_date || pj.start_date <= sunday) && (!pj.end_date || pj.end_date >= monday)
@@ -481,8 +522,9 @@ async function viewWeek(date, seg) {
   const cellAppts = (r, d) => appts.filter(a => onDay(a, d) && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length)).sort((x, y) => dayWindow(x, d).start.localeCompare(dayWindow(y, d).start));
   const cap = (list, d) => { const h = list.reduce((s, a) => s + visitHoursOnDay(a, d), 0); return { h, pct: Math.min(100, h / 8 * 100), cls: h > 10 ? 'over' : h >= 8 ? 'full' : '' }; };
   const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
-  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newatt">🌴 Time off / attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
+  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}<button class="btn" id="reqoff">✋ Request time off</button>${isOffice() ? '<button class="btn" id="newatt" title="Log time off, sick, absent, late or left early for anyone (no approval needed)">🌴 Log attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
+    ${timeOffRequestsCard(tor)}
     ${projs.length ? `<div class="card wk-proj"><div class="row spread"><h2 style="margin:0">Commercial projects this week</h2><span class="small muted">Crew on site each day — click a day to change that day's crew</span></div>
       <div class="table-wrap"><table><thead><tr><th>Project</th>${days.map(d => `<th class="${d === todayStr() ? 'today' : ''}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</th>`).join('')}<th></th></tr></thead>
       <tbody>${projs.map(pj => `<tr><td><a href="#/jobs/${pj.id}?tab=project"><b>${esc(pj.number)}</b></a> ${esc(pj.title)}<div class="small muted">${esc(pj.customer_company || pj.customer_name)}${pj.end_date ? ` · until ${fmtDate(pj.end_date)}` : ''}</div></td>
@@ -500,9 +542,12 @@ async function viewWeek(date, seg) {
         ${list.map(a => { const w = dayWindow(a, d); return `<a class="chip st-${a.status} ${a.kind === 'estimate' ? 'est' : ''} ${isMultiDay(a) ? 'multi' : ''}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" data-day="${d}" href="${a.href}"><b>${fmtTime(w.start)}–${fmtTime(w.end)}</b> ${dayTag(a, d)}${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`; }).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
     <div style="margin-top:8px">${legend()}</div>`;
   bindDatePick('week');
+  $('#reqoff').onclick = () => requestTimeOffForm(); wireTimeOff(tor);
   if (!isOffice()) { $$('[data-att]').forEach(c => c.onclick = e => e.preventDefault()); return; }
   $('#newatt').onclick = () => attendanceForm({ start_date: monday <= todayStr() && todayStr() <= addDaysStr(monday, 6) ? todayStr() : monday });
-  $$('[data-att]').forEach(c => c.onclick = e => { e.preventDefault(); e.stopPropagation(); attendanceForm(att.find(x => x.id === +c.dataset.att)); });
+  $$('[data-att]').forEach(c => c.onclick = e => { e.preventDefault(); e.stopPropagation(); const a = att.find(x => x.id === +c.dataset.att);
+    if (a.status === 'pending') { const p = (tor.pending || []).find(x => x.id === a.id); return tor.can_approve && p ? (confirm(`Approve ${a.user_name}'s time off? (Cancel to deny)`) ? decideTimeOff(p, 'approved') : decideTimeOff(p, 'denied')) : toast('Waiting for approval', false); }
+    attendanceForm(a); });
   $$('.wk .cell').forEach(cell => cell.addEventListener('dblclick', e => { if (e.target.closest('.chip')) return; const t = +cell.dataset.tech; if (t) attendanceForm({ user_id: t, start_date: cell.dataset.day }); }));
   $('#newjob').onclick = () => jobForm({});
   if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
@@ -1220,6 +1265,9 @@ async function settingsExtras(el) {
   if (isAdmin()) {
     await loadAccounts();
     cards.push(`<div class="card"><h2>Scheduling & accounting defaults</h2><form id="defs"><div class="form-grid">
+      ${(() => { const people = S.users.filter(u => u.active && u.email); const sel = k => String(s[k] || '').split(/[\s,]+/).map(Number);
+        const box = (k, l, help) => `<div class="f full"><span>${l}</span><div class="checks">${people.map(u => `<label class="check"><input type="checkbox" data-list="${k}" value="${u.id}" ${sel(k).includes(u.id) ? 'checked' : ''}> ${esc(u.name)}</label>`).join('') || '<span class="small muted">Add people (with an email) under Team first</span>'}</div><span class="small muted">${help}</span></div>`;
+        return box('timeoff_notify', 'Email time-off requests to', 'They get every request, and the approve / deny result.') + box('timeoff_approvers', 'Who approves time off', 'Only these people can approve or deny. None ticked = admins. They also get the request emails.'); })()}
       ${fieldHtml({ name: 'notify_on_the_way', label: 'Email the customer when a tech taps En route', type: 'select', blank: false, options: [['1', 'Yes (the tech can untick it)'], ['0', 'No']] }, s.notify_on_the_way ?? '1')}
       ${fieldHtml({ name: 'hold_followup_assignee', label: 'Follow-up tasks for jobs on hold go to', type: 'select', blank: 'Whoever puts the job on hold', options: followUpPeople() }, s.hold_followup_assignee)}
       ${fieldHtml({ name: 'day_start_hour', label: 'Tech board starts (hour, 0–23)', type: 'number' }, s.day_start_hour)}${fieldHtml({ name: 'day_end_hour', label: 'Tech board ends (hour)', type: 'number' }, s.day_end_hour)}
@@ -1282,7 +1330,8 @@ async function settingsExtras(el) {
   };
   $('#brandreset').onclick = () => saveSettings({ brand_primary: '#e0001a', brand_accent: '#fa001c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
-  $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ notify_on_the_way: f.notify_on_the_way.value, hold_followup_assignee: f.hold_followup_assignee.value, day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
+  $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; const list = k => $$(`[data-list="${k}"]:checked`, f).map(x => x.value).join(',');
+    saveSettings({ timeoff_notify: list('timeoff_notify'), timeoff_approvers: list('timeoff_approvers'), notify_on_the_way: f.notify_on_the_way.value, hold_followup_assignee: f.hold_followup_assignee.value, day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
   $('#geof').onsubmit = e => { e.preventDefault(); const v = e.target.google_maps_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ google_maps_api_key: v }, 'Google Maps key saved'); };
   if ($('#aif')) $('#aif').onsubmit = e => { e.preventDefault(); const v = e.target.anthropic_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ anthropic_api_key: v }, 'Anthropic key saved'); };
   if ($('#aiclear')) $('#aiclear').onclick = () => { if (confirm('Remove the Anthropic key? Plan takeoffs stop working until a new one is added.')) saveSettings({ anthropic_api_key_clear: '1' }, 'Key removed'); };
