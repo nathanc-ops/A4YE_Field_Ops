@@ -655,9 +655,9 @@ function jobPurchasingTab(j, T) {
     ${isOffice() ? `<div class="card"><div class="row spread"><h2>Purchase orders</h2><div class="row"><a class="btn sm primary" href="#/purchasing/po/new?job_id=${j.id}">+ PO for this job</a>${plyOn ? '<button class="btn sm" id="plyjob">Send job to Ply</button>' : ''}</div></div>
       ${table([{ label: 'PO', key: 'number' }, { label: 'Vendor', key: 'vendor_name' }, { label: 'Status', html: p => pill(p.status) }, { label: 'Total', num: 1, get: p => money(p.total) }, { label: 'Received', num: 1, get: p => money(p.received_value) }],
         j.purchase_orders || [], { onClick: p => go('#/purchasing/po/' + p.id), empty: 'No POs for this job' })}</div>` : ''}
-    <div class="card"><div class="row spread"><h2>Pick lists</h2>${isOffice() ? '<button class="btn sm primary" id="newpick">+ Pick list</button>' : ''}</div>
+    <div class="card"><div class="row spread"><h2>Pick lists</h2>${isOffice() || !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn sm primary" id="newpick">+ Pick list</button>' : ''}</div>
       ${table([{ label: '#', key: 'number' }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }], j.pick_lists, { onClick: p => go('#/pick/' + p.id), empty: 'No pick lists' })}</div></div>`;
-  if (!isOffice()) return;
+  if (!isOffice()) { if ($('#newpick')) $('#newpick').onclick = () => techPickForm(j.id); return; }
   if (plyOn) $('#plyjob').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job sent to Ply'); };
   $('#newpick').onclick = () => formModal({
     title: 'New pick list', okLabel: 'Create',
@@ -887,15 +887,16 @@ async function viewPickList(id) {
   const plyOn = S.settings.ply_enabled === '1';
   const office = isOffice(), seeCost = office && can('see_costs');
   const edit = p.can_edit;          // add / change lines (office), add lines (tech on the job)
+  const mine = l => office || (l.added_by === S.user.id && p.status === 'open');   // a tech changes or removes only their own lines, before picking starts
   const lineCols = [
     { label: 'Item', html: l => `<b>${esc(l.description)}</b><div class="small muted">${[l.sku, !l.pricebook_id ? 'custom item' : '', l.note, l.added_by_name ? `added by ${l.added_by_name}` : ''].filter(Boolean).map(esc).join(' · ')}</div>`, csv: l => l.description },
     { label: 'Code', get: l => l.cost_code || '—', csv: l => l.cost_code || '' },
-    { label: 'Need', num: 1, html: l => office && edit && !l.job_material_id ? `<input class="n need-qty" type="number" step="any" min="0" data-need="${l.id}" value="${l.qty}" style="width:76px"> ${esc(l.unit || '')}` : `${num(l.qty)} ${esc(l.unit || '')}`, csv: l => l.qty },
+    { label: 'Need', num: 1, html: l => mine(l) && edit && !l.job_material_id ? `<input class="n need-qty" type="number" step="any" min="0" data-need="${l.id}" value="${l.qty}" style="width:76px"> ${esc(l.unit || '')}` : `${num(l.qty)} ${esc(l.unit || '')}`, csv: l => l.qty },
     { label: 'Unit', html: () => '', csv: l => l.unit || 'ea', hide: 1 },
     ...(office ? [{ label: 'On hand', num: 1, html: l => l.pricebook_id ? (l.qty_on_hand < l.qty ? `<span class="pill bad">${num(l.qty_on_hand)}</span>` : num(l.qty_on_hand)) : '—', csv: l => l.pricebook_id ? l.qty_on_hand : '' }] : []),
     ...(seeCost ? [{ label: 'Unit cost', num: 1, get: l => l.unit_cost != null ? money(l.unit_cost) : '—', csv: l => l.unit_cost ?? '' }] : []),
     { label: 'Picked', html: l => done || l.job_material_id ? num(l.qty_picked) : `<input class="pick-qty" type="number" step="any" min="0" data-line="${l.id}" value="${l.qty_picked || ''}" placeholder="${l.qty}">`, csv: l => l.qty_picked || 0 },
-    ...(done ? [] : [{ label: '', html: l => l.job_material_id ? '' : `<button type="button" class="btn sm" data-all="${l.id}" data-q="${l.qty}">All</button>${office && edit ? ` <button type="button" class="btn sm danger" data-rm="${l.id}" title="Remove line">✕</button>` : ''}` }]),
+    ...(done ? [] : [{ label: '', html: l => l.job_material_id ? '' : `<button type="button" class="btn sm" data-all="${l.id}" data-q="${l.qty}">All</button>${mine(l) && edit ? ` <button type="button" class="btn sm danger" data-rm="${l.id}" title="Remove line">✕</button>` : ''}` }]),
   ];
   $('#view').innerHTML = setTop(`Pick list ${esc(p.number)}`, `${pill(p.status)}
       ${!done && p.lines.length ? '<button class="btn go" id="complete">Complete pick</button>' : ''}${p.status === 'picked' ? '<button class="btn primary" id="deliver">Mark delivered</button>' : ''}
@@ -916,7 +917,7 @@ async function viewPickList(id) {
         </form>
         <p class="small muted">${office ? 'Price book items fill in the unit, cost and cost code. Custom items charge the job at the cost you enter.' : 'Your additions go to the office with your name on them.'}</p></div>` : ''}
       ${p.notes ? `<p>📝 ${esc(p.notes)}</p>` : ''}</div>`;
-  const lines = () => $$('[data-line]').map(i => ({ id: Number(i.dataset.line), qty_picked: Number(i.value) || 0, ...(office && $(`[data-need="${i.dataset.line}"]`) ? { qty: Number($(`[data-need="${i.dataset.line}"]`).value) } : {}) }));
+  const lines = () => $$('[data-line]').map(i => ({ id: Number(i.dataset.line), qty_picked: Number(i.value) || 0, ...($(`[data-need="${i.dataset.line}"]`) ? { qty: Number($(`[data-need="${i.dataset.line}"]`).value) } : {}) }));
   $$('[data-all]').forEach(b => b.onclick = () => { const need = $(`[data-need="${b.dataset.all}"]`); $(`[data-line="${b.dataset.all}"]`).value = need ? need.value : b.dataset.q; });
   $$('[data-rm]').forEach(b => b.onclick = async () => { const l = p.lines.find(x => x.id === Number(b.dataset.rm)); if (confirm(`Remove "${l.description}" from the list?`)) { await act(() => PUT('/pick-lists/' + id, { remove: [l.id] }), 'Removed'); route(); } });
   if ($('#pk') && !done) $('#pk').onsubmit = async e => { e.preventDefault(); await act(() => PUT('/pick-lists/' + id, { lines: lines() }), 'Saved'); route(); };
@@ -954,10 +955,26 @@ async function viewPickList(id) {
       submit: async d => { const r = await POST(`/pick-lists/${id}/po-shortages`, d); toast('Draft PO created'); go('#/purchasing/po/' + r.id); } });
   });
 }
+// a tech asks for material: a new pick list on one of their jobs, then add lines on the next screen
+async function techPickForm(jobId) {
+  let jobs = [];
+  if (!jobId) { const r = await GET('/jobs' + qs({ status: 'unscheduled,scheduled,dispatched,in_progress,on_hold' })).catch(() => []); jobs = (Array.isArray(r) ? r : r.rows || []); if (!jobs.length) return toast('You have no open jobs to ask for material on', true); }
+  formModal({ title: 'Ask for material (new pick list)', okLabel: 'Create and add material',
+    fields: [...(jobId ? [] : [{ name: 'job_id', label: 'Job', type: 'select', blank: false, required: true, options: jobs.map(x => [x.id, `${x.number} · ${x.customer_name || ''} · ${x.title || ''}`]) }]),
+      { name: 'from_estimate', label: 'Start with the material on the approved estimate', type: 'checkbox', full: true },
+      { name: 'needed_by', label: 'Needed by', type: 'date' }, { name: 'notes', label: 'Notes for whoever picks it', full: true, placeholder: 'e.g. Bring to the job site; 2nd floor electrical room' }],
+    extra: '<p class="small muted">The office or warehouse picks it. Add items from the price book or type anything on the next screen. You can change or remove your own lines until picking starts.</p>',
+    submit: async d => {
+      const id = jobId || Number(d.job_id);
+      const r = await POST(`/jobs/${id}/pick-lists`, { needed_by: d.needed_by, notes: d.notes, from_estimate: !!d.from_estimate });
+      toast(r.lines ? `Pick list started with ${r.lines} line(s)` : 'Pick list started: add material below'); go('#/pick/' + r.id);
+    } });
+}
 async function viewTechPickLists() {
   const list = await GET('/pick-lists');
-  $('#view').innerHTML = setTop('Pick Lists') + `<div class="card">${table([{ label: '#', key: 'number' }, { label: 'Job', get: p => `${p.job_number} ${p.job_title}` }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }],
+  $('#view').innerHTML = setTop('Pick Lists', '<button class="btn primary" id="newpick">+ Ask for material</button>') + `<div class="card">${table([{ label: '#', key: 'number' }, { label: 'Job', get: p => `${p.job_number} ${p.job_title}` }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }],
     list, { onClick: p => go('#/pick/' + p.id), empty: 'No pick lists for you' })}</div>`;
+  $('#newpick').onclick = () => techPickForm();
 }
 
 // ============================================================ cost code report

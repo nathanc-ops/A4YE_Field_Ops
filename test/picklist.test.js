@@ -54,7 +54,7 @@ test('empty pick list: office adds price-book and hand-typed material, edits and
   assert.equal(req.status, 200);
   const nut = db.prepare("SELECT * FROM pick_list_lines WHERE description = 'Red wirenuts'").get();
   assert.equal(nut.added_by, ids.tech); assert.equal(nut.unit_cost, null);
-  assert.equal((await call('tech', 'PUT', `/pick-lists/${ids.pl}`, { remove: [nut.id] })).status, 403);
+  assert.equal((await call('tech', 'PUT', `/pick-lists/${ids.pl}`, { remove: [box.id] })).status, 403, 'not the office\'s lines');
   assert.equal((await call('other', 'PUT', `/pick-lists/${ids.pl}`, { lines: [{ description: 'x', qty: 1 }] })).status, 403, 'not on the job');
   assert.equal((await call('admin', 'PUT', `/pick-lists/${ids.pl}`, { remove: [nut.id] })).status, 200);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM pick_list_lines WHERE pick_list_id = ?').get(ids.pl).n, 2);
@@ -96,4 +96,25 @@ test('log material used on a job: blank unit cost keeps the price-book cost', as
   assert.equal(db.prepare('SELECT unit_cost FROM job_materials WHERE id = ?').get(m.data.id).unit_cost, 2.5);
   const c = await call('tech', 'POST', `/jobs/${ids.job}/materials`, { description: 'Unistrut 10ft', qty: 3, source: 'supply_house' });
   assert.equal(c.status, 200);
+});
+
+test('a tech starts a pick list for their own job, adds and fixes their own lines; the office sees who asked', async () => {
+  assert.equal((await call('other', 'POST', `/jobs/${ids.job}/pick-lists`, { notes: 'x' })).status, 403, 'not on the job');
+  const r = (await call('tech', 'POST', `/jobs/${ids.job}/pick-lists`, { needed_by: '2026-12-01', assigned_to: ids.other, notes: 'For the 2nd floor',
+    lines: [{ pricebook_id: ids.box, qty: 12 }, { description: '1/2" KO seals', qty: 20, unit_cost: 50 }] })).data;
+  assert.ok(r.id); assert.equal(r.lines, 2);
+  const pl = (await call('admin', 'GET', `/pick-lists/${r.id}`)).data;
+  assert.equal(pl.created_by_name, 'Jay'); assert.equal(pl.assigned_to, null, 'a tech can\'t pick who picks');
+  assert.ok(pl.lines.every(l => l.added_by === ids.tech));
+  assert.equal(db.prepare("SELECT unit_cost FROM pick_list_lines WHERE description = '1/2\" KO seals'").get().unit_cost, null, 'typed costs ignored');
+  assert.equal((await call('admin', 'GET', '/pick-lists')).data.find(p => p.id === r.id).created_by_name, 'Jay');
+  const seals = pl.lines.find(l => !l.pricebook_id);
+  assert.equal((await call('tech', 'PUT', `/pick-lists/${r.id}`, { lines: [{ id: seals.id, qty: 25 }] })).status, 200);
+  assert.equal(db.prepare('SELECT qty FROM pick_list_lines WHERE id = ?').get(seals.id).qty, 25);
+  assert.equal((await call('tech', 'PUT', `/pick-lists/${r.id}`, { remove: [seals.id] })).status, 200, 'own line, still open');
+  // once picking starts, their lines are locked too
+  const box = pl.lines.find(l => l.pricebook_id);
+  await call('admin', 'PUT', `/pick-lists/${r.id}`, { lines: [{ id: box.id, qty_picked: 5 }] });
+  assert.equal((await call('tech', 'PUT', `/pick-lists/${r.id}`, { remove: [box.id] })).status, 403);
+  assert.equal((await call('tech', 'GET', '/pick-lists')).data.some(p => p.id === r.id), true, 'on their list');
 });

@@ -608,12 +608,13 @@ module.exports = function routesExt(app, db, X) {
     const where = [], p = [];
     if (req.query.status) { where.push(`pl.status IN (${req.query.status.split(',').map(() => '?').join(',')})`); p.push(...req.query.status.split(',')); }
     if (req.user.role === 'tech') { where.push('(pl.assigned_to = ? OR EXISTS (SELECT 1 FROM job_techs jt WHERE jt.job_id = pl.job_id AND jt.user_id = ?))'); p.push(req.user.id, req.user.id); }
-    res.json(all(db, `SELECT pl.*, j.number job_number, j.title job_title, u.name assigned_name,
-      (SELECT COUNT(*) FROM pick_list_lines l WHERE l.pick_list_id = pl.id) line_count FROM pick_lists pl JOIN jobs j ON j.id = pl.job_id LEFT JOIN users u ON u.id = pl.assigned_to
+    res.json(all(db, `SELECT pl.*, j.number job_number, j.title job_title, u.name assigned_name, cb.name created_by_name, cb.role created_by_role,
+      (SELECT COUNT(*) FROM pick_list_lines l WHERE l.pick_list_id = pl.id) line_count FROM pick_lists pl JOIN jobs j ON j.id = pl.job_id LEFT JOIN users u ON u.id = pl.assigned_to LEFT JOIN users cb ON cb.id = pl.created_by
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY CASE pl.status WHEN 'open' THEN 0 WHEN 'picking' THEN 1 ELSE 2 END, COALESCE(pl.needed_by, '9999'), pl.id DESC`, ...p));
   }));
   app.get('/api/pick-lists/:id', wrap((req, res) => {
-    const pl = get(db, `SELECT pl.*, j.number job_number, j.title job_title, u.name assigned_name FROM pick_lists pl JOIN jobs j ON j.id = pl.job_id LEFT JOIN users u ON u.id = pl.assigned_to WHERE pl.id = ?`, req.params.id);
+    const pl = get(db, `SELECT pl.*, j.number job_number, j.title job_title, u.name assigned_name, cb.name created_by_name FROM pick_lists pl JOIN jobs j ON j.id = pl.job_id
+      LEFT JOIN users u ON u.id = pl.assigned_to LEFT JOIN users cb ON cb.id = pl.created_by WHERE pl.id = ?`, req.params.id);
     if (!pl) throw bad('Not found', 404);
     pl.lines = all(db, `SELECT l.*, pb.code sku, pb.qty_on_hand, COALESCE(l.unit, pb.unit) unit, COALESCE(l.unit_cost, pb.unit_cost) unit_cost, cc.code cost_code, cc.name cost_code_name, u.name added_by_name
       FROM pick_list_lines l LEFT JOIN pricebook pb ON pb.id = l.pricebook_id LEFT JOIN cost_codes cc ON cc.id = l.cost_code_id LEFT JOIN users u ON u.id = l.added_by
@@ -622,9 +623,13 @@ module.exports = function routesExt(app, db, X) {
     res.json(pl);
   }));
   // New pick list for a job. from_estimate pulls material lines off the approved estimate.
-  app.post('/api/jobs/:id/pick-lists', office, wrap((req, res) => {
-    const job = mustGet('jobs', req.params.id);
-    const id = insert('pick_lists', { number: D.nextNumber(db, 'pick_lists', 'PL'), job_id: job.id, needed_by: req.body.needed_by || null, assigned_to: req.body.assigned_to || null, notes: req.body.notes || null });
+  // Techs can start one for a job they're on (a field request: the office or warehouse picks it).
+  app.post('/api/jobs/:id/pick-lists', wrap((req, res) => {
+    const job = mustGet('jobs', req.params.id), tech = req.user.role === 'tech';
+    if (tech && !get(db, 'SELECT 1 x FROM job_techs WHERE job_id = ? AND user_id = ?', job.id, req.user.id)) throw bad('You can start a pick list only for a job you\'re on', 403);
+    if (['cancelled', 'invoiced'].includes(job.status)) throw bad(`${job.number} is ${job.status}`);
+    const id = insert('pick_lists', { number: D.nextNumber(db, 'pick_lists', 'PL'), job_id: job.id, needed_by: req.body.needed_by || null,
+      assigned_to: tech ? null : req.body.assigned_to || null, notes: req.body.notes || null, created_by: req.user.id });
     let lines = req.body.lines || [];
     if (req.body.from_estimate) {
       const est = get(db, "SELECT id FROM estimates WHERE job_id = ? AND status = 'approved' ORDER BY id DESC LIMIT 1", job.id);
@@ -637,7 +642,7 @@ module.exports = function routesExt(app, db, X) {
         .filter(l => chosen.has(l.id) && (l.pricebook_id ? l.kind === 'material' : !LABOR.test(l.description || '')));
       if (!lines.length) throw bad('The approved estimate has no material lines. Create the pick list without it and add material by hand.');
     }
-    for (const l of lines) if (l.description) insert('pick_list_lines', { pick_list_id: id, ...pickLine(l, req.user) });
+    for (const l of lines) if (l.description || l.pricebook_id) insert('pick_list_lines', { pick_list_id: id, ...pickLine(l, req.user), ...(tech && !req.body.from_estimate ? { unit_cost: null } : {}) });
     res.json({ id, lines: get(db, 'SELECT COUNT(*) n FROM pick_list_lines WHERE pick_list_id = ?', id).n });
   }));
   // A line from the price book (description/unit/cost filled from it) or typed by hand.
@@ -660,10 +665,11 @@ module.exports = function routesExt(app, db, X) {
     if (tech && !canTouchPick(req.user, pl)) throw bad('Not your pick list', 403);
     if (!tech) update('pick_lists', pl.id, pick(req.body, ['needed_by', 'assigned_to', 'notes', ...(req.body.status === 'cancelled' ? ['status'] : [])]));
     const editable = pl.status !== 'picked';
+    const ownOpen = l => tech && l.added_by === req.user.id && pl.status === 'open';
     for (const id of req.body.remove || []) {
-      if (tech) throw bad('Ask the office to remove lines', 403);
       const l = get(db, 'SELECT * FROM pick_list_lines WHERE id = ? AND pick_list_id = ?', id, pl.id);
       if (!l) continue;
+      if (tech && !ownOpen(l)) throw bad('You can remove only lines you added, before picking starts. Ask the office for the rest.', 403);
       if (l.job_material_id) throw bad(`"${l.description}" was already picked and charged to the job`);
       run(db, 'DELETE FROM pick_list_lines WHERE id = ?', l.id);
     }
@@ -672,7 +678,7 @@ module.exports = function routesExt(app, db, X) {
         const cur = get(db, 'SELECT * FROM pick_list_lines WHERE id = ? AND pick_list_id = ?', l.id, pl.id);
         if (!cur || cur.job_material_id) continue;
         if (l.qty_picked !== undefined) run(db, 'UPDATE pick_list_lines SET qty_picked = ? WHERE id = ?', Math.max(0, Number(l.qty_picked) || 0), cur.id);
-        if (!tech && editable && l.qty !== undefined) { const q = Number(l.qty); if (!(q > 0)) throw bad(`Quantity for "${cur.description}" must be more than 0`); run(db, 'UPDATE pick_list_lines SET qty = ? WHERE id = ?', q, cur.id); }
+        if ((!tech || ownOpen(cur)) && editable && l.qty !== undefined) { const q = Number(l.qty); if (!(q > 0)) throw bad(`Quantity for "${cur.description}" must be more than 0`); run(db, 'UPDATE pick_list_lines SET qty = ? WHERE id = ?', q, cur.id); }
       } else if (l.description || l.pricebook_id) {
         if (!editable) throw bad('This pick list is already picked. Start a new one for more material.');
         insert('pick_list_lines', { pick_list_id: pl.id, ...pickLine(l, req.user), ...(tech ? { unit_cost: null } : {}) });

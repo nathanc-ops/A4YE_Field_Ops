@@ -1129,6 +1129,8 @@ const MIGRATIONS = [
   db => {
     for (const [c, d] of [['en_route_at', 'TEXT'], ['eta_at', 'TEXT'], ['on_way_notice', 'TEXT']]) addColumn(db, 'appointments', c, d);
   },
+  // 44: techs start pick lists from the field — who asked for it
+  db => { addColumn(db, 'pick_lists', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

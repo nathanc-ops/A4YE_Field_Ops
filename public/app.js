@@ -760,7 +760,7 @@ async function viewJob(id) {
     ['materials', `Materials (${j.materials.length})`], ['equipment', `Equipment (${j.equipment.length})`], ['permits', `Permits (${j.permits.length})`], ['comms', isOffice() ? 'Emails & calls' : 'Calls']];
   if (j.is_project) tabs.splice(1, 0, ['project', 'Project']);
   if (isOffice()) tabs.push(['budget', 'Cost codes & budget'], ['purchasing', `Purchasing (${(j.purchase_orders || []).length + j.pick_lists.length})`], ['billing', 'Billing'], ...(can('see_costs') ? [['costs', 'Other costs'], ['costing', 'Job costing']] : []));
-  else if (j.pick_lists.length) tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
+  else tabs.push(['purchasing', `Pick lists (${j.pick_lists.length})`]);
   const statusOpts = isOffice() ? JOB_STATUSES : ['dispatched', 'in_progress', 'on_hold', 'completed'];
   $('#view').innerHTML = setTop(`${esc(j.number)} · ${esc(j.title)}`,
     `<select id="status" style="width:auto">${(statusOpts.includes(j.status) ? statusOpts : [j.status, ...statusOpts]).map(s => `<option value="${s}" ${s === j.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
