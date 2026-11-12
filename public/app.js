@@ -515,8 +515,8 @@ async function jobForm(job, { customerId } = {}) {
       if (data.status === 'on_hold' && job.status !== 'on_hold') { const h = await holdPrompt(job); if (!h) return; Object.assign(data, h); }
       // clear the other model's fields so a job isn't half fixed, half T&M
       for (const f of fields.filter(x => x.bt && x.bt !== data.billing_type)) data[f.name] = f.type === 'checkbox' ? 1 : null;
-      if (job.id) { await PUT('/jobs/' + job.id, data); toast('Job saved'); route(); }
-      else { const r = await POST('/jobs', data); toast('Job booked'); go('#/jobs/' + r.id); }
+      if (job.id) { inviteToast(await PUT('/jobs/' + job.id, data), 'Job saved'); route(); }
+      else { const r = await POST('/jobs', data); inviteToast(r, 'Job booked'); go('#/jobs/' + r.id); }
     },
   });
   const form = $('form', m.el);
@@ -617,6 +617,13 @@ async function commCard(el, scope, { phone, contact, rollup } = {}) {
   draw();
 }
 
+// after a hold change: say whether the calendar invite went
+function inviteToast(r, fallback) {
+  const i = r && r.invite;
+  if (!i) return toast(fallback);
+  if (i.status === 'sent') return toast(`${fallback} · calendar invite emailed to ${i.name || i.to}`);
+  toast(`${fallback}, but the calendar invite was NOT emailed: ${i.error || i.status}. The follow-up is still on the schedule.`, true);
+}
 // on hold: a reason and a follow-up date are required; resolves to the fields to send, or null if cancelled
 function holdPrompt(j) {
   return new Promise(resolve => {
@@ -654,7 +661,7 @@ function wireHoldBanner(j) {
     fields: [{ name: 'hold_reason', label: 'Why is it on hold?', type: 'textarea', full: true, required: true }, { name: 'hold_follow_up', label: 'Follow up on', type: 'date', required: true },
       { name: 'hold_assignee', label: 'Follow-up task for', type: 'select', blank: false, options: followUpPeople() },
       { name: 'hold_invite', label: 'Email them an updated calendar invite', type: 'checkbox' }],
-    submit: async v => { await PUT('/jobs/' + j.id, { hold_reason: v.hold_reason, hold_follow_up: v.hold_follow_up, hold_assignee: Number(v.hold_assignee) || null, hold_invite: !!v.hold_invite }); toast('Saved'); route(); } });
+    submit: async v => { await PUT('/jobs/' + j.id, { hold_reason: v.hold_reason, hold_follow_up: v.hold_follow_up, hold_assignee: Number(v.hold_assignee) || null, hold_invite: !!v.hold_invite }).then(r => inviteToast(r, 'Saved')); route(); } });
   if ($('#holdics')) $('#holdics').onclick = async () => {
     const res = await fetch(`/api/jobs/${j.id}/hold.ics`, { headers: { Authorization: 'Bearer ' + S.token } });
     if (!res.ok) return toast('Could not make the calendar file', true);
@@ -726,7 +733,7 @@ async function viewJob(id) {
     const body = { status: e.target.value };
     if (body.status === 'on_hold' && j.status !== 'on_hold') { const h = await holdPrompt(j); if (!h) { e.target.value = j.status; return; } Object.assign(body, h); }
     if (body.status === 'completed' && !isOffice()) { const n = prompt('Completion notes (what was done, anything the office should know):', j.completion_notes || ''); if (n === null) { e.target.value = j.status; return; } body.completion_notes = n; }
-    await act(() => PUT('/jobs/' + j.id, body), 'Status updated'); route();
+    const r = await act(() => PUT('/jobs/' + j.id, body)); if (r) inviteToast(r, 'Status updated'); route();
   };
   if (isOffice()) {
     if ($('#edit')) $('#edit').onclick = () => jobForm(j);

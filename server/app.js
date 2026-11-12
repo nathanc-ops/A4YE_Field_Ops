@@ -498,7 +498,7 @@ function createApp(db) {
     }
     res.json(job);
   }));
-  app.post('/api/jobs', office, wrap((req, res) => {
+  app.post('/api/jobs', office, wrap(async (req, res) => {
     const data = jobData(req.body);
     if (!data.customer_id || !data.title) throw bad('Customer and job title are required');
     if (!data.status) data.status = data.scheduled_start ? 'scheduled' : 'unscheduled';
@@ -512,8 +512,8 @@ function createApp(db) {
       if (data.status === 'on_hold') run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', jid, req.user.id, `Put on hold: ${data.hold_reason} — follow up ${data.hold_follow_up} (${(get(db, 'SELECT name FROM users WHERE id = ?', data.hold_assignee) || {}).name || ''})`);
       return jid;
     });
-    if (data.status === 'on_hold' && req.body.hold_invite !== false) setImmediate(() => holdInvite(id, false));
-    res.json({ id });
+    const invite = data.status === 'on_hold' && req.body.hold_invite !== false ? await holdInvite(id, false) : null;
+    res.json({ id, invite });
   }));
   // job numbering (Settings → Job numbers): what the next new job will be, and dropping an old prefix from existing jobs
   const prefixPlan = prefix => {
@@ -582,12 +582,12 @@ function createApp(db) {
       const moved = editing && f !== job.hold_follow_up, reworded = editing && r !== job.hold_reason;
       if (editing && !moved && !reworded && !reassigned) return null;
       return { note: entering ? `Put on hold: ${r} — follow up ${f} (${ok.name})` : [moved && `Follow-up moved to ${f}`, reworded && `Hold reason: ${r}`, reassigned && `Follow-up now with ${ok.name}`].filter(Boolean).join('. '),
-        after: () => { if (body.hold_invite !== false) setImmediate(() => holdInvite(job.id, false)); } };
+        after: () => body.hold_invite !== false ? holdInvite(job.id, false) : null };
     }
     if (leaving) {
       Object.assign(data, { hold_reason: null, hold_follow_up: null, hold_at: null, hold_by: null, hold_assignee: null, hold_seq: (job.hold_seq || 0) + 1 });
       const was = { ...job };
-      return { note: `Taken off hold (was: ${job.hold_reason || 'no reason recorded'})`, after: () => setImmediate(() => holdInvite(was.id, true, was)) };
+      return { note: `Taken off hold (was: ${job.hold_reason || 'no reason recorded'})`, after: () => holdInvite(was.id, true, was) };
     }
     return null;
   }
@@ -607,14 +607,16 @@ function createApp(db) {
     try {
       const j = snapshot ? { ...snapshot, hold_seq: (snapshot.hold_seq || 0) + 1, customer_name: (get(db, 'SELECT name FROM customers WHERE id = ?', snapshot.customer_id) || {}).name }
         : get(db, 'SELECT j.*, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id WHERE j.id = ?', jobId);
-      if (!j || !j.hold_follow_up || !(j.hold_assignee || j.hold_by) || !mailer.config(db)) return;
-      const u = get(db, 'SELECT name, email FROM users WHERE id = ?', j.hold_assignee || j.hold_by); if (!u || !u.email) return;
+      if (!j || !j.hold_follow_up || !(j.hold_assignee || j.hold_by)) return null;
+      const u = get(db, 'SELECT name, email FROM users WHERE id = ?', j.hold_assignee || j.hold_by);
+      if (!u || !u.email) return { status: 'no_email', name: u && u.name, error: `${(u && u.name) || 'That person'} has no email address on their user (Team)` };
       const subject = cancelled ? `Off hold: ${j.number} — follow-up cancelled` : `Follow up ${j.hold_follow_up}: ${j.number} on hold`;
       const text = cancelled ? `${j.number} ${j.title || ''} is no longer on hold, so the follow-up on ${j.hold_follow_up} is cancelled.`
         : `${j.number} ${j.title || ''}${j.customer_name ? ` (${j.customer_name})` : ''} is on hold.\n\nReason: ${j.hold_reason}\nFollow up: ${j.hold_follow_up}\n\nThe attached calendar invite puts the follow-up on your calendar.`;
-      await mailer.send(db, { to: u.email, subject, text, related: `job:${j.id}`,
+      const r = await mailer.send(db, { to: u.email, subject, text, related: `job:${j.id}`,
         attachments: [{ filename: cancelled ? 'follow-up-cancelled.ics' : 'follow-up.ics', content: holdIcs(j, cancelled), contentType: `text/calendar; charset=utf-8; method=${cancelled ? 'CANCEL' : 'PUBLISH'}` }] });
-    } catch { /* email is a convenience: the follow-up is still on the schedule and the job */ }
+      return { status: r.status, to: u.email, name: u.name, error: r.error || (r.status === 'not_configured' ? 'Email isn\'t set up (Settings → Email)' : null) };
+    } catch (e) { return { status: 'failed', error: e.message }; }   // the follow-up is still on the schedule and the job
   }
   app.get('/api/jobs/:id/hold.ics', office, wrap((req, res) => {
     const j = get(db, 'SELECT j.*, c.name customer_name FROM jobs j JOIN customers c ON c.id = j.customer_id WHERE j.id = ?', +req.params.id);
@@ -629,7 +631,7 @@ function createApp(db) {
       FROM jobs j JOIN customers c ON c.id = j.customer_id LEFT JOIN users u ON u.id = j.hold_by LEFT JOIN users a ON a.id = j.hold_assignee
       WHERE j.status = 'on_hold' AND j.hold_follow_up BETWEEN ? AND ? ORDER BY j.hold_follow_up, j.number`, from, to));
   }));
-  app.put('/api/jobs/:id', wrap((req, res) => {
+  app.put('/api/jobs/:id', wrap(async (req, res) => {
     const job = mustGet('jobs', req.params.id);
     let data = jobData(req.body);
     if (req.user.role === 'tech') {
@@ -652,14 +654,15 @@ function createApp(db) {
     const hold = holdChange(job, data, req.body, req.user);
     tx(db, () => {
       update('jobs', job.id, data);
-      if (hold) { run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', job.id, req.user.id, hold.note); hold.after(); }
+      if (hold) run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', job.id, req.user.id, hold.note);
       if (data.timeclock_job) TC.relink(db);
       if (req.user.role !== 'tech') {
         setTechs(job.id, req.body.tech_ids);
         if (data.scheduled_start) H.syncSingleAppointment(job.id, data.scheduled_start, data.scheduled_end, req.body.tech_ids);
       }
     });
-    res.json({ ok: true });
+    const invite = hold ? await hold.after() : null;   // say whether the calendar invite went, so a failure isn't silent
+    res.json({ ok: true, invite });
   }));
   // Cancel: the job stays on record (searchable, reportable) but leaves the board, and its open paperwork is closed out.
   H.cancelJob = (job, user, reason) => {

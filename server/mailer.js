@@ -82,7 +82,7 @@ function twilioTransport(c) {
         const p = `<p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#555">To reply, email <a href="mailto:${escHtml(reply)}">${escHtml(reply)}</a></p>`;
         html = /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${p}</body>`) : html + p;
       }
-      const attachments = (m.attachments || []).map(a => ({ filename: a.filename || 'attachment', contentType: a.contentType || 'application/octet-stream',
+      const attachments = (m.attachments || []).map(a => ({ filename: a.filename || 'attachment', contentType: String(a.contentType || 'application/octet-stream').split(';')[0].trim(),
         content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : Buffer.from(String(a.content || ''), 'utf8').toString('base64') }));
       const body = { from: { address: c.fromEmail, name: c.fromName || c.fromEmail }, to,
         content: { subject: m.subject || '', html, ...(text ? { text } : {}), ...(attachments.length ? { attachments } : {}) } };

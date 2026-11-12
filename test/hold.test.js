@@ -89,3 +89,14 @@ test('the follow-up is a task for someone: the company default, or who was picke
   await call('admin', 'PUT', `/jobs/${id}`, { status: 'scheduled' });
   assert.equal((await call('admin', 'GET', `/jobs/${id}`)).data.hold_assignee, null);
 });
+
+test('the response says whether the calendar invite went (no silent failure)', async () => {
+  const cust = (await call('admin', 'POST', '/customers', { name: 'Fourth Customer' })).data.id;
+  const r = (await call('admin', 'POST', '/jobs', { customer_id: cust, title: 'EV charger', status: 'on_hold', hold_reason: 'Waiting on permit', hold_follow_up: day(2) })).data;
+  assert.equal(r.invite.status, 'not_configured'); assert.match(r.invite.error, /Settings → Email/);
+  const log = (await call('admin', 'GET', `/comms?job_id=${r.id}`)).data.items.filter(x => x.type === 'email');
+  assert.equal(log.length, 1, 'the attempt is recorded on the job'); assert.match(log[0].subject, /on hold/);
+  const off = (await call('admin', 'PUT', `/jobs/${r.id}`, { status: 'scheduled' })).data;
+  assert.equal(off.invite.status, 'not_configured', 'the cancellation reports too');
+  assert.equal((await call('admin', 'PUT', `/jobs/${r.id}`, { status: 'on_hold', hold_reason: 'Again', hold_follow_up: day(2), hold_invite: false })).data.invite, null);
+});
