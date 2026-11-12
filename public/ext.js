@@ -51,8 +51,47 @@ const hhmm = h => { const x = new Date(2000, 0, 1, 0, Math.round(h * 60)); retur
 const snap = h => Math.round(h * 4) / 4;
 function addDaysStr(d, n) { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + n); return localDate(x); }
 function warnConflicts(r) {
-  if (r && r.conflicts && r.conflicts.length)
-    toast('⚠ Double-booked: ' + r.conflicts.map(c => `${c.name} on ${c.job_number} ${fmtTime(c.start)}–${fmtTime(c.end)}`).join('; '), true);
+  if (!r || !r.conflicts || !r.conflicts.length) return;
+  const off = r.conflicts.filter(c => c.off), dbl = r.conflicts.filter(c => !c.off);
+  const msg = [off.length && '⚠ Booked on a day off: ' + off.map(c => `${c.name} (${c.job_number}${c.hours ? `, ${c.hours} h` : ''} ${fmtDate(c.start)}${c.end !== c.start ? `–${fmtDate(c.end)}` : ''})`).join('; '),
+    dbl.length && '⚠ Double-booked: ' + dbl.map(c => `${c.name} on ${c.job_number} ${fmtTime(c.start)}–${fmtTime(c.end)}`).join('; ')].filter(Boolean).join(' · ');
+  toast(msg, true);
+}
+
+// ---- attendance: time off, called in sick, absent, in late, left early (Schedule; counted by the KPI tracker)
+const ATT = { time_off: ['🌴', 'Time off'], sick: ['🤒', 'Called in sick'], absent: ['🚫', 'Absent'], late: ['⏰', 'In late'], left_early: ['🚪', 'Left early'] };
+const attOn = (list, userId, d) => (list || []).filter(a => a.user_id === userId && a.start_date <= d && a.end_date >= d);
+const attOff = (list, userId, d) => attOn(list, userId, d).some(a => ['time_off', 'sick', 'absent'].includes(a.kind) && !a.hours);
+function attText(a) {
+  const [, l] = ATT[a.kind] || ['', a.kind];
+  return `${l}${a.kind === 'time_off' ? (a.paid ? ' (paid)' : ' (unpaid)') : a.kind === 'sick' && a.paid ? ' (paid)' : ''}${a.no_call ? ' — no call' : ''}${a.hours ? ` · ${a.hours} h` : ''}${a.minutes ? ` · ${a.minutes} min` : ''}`;
+}
+const attChip = a => `<a href="#" class="chip attchip att-${a.kind}" data-att="${a.id}" title="${esc(`${attText(a)}${a.start_date !== a.end_date ? ` · ${fmtDate(a.start_date)}–${fmtDate(a.end_date)}` : ''}${a.reason ? ' · ' + a.reason : ''}`)}"><b>${ATT[a.kind][0]} ${esc(attText(a))}</b>${a.reason ? `<br><span class="muted">${esc(a.reason.slice(0, 50))}</span>` : ''}</a>`;
+function attendanceForm(a = {}, after) {
+  const people = S.users.filter(u => u.active || u.id === a.user_id).map(u => [u.id, u.name]);
+  const fields = [{ name: 'user_id', label: 'Employee', type: 'select', required: true, blank: false, options: people },
+    { name: 'kind', label: 'What', type: 'select', blank: false, options: Object.entries(ATT).map(([k, [i, l]]) => [k, `${i} ${l}`]) },
+    { name: 'start_date', label: 'Date (first day)', type: 'date', required: true }, { name: 'end_date', label: 'Last day (time off, sick or absent over several days)', type: 'date' },
+    { name: 'hours', label: 'Hours off (blank = the whole day)', type: 'number', step: '0.25' }, { name: 'minutes', label: 'Minutes late / early', type: 'number' },
+    { name: 'paid', label: 'Paid (PTO / paid sick)', type: 'checkbox' }, { name: 'no_call', label: 'No call / no show', type: 'checkbox' },
+    { name: 'reason', label: 'Note', type: 'textarea', full: true, placeholder: 'e.g. Vacation; doctor appointment; car trouble, called at 6:45' }];
+  const m = formModal({ title: a.id ? 'Edit attendance' : 'Time off & attendance', okLabel: a.id ? 'Save' : 'Add',
+    values: { kind: 'time_off', start_date: todayStr(), paid: 1, ...a }, fields,
+    extra: `<p class="small muted">Time off, sick and absent days show on the schedule and warn you when someone is booked. Everything here is counted on the KPI tracker (KPIs → Targets & set-up → + Add a KPI → Attendance numbers). It doesn't add PTO hours to payroll; those still go on the time clock.</p>${a.id ? '<div class="row" style="margin-top:8px"><button type="button" class="btn sm danger" id="attdel">Delete</button></div>' : ''}`,
+    submit: async v => {
+      const r = a.id ? await PUT('/attendance/' + a.id, v) : await POST('/attendance', v);
+      if (r.booked && r.booked.length) toast(`Saved — but they're booked on those days: ${[...new Set(r.booked.map(b => b.job_number))].join(', ')}. Move or reassign those visits.`, true);
+      else toast('Saved');
+      after ? after() : route();
+    } });
+  const kindSel = $('[name=kind]', m.el);
+  const sync = () => {
+    const k = kindSel.value, off = ['time_off', 'sick', 'absent'].includes(k);
+    const show = (n, on) => { const el = $(`[name=${n}]`, m.el); if (el) el.closest('label').style.display = on ? '' : 'none'; };
+    show('end_date', off); show('hours', off); show('minutes', !off); show('paid', k === 'time_off' || k === 'sick'); show('no_call', k === 'absent');
+  };
+  kindSel.onchange = sync; sync();
+  if ($('#attdel', m.el)) $('#attdel', m.el).onclick = async () => { if (!confirm('Delete this entry?')) return; await act(() => DEL('/attendance/' + a.id), 'Deleted'); m.close(); after ? after() : route(); };
 }
 
 // Appointment confirmation email: preview the exact email, edit the address, add a line, send. Without SMTP set up on the
@@ -258,6 +297,7 @@ async function viewBoard(date, seg) {
   const from = dayISO(date), to = dayISO(addDaysStr(date, 1));
   const disp = isOffice() ? await GET('/dispatch' + qs({ date })) : null;
   const appts = disp ? disp.appointments : await GET('/appointments' + qs({ from, to }));
+  const att = await GET('/attendance' + qs({ from: date, to: date })).catch(() => []);
   const techUsers = isOffice()
     ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id))))
     : S.users.filter(u => u.id === S.user.id);
@@ -290,7 +330,7 @@ async function viewBoard(date, seg) {
 
   $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('board', date, 1)}
       <span class="seg"><button id="zout" title="Zoom out">−</button><button id="zin" title="Zoom in">+</button></span>
-      ${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
+      ${isOffice() ? '<button class="btn" id="newatt">🌴 Time off / attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `${new Date(date + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} · ${appts.length} visit(s)${isOffice() ? ' · drag to move or reassign, drag the right edge to resize, click an empty slot to add' : ''}`) + `
     <div class="hb-layout" style="${isOffice() ? '' : 'grid-template-columns:1fr'}">
       ${isOffice() ? `<div class="card hb-queue"><h2>Needs scheduling (${disp.unscheduled.length})</h2><p class="small muted">Drag onto a tech's row.</p>
@@ -299,7 +339,8 @@ async function viewBoard(date, seg) {
       <div><div class="hb-wrap"><div class="hb" style="--hours:${H1 - H0};--hw:${hw}px">
         <div class="hb-head"><div class="hb-tech" style="background:var(--surface-2)"><b>Tech</b></div><div class="hb-hours">${hours}</div></div>
         ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? `${g.rows[0].items.length} visit(s)` : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + (r.booked || 0), 0), 1)}h booked`}</span></div>` : ''}
-        ${g.rows.map(r => `<div class="hb-row crew-${g.key}"><div class="hb-tech"><b><span class="dot" style="background:${esc(r.color)}"></span>${esc(r.name)}</b>
+        ${g.rows.map(r => `<div class="hb-row crew-${g.key} ${r.id && attOff(att, r.id, date) ? 'offday' : ''}"><div class="hb-tech"><b><span class="dot" style="background:${esc(r.color)}"></span>${esc(r.name)}</b>
+            ${r.id ? attOn(att, r.id, date).map(a => `<div><a href="#" class="pill att-${a.kind}" data-att="${a.id}" title="${esc(a.reason || '')}">${ATT[a.kind][0]} ${esc(attText(a))}</a></div>`).join('') : ''}
             ${r.id ? `<div class="small muted">${r.clock ? `<span class="pill good">● ${r.clock.job_number ? esc(r.clock.job_number) : label(r.clock.kind)}</span>` : 'Off clock'}${r.booked != null ? ` · ${num(r.booked, 1)}h booked` : ''}</div>` : ''}</div>
           <div class="hb-lane" data-tech="${r.id}" style="height:${r.lanes * 58 + 10}px">${r.items.map(it => block(r, it)).join('')}${nowLine}</div></div>`).join('')}`).join('')}
       </div></div><div class="row spread" style="margin-top:8px">${legend()}<span class="small muted">15-minute snap</span></div></div>
@@ -310,6 +351,8 @@ async function viewBoard(date, seg) {
   $('#zout').ondblclick = $('#zin').ondblclick = () => { localStorage.removeItem('fo_hw'); route(); };
   if (!isOffice()) { $$('.hb-appt').forEach(el => el.onclick = () => { const a = appts.find(x => x.id === Number(el.dataset.appt)); go(a.href); }); return; }
   $('#newjob').onclick = () => jobForm({});
+  $('#newatt').onclick = () => attendanceForm({ start_date: date });
+  $$('.hb-tech [data-att]').forEach(c => c.onclick = e => { e.preventDefault(); attendanceForm(att.find(x => x.id === +c.dataset.att)); });
   if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   if (date === todayStr()) S.timer = setInterval(() => { if (!document.querySelector('.hb-appt.dragging') && !document.querySelector('.modal-bg')) route(); }, 120000);
 
@@ -391,20 +434,20 @@ async function viewWeek(date, seg) {
   const start = new Date(date + 'T00:00:00'); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
   const monday = localDate(start);
   const days = [...Array(7)].map((_, i) => addDaysStr(monday, i));
-  const [appts, projAll, follows] = await Promise.all([GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) })), isOffice() ? GET('/projects?lite=1') : [],
-    isOffice() ? GET('/job-follow-ups' + qs({ from: monday, to: addDaysStr(monday, 6) })) : []]);
+  const [appts, projAll, follows, att] = await Promise.all([GET('/appointments' + qs({ from: dayISO(monday), to: dayISO(addDaysStr(monday, 7)) })), isOffice() ? GET('/projects?lite=1') : [],
+    isOffice() ? GET('/job-follow-ups' + qs({ from: monday, to: addDaysStr(monday, 6) })) : [], GET('/attendance' + qs({ from: monday, to: addDaysStr(monday, 6) })).catch(() => [])]);
   // commercial projects running this week: who's on each one, day by day (and which have nobody booked)
   const sunday = addDaysStr(monday, 6);
   const projs = projAll.filter(pj => (!pj.start_date || pj.start_date <= sunday) && (!pj.end_date || pj.end_date >= monday)
     && (pj.start_date || pj.end_date || appts.some(a => a.job_id === pj.id)));
-  const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)) || follows.some(f => f.hold_assignee === u.id))) : S.users.filter(u => u.id === S.user.id);
+  const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)) || follows.some(f => f.hold_assignee === u.id) || att.some(x => x.user_id === u.id))) : S.users.filter(u => u.id === S.user.id);
   const tasksFor = (r, d) => follows.filter(f => f.hold_follow_up === d && (r.id ? f.hold_assignee === r.id : !f.hold_assignee));
   const rows = [...techs.map(t => ({ id: t.id, name: t.name, color: t.color })), ...(isOffice() ? [{ id: 0, name: 'Unassigned', color: '#94a3b8' }] : [])];
   const onDay = (a, d) => Date.parse(a.start) < Date.parse(dayISO(addDaysStr(d, 1))) && Date.parse(a.end) > Date.parse(dayISO(d));
   const cellAppts = (r, d) => appts.filter(a => onDay(a, d) && (r.id ? a.tech_ids.includes(r.id) : !a.tech_ids.length)).sort((x, y) => dayWindow(x, d).start.localeCompare(dayWindow(y, d).start));
   const cap = (list, d) => { const h = list.reduce((s, a) => s + visitHoursOnDay(a, d), 0); return { h, pct: Math.min(100, h / 8 * 100), cls: h > 10 ? 'over' : h >= 8 ? 'full' : '' }; };
   const totals = new Map(rows.map(r => [r, days.reduce((s, d) => s + cap(cellAppts(r, d), d).h, 0)]));
-  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
+  $('#view').innerHTML = setTop('Schedule & Dispatch', `${seg}${dateNav('week', monday, 7)}${isOffice() ? '<button class="btn" id="newatt">🌴 Time off / attendance</button><button class="btn" id="newest">+ Estimate visit</button><button class="btn primary" id="newjob">+ Book job</button>' : ''}`,
     `Week of ${fmtDate(monday)} · ${appts.length} visit(s)${isOffice() ? ' · drag a visit to another day or tech (keeps its time)' : ''}`) + `
     ${projs.length ? `<div class="card wk-proj"><div class="row spread"><h2 style="margin:0">Commercial projects this week</h2><span class="small muted">Crew on site each day — click a day to change that day's crew</span></div>
       <div class="table-wrap"><table><thead><tr><th>Project</th>${days.map(d => `<th class="${d === todayStr() ? 'today' : ''}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</th>`).join('')}<th></th></tr></thead>
@@ -416,13 +459,17 @@ async function viewWeek(date, seg) {
     <div class="wk"><div class="h">Tech</div>${days.map(d => `<div class="h ${d === todayStr() ? 'today' : ''}"><a href="#/schedule${qs({ view: 'board', date: d })}">${new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })}</a></div>`).join('')}
     ${crewBlocks(rows).map(g => `${isOffice() ? `<div class="crew-h crew-${g.key}" style="grid-column:1/-1"><span>${esc(g.label)}</span><span class="muted">${g.key === 'unassigned' ? '' : `${g.rows.length} · ${num(g.rows.reduce((t, r) => t + totals.get(r), 0), 1)}h booked this week`}</span></div>` : ''}
     ${g.rows.map(r => `<div class="tech"><span class="dot" style="background:${esc(r.color)}"></span> ${esc(r.name)}<div class="small muted">${num(totals.get(r), 1)} h booked</div></div>
-      ${days.map(d => { const list = cellAppts(r, d); const c = cap(list, d); return `<div class="cell" data-tech="${r.id}" data-day="${d}">
+      ${days.map(d => { const list = cellAppts(r, d); const c = cap(list, d); return `<div class="cell ${r.id && attOff(att, r.id, d) ? 'offday' : ''}" data-tech="${r.id}" data-day="${d}">
+        ${r.id ? attOn(att, r.id, d).map(attChip).join('') : ''}
         ${r.id && list.length ? `<div class="cap ${c.cls}" title="${num(c.h, 1)} of 8 h"><i style="width:${c.pct}%"></i></div>` : ''}
         ${tasksFor(r, d).map(f => `<a class="chip fchip" href="#/jobs/${f.id}" title="${esc(`Follow up: ${f.hold_reason || ''}`)}"><b>☐ Follow up</b> ${esc(f.number)}<br>${esc(f.customer_name || '')}<br><span class="muted">${esc((f.hold_reason || '').slice(0, 60))}</span></a>`).join('')}
         ${list.map(a => { const w = dayWindow(a, d); return `<a class="chip st-${a.status} ${a.kind === 'estimate' ? 'est' : ''} ${isMultiDay(a) ? 'multi' : ''}" draggable="${isOffice()}" data-appt="${a.id}" data-row="${r.id}" data-day="${d}" href="${a.href}"><b>${fmtTime(w.start)}–${fmtTime(w.end)}</b> ${dayTag(a, d)}${esc(a.job_number)}<br>${esc(a.customer_name)}<br><span class="muted">${esc(a.job_title)}</span></a>`; }).join('')}</div>`; }).join('')}`).join('')}`).join('')}</div>
     <div style="margin-top:8px">${legend()}</div>`;
   bindDatePick('week');
-  if (!isOffice()) return;
+  if (!isOffice()) { $$('[data-att]').forEach(c => c.onclick = e => e.preventDefault()); return; }
+  $('#newatt').onclick = () => attendanceForm({ start_date: monday <= todayStr() && todayStr() <= addDaysStr(monday, 6) ? todayStr() : monday });
+  $$('[data-att]').forEach(c => c.onclick = e => { e.preventDefault(); e.stopPropagation(); attendanceForm(att.find(x => x.id === +c.dataset.att)); });
+  $$('.wk .cell').forEach(cell => cell.addEventListener('dblclick', e => { if (e.target.closest('.chip')) return; const t = +cell.dataset.tech; if (t) attendanceForm({ user_id: t, start_date: cell.dataset.day }); }));
   $('#newjob').onclick = () => jobForm({});
   if ($('#newest')) $('#newest').onclick = () => apptForm({ start: dayISO(date, 9), end: dayISO(date, 10) }, { mode: 'estimate' });
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
@@ -432,7 +479,7 @@ async function viewWeek(date, seg) {
     const from = [monday, pj.start_date].filter(Boolean).sort().pop(), fri = addDaysStr(monday, 4), to = [fri, pj.end_date].filter(Boolean).sort()[0] < from ? from : [fri, pj.end_date].filter(Boolean).sort()[0];
     apptForm({ job_id: pj.id, job_number: pj.number, customer_name: pj.customer_company || pj.customer_name, job_title: pj.title, start: dayISO(from, 7), end: dayISO(to, 15.5), tech_ids: pj.foreman_id ? [pj.foreman_id] : [] });
   });
-  $$('.wk .chip').forEach(c => {
+  $$('.wk .chip:not(.attchip):not(.fchip)').forEach(c => {
     c.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', `${c.dataset.appt}:${c.dataset.row}:${c.dataset.day}`));
     c.addEventListener('click', e => { if (e.metaKey || e.ctrlKey) return; e.preventDefault(); apptForm(byId[c.dataset.appt], { day: c.dataset.day }); });
   });

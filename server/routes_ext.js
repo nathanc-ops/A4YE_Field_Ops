@@ -209,14 +209,82 @@ module.exports = function routesExt(app, db, X) {
     if (live(a.id)) { const msg = Push.message({ type: 'cancelled', appt_id: a.id }); for (const uid of crewOf(a.id)) Push.queue({ type: 'cancelled', user_id: uid, appt_id: a.id, job_id: a.job_id, msg }); }
     run(db, 'DELETE FROM appointments WHERE id = ?', a.id); syncJobSchedule(a.job_id); res.json({ ok: true });
   }));
-  // Overlaps for any tech on this appointment (double-booking warning, not a hard stop).
+  // ================================================================ attendance
+  // Time off (planned), called in sick, absent (no-call flag), in late and left early, per person and day range.
+  // Shown on the schedule, warned about when someone is booked on a day off, and counted by the KPI tracker.
+  const ATT_KINDS = ['time_off', 'sick', 'absent', 'late', 'left_early'];
+  const OFF_KINDS = ['time_off', 'sick', 'absent'];   // the person isn't available (a full day, or `hours` of it)
+  const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  const attRows = (where, params) => all(db, `SELECT a.*, u.name user_name, u.role user_role, cb.name created_by_name FROM attendance a JOIN users u ON u.id = a.user_id
+    LEFT JOIN users cb ON cb.id = a.created_by WHERE ${where} ORDER BY a.start_date, u.name`, ...params);
+  app.get('/api/attendance', wrap((req, res) => {
+    const from = isDay(req.query.from) ? req.query.from : '0000-01-01', to = isDay(req.query.to) ? req.query.to : '9999-12-31';
+    const w = ['a.start_date <= ?', 'a.end_date >= ?'], p = [to, from];
+    const isOff = ['admin', 'manager', 'office'].includes(req.user.role);
+    if (!isOff) { w.push('a.user_id = ?'); p.push(req.user.id); }
+    else if (req.query.user_id) { w.push('a.user_id = ?'); p.push(+req.query.user_id); }
+    const rows = attRows(w.join(' AND '), p);
+    if (!isOff) for (const r of rows) delete r.reason;   // the office's note stays with the office
+    res.json(rows);
+  }));
+  function attData(b, prev = {}) {
+    const d = pick(b, ['user_id', 'kind', 'start_date', 'end_date', 'hours', 'minutes', 'paid', 'no_call', 'reason']);
+    const m = { ...prev, ...d };
+    if (!ATT_KINDS.includes(m.kind)) throw bad('Pick time off, sick, absent, in late or left early');
+    if (!get(db, 'SELECT 1 FROM users WHERE id = ?', +m.user_id)) throw bad('Pick the employee');
+    if (!isDay(m.start_date)) throw bad('Pick the date');
+    if (!m.end_date || ['late', 'left_early'].includes(m.kind)) m.end_date = m.start_date;
+    if (!isDay(m.end_date) || m.end_date < m.start_date) throw bad('The end date is before the start date');
+    if (addDays(m.start_date, 366) < m.end_date) throw bad('That is more than a year');
+    const num = v => (v === '' || v == null ? null : Number(v));
+    m.hours = OFF_KINDS.includes(m.kind) ? num(m.hours) : null;
+    if (m.hours != null && !(m.hours > 0 && m.hours <= 24)) throw bad('Hours off must be between 0 and 24 (leave blank for the full day)');
+    m.minutes = ['late', 'left_early'].includes(m.kind) ? num(m.minutes) : null;
+    if (['late', 'left_early'].includes(m.kind) && !(m.minutes > 0 && m.minutes <= 720)) throw bad(m.kind === 'late' ? 'How many minutes late?' : 'How many minutes early did they leave?');
+    m.paid = ['time_off', 'sick'].includes(m.kind) && m.paid ? 1 : 0;
+    m.no_call = m.kind === 'absent' && m.no_call ? 1 : 0;
+    m.reason = m.reason ? String(m.reason).trim().slice(0, 500) : null;
+    return { user_id: +m.user_id, kind: m.kind, start_date: m.start_date, end_date: m.end_date, hours: m.hours, minutes: m.minutes, paid: m.paid, no_call: m.no_call, reason: m.reason };
+  }
+  // booked visits that fall on the days off (a warning back to the office, not a stop)
+  function attClashes(row) {
+    if (!OFF_KINDS.includes(row.kind)) return [];
+    return H.appointments(`a.status != 'cancelled' AND EXISTS (SELECT 1 FROM appointment_techs t WHERE t.appointment_id = a.id AND t.user_id = ?) AND a.start < ? AND a.end > ?`,
+      [row.user_id, localToUtc(`${addDays(row.end_date, 1)} 00:00`), localToUtc(`${row.start_date} 00:00`)]).map(a => ({ id: a.id, job_number: a.job_number, start: a.start, end: a.end, href: a.href }));
+  }
+  app.post('/api/attendance', office, wrap((req, res) => {
+    const d = attData(req.body);
+    const id = insert('attendance', { ...d, created_by: req.user.id });
+    res.json({ id, booked: attClashes(d) });
+  }));
+  app.put('/api/attendance/:id', office, wrap((req, res) => {
+    const prev = mustGet('attendance', +req.params.id), d = attData(req.body, prev);
+    update('attendance', prev.id, d);
+    res.json({ ok: true, booked: attClashes(d) });
+  }));
+  app.delete('/api/attendance/:id', office, wrap((req, res) => { mustGet('attendance', +req.params.id); run(db, 'DELETE FROM attendance WHERE id = ?', +req.params.id); res.json({ ok: true }); }));
+  // company time zone: dates on the schedule are the company's days, not the server's
+  const companyTz = () => { const z = (D.settings(db) || {}).timezone || 'America/Boise'; try { new Intl.DateTimeFormat('en-US', { timeZone: z }); return z; } catch { return 'America/Boise'; } };
+  const localToUtc = local => require('./kpi').localToUtc(local, companyTz());
+  const localDay = iso => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: companyTz(), year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(iso)).map(x => [x.type, x.value])); return `${p.year}-${p.month}-${p.day}`; };
+  // who on this visit is off (time off / sick / absent) on one of its days
+  function offConflicts(apptId) {
+    const a = get(db, 'SELECT * FROM appointments WHERE id = ?', apptId); if (!a) return [];
+    const d0 = localDay(a.start), d1 = localDay(new Date(Date.parse(a.end) - 1).toISOString());
+    return all(db, `SELECT DISTINCT u.name, at.kind, at.start_date, at.end_date, at.hours FROM appointment_techs t JOIN attendance at ON at.user_id = t.user_id JOIN users u ON u.id = t.user_id
+      WHERE t.appointment_id = ? AND at.kind IN ('time_off','sick','absent') AND at.start_date <= ? AND at.end_date >= ?`, apptId, d1, d0);
+  }
+
+  // Overlaps for any tech on this appointment (double-booking warning, not a hard stop), plus anyone who is off that day.
   function conflicts(apptId) {
     const a = get(db, 'SELECT * FROM appointments WHERE id = ?', apptId);
-    return all(db, `SELECT DISTINCT u.name, a2.id appointment_id, COALESCE(j.number, e.number) job_number, a2.start, a2.end FROM appointment_techs t1
+    const off = offConflicts(apptId).map(o => ({ name: o.name, off: o.kind, job_number: o.kind === 'time_off' ? 'time off' : o.kind === 'sick' ? 'out sick' : 'absent',
+      start: o.start_date, end: o.end_date, hours: o.hours }));
+    return [...off, ...all(db, `SELECT DISTINCT u.name, a2.id appointment_id, COALESCE(j.number, e.number) job_number, a2.start, a2.end FROM appointment_techs t1
       JOIN appointment_techs t2 ON t2.user_id = t1.user_id AND t2.appointment_id != t1.appointment_id
       JOIN appointments a2 ON a2.id = t2.appointment_id AND a2.status != 'cancelled' JOIN users u ON u.id = t1.user_id
       LEFT JOIN jobs j ON j.id = a2.job_id LEFT JOIN estimates e ON e.id = a2.estimate_id
-      WHERE t1.appointment_id = ? AND a2.start < ? AND a2.end > ?`, apptId, a.end, a.start);
+      WHERE t1.appointment_id = ? AND a2.start < ? AND a2.end > ?`, apptId, a.end, a.start)];
   }
   // En route / on site / done from the field. On site clocks the tech in; done clocks them out.
   function techStatus(a, status, user, g = { lat: null, lng: null, acc: null }) {

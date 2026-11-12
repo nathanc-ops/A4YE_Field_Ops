@@ -423,6 +423,16 @@ async function kpiSetup(el) {
         ${fieldHtml({ name: 'tardy_grace_min', label: 'Tardy grace (minutes after the first visit)', type: 'number' }, s.settings.tardy_grace_min)}
         <p class="small muted full" style="margin:0">Overtime counts hours over <b>${esc(s.settings.ot_after)}</b> a week (Settings › Overtime after). Technicians are field; office, managers and admins are office.</p>
         <div class="full"><button class="btn primary sm">Save</button></div></form></div>
+    <div class="card" style="margin-top:12px"><h3 style="margin-top:0">+ Add a KPI</h3><p class="small muted">For a number the sheet didn't have, such as attendance (days off, sick days, absences, times late — logged on the Schedule). Pick a Field Ops number to fill it automatically, or leave it typed by hand.</p>
+      <form id="kadd" class="form-grid">
+        <label class="f"><span>On whose page</span><select name="owner_id" required>${s.owners.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select></label>
+        ${fieldHtml({ name: 'metric', label: 'KPI name', required: true, placeholder: 'e.g. Unplanned days out' })}
+        ${fieldHtml({ name: 'section', label: 'Section', placeholder: 'Attendance' })}
+        <label class="f"><span>Filled from</span><select name="rule"><option value="">Typed by hand</option>${s.rules.map(r => `<option value="${esc(r.key)}" title="${esc(r.desc)}" ${r.key === 'att_unplanned_days' ? 'selected' : ''}>${esc(r.desc.length > 90 ? r.desc.slice(0, 88) + '…' : r.desc)}</option>`).join('')}</select></label>
+        <label class="f"><span>Unit</span><select name="unit">${[['#', 'Count'], ['days', 'Days'], ['min', 'Minutes'], ['hrs', 'Hours'], ['$', 'Dollars'], ['%', 'Percent']].map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Better</span><select name="better"><option>Lower</option><option>Higher</option><option>Info</option></select></label>
+        ${fieldHtml({ name: 'target', label: 'Target (optional)', type: 'number' })}
+        <div class="full"><button class="btn primary sm">Add KPI</button></div></form></div>
     <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Targets</h3><p class="small muted">Changes save as you leave each box. Percent targets in percent (6 = 6%).</p>
     <div class="table-wrap"><table class="kpi-t"><thead><tr><th>#</th><th>Page</th><th>Metric</th><th>Better</th><th class="num">Target</th><th>Filled from</th><th>Active</th></tr></thead><tbody>
     ${s.metrics.map(m => `<tr data-m="${esc(m.id)}"><td class="small muted">${esc(m.id)}</td><td class="small">${esc(m.owner)}</td><td>${esc(m.metric)} <span class="small muted">${esc(m.input)}${m.rule ? ` · ${esc(m.rule)}` : ''}</span></td>
@@ -431,6 +441,8 @@ async function kpiSetup(el) {
       <td>${m.input === 'calc' ? `<span class="small muted">formula ${esc(m.rule || '')}</span>` : `<select data-f="rule" style="max-width:260px"><option value="">Typed by hand</option>${s.rules.map(r => `<option value="${esc(r.key)}" title="${esc(r.desc)}" ${r.key === m.rule ? 'selected' : ''}>${esc(r.desc.length > 60 ? r.desc.slice(0, 60) + '…' : r.desc)}</option>`).join('')}${m.rule && !s.rules.some(r => r.key === m.rule) ? `<option value="${esc(m.rule)}" selected>${esc(m.rule)} (not in Field Ops — typed)</option>` : ''}</select>`}</td>
       <td><input type="checkbox" data-f="active" ${m.active ? 'checked' : ''}></td></tr>`).join('')}</tbody></table></div></div>`;
   $$('[data-owner]', el).forEach(x => x.onchange = () => act(() => PUT(`/kpi/owners/${x.dataset.owner}`, { user_id: x.value }), 'Saved').catch(() => null));
+  if ($('#kadd', el)) $('#kadd', el).onsubmit = async e => { e.preventDefault(); const v = Object.fromEntries(new FormData(e.target)); if (v.unit === '%' && v.target !== '') v.target = Number(v.target) / 100;
+    const r = await act(() => POST('/kpi/metrics', v)).catch(() => null); if (r) { toast(`Added ${r.id}: ${v.metric}`); kpiSetup(el); } };
   $('#kset', el).onsubmit = async e => { e.preventDefault(); const f = e.target;
     await act(() => PUT('/kpi/settings', { band: f.band.value, ot_rate: f.ot_rate.value, due_days: f.due_days.value, due_time: f.due_time.value, history_weeks: f.history_weeks.value, headlines: f.headlines.value }), 'Rules saved').catch(() => null); };
   $('#kauto', el).onsubmit = async e => { e.preventDefault(); const f = e.target;

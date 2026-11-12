@@ -1106,6 +1106,25 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_comm_bid ON comm_log(bid_id);
     CREATE INDEX IF NOT EXISTS idx_outbox_related ON outbox(related);`);
   },
+  // 42: attendance — scheduled time off, called in sick, absent, in late, left early (schedule + KPI tracker)
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS attendance (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('time_off','sick','absent','late','left_early')),
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      hours REAL,
+      minutes INTEGER,
+      paid INTEGER NOT NULL DEFAULT 0,
+      no_call INTEGER NOT NULL DEFAULT 0,
+      reason TEXT,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_attendance_dates ON attendance(start_date, end_date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id);`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

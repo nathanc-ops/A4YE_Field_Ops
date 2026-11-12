@@ -390,6 +390,33 @@ The tech board, week view and dispatch list group people by the **Title** on the
 
 Spellings like "Journeyman Electrician", "JW", "1st-year apprentice" and "Helper" are recognized. To move someone to a different block, change their title.
 
+## Time off & attendance
+
+**Schedule → 🌴 Time off / attendance** (Week view or Tech board; or double-click a person's day on the Week view) logs:
+- **Time off** (planned; paid or unpaid; a range of days, or hours of one day)
+- **Called in sick** (paid or not)
+- **Absent** (tick **No call / no show** when they didn't call)
+- **In late** and **Left early** (minutes)
+
+What happens with each entry:
+- **On the schedule:** entries show as chips on the person's days, and full days off are shaded. Office staff with an entry get a row too.
+- **Booking warnings:**
+  - Booking someone on a day off warns you, the same way a double-booking does.
+  - Adding time off over days they're already booked lists those jobs so you can move them.
+- **Who sees what:** techs see their own entries on their schedule, without the office's note. Only office staff, managers and admins add or change entries.
+- **KPI tracker:** **KPIs → Targets & set-up → + Add a KPI** adds a row filled automatically from attendance. The available numbers are:
+  - days of time off
+  - sick days
+  - absent days
+  - no-call days
+  - unplanned days out (sick + absent)
+  - times late
+  - minutes late
+  - times left early
+
+  Each counts all employees for the week. Multi-day ranges count weekdays; a part day counts as hours ÷ 8. Click the number to see who and when.
+- **Payroll:** scheduled time off doesn't put PTO hours on the time clock or payroll. Record paid hours there as before.
+
 ## Not built yet (be aware before you rely on it)
 
 - **Online card payments.** Invoices show how to pay but have no Stripe/Square checkout. Payments are recorded manually.

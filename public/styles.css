@@ -745,3 +745,11 @@ table.pl-rates td { padding: 2px 14px; color: #111; }
 .js-t { width: 100%; border-collapse: collapse; font-size: 13px; } .js-t th, .js-t td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; } .js-t .num { text-align: right; }
 @media (max-width: 700px) { .js-grid { grid-template-columns: 1fr; } .kpis-mini > div { align-items: flex-start; } }
 @media print { .js-sheet { border: 0; box-shadow: none; padding: 0; } .js-sec { break-inside: avoid; } }
+
+/* ===== attendance ===== */
+.attchip { border-left: 3px solid var(--muted); background: var(--surface-2); }
+.att-time_off { border-left-color: var(--series-1) !important; } .att-sick { border-left-color: var(--warn) !important; }
+.att-absent { border-left-color: var(--bad) !important; } .att-late, .att-left_early { border-left-color: var(--warn) !important; }
+a.pill.att-absent { color: var(--bad); } a.pill.att-sick, a.pill.att-late, a.pill.att-left_early { color: var(--warn); }
+.wk .cell.offday { background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(127,127,127,.08) 8px 16px); }
+.hb-row.offday .hb-lane { background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(127,127,127,.10) 8px 16px); }

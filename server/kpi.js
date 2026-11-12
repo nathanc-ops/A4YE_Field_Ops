@@ -385,6 +385,21 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
       rules: Object.entries(AUTO.RULES).map(([k, d]) => ({ key: k, desc: d })),
       users: all(db, "SELECT id, name, email, role FROM users WHERE active = 1 AND role IN ('admin','manager','office') ORDER BY name") });
   });
+  // a new KPI row (one the sheet didn't have, e.g. attendance): ids are X1, X2… so they never collide with the sheet's
+  app.post('/api/kpi/metrics', editAll, wrap((req, res) => {
+    const b = req.body || {};
+    const owner = get(db, 'SELECT id FROM kpi_owners WHERE id = ?', Number(b.owner_id)); if (!owner) throw bad('Pick whose page it goes on');
+    const metric = str(b.metric); if (!metric) throw bad('Name the KPI');
+    const rule = str(b.rule); if (rule && !AUTO.RULES[rule]) throw bad('Unknown Field Ops number');
+    const better = ['Higher', 'Lower', 'Info'].includes(b.better) ? b.better : 'Info';
+    const unit = ['#', '$', '%', 'hrs', 'days', 'min'].includes(b.unit) ? b.unit : '#';
+    const t = b.target === '' || b.target == null ? null : Number(b.target); if (t != null && !Number.isFinite(t)) throw bad('Target must be a number');
+    const n = all(db, "SELECT id FROM kpi_metrics WHERE id LIKE 'X%'").reduce((mx, r) => Math.max(mx, Number(String(r.id).slice(1)) || 0), 0) + 1;
+    const sort = (get(db, 'SELECT MAX(sort) s FROM kpi_metrics WHERE owner_id = ?', owner.id) || {}).s || 0;
+    run(db, 'INSERT INTO kpi_metrics (id, owner_id, section, metric, unit, better, target, input, rule, active, sort) VALUES (?,?,?,?,?,?,?,?,?,1,?)',
+      `X${n}`, owner.id, str(b.section) || 'Attendance', metric, unit, better, t, rule ? 'auto' : 'manual', rule || null, sort + 1);
+    res.json({ id: `X${n}` });
+  }));
   app.put('/api/kpi/metrics/:id', editAll, wrap((req, res) => {
     const m = get(db, 'SELECT * FROM kpi_metrics WHERE id = ?', req.params.id); if (!m) throw bad('No such metric', 404);
     const b = req.body || {}, up = {};

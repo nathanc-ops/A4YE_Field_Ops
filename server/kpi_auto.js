@@ -47,6 +47,14 @@ const RULES = {
   clock_overtime: 'Time clock: hours over the weekly overtime limit, per technician',
   clock_days_worked: 'Scheduled tech-days that have a time clock punch the same day',
   clock_tardies: 'Days a tech\'s first punch was later than their first scheduled visit (plus the grace minutes)',
+  att_time_off_days: 'Attendance: days of scheduled time off Sun–Sat, all employees (part days count as hours ÷ 8; weekends only when that is the only day)',
+  att_sick_days: 'Attendance: days called in sick Sun–Sat, all employees',
+  att_absent_days: 'Attendance: days absent Sun–Sat (not time off or sick), all employees',
+  att_no_call: 'Attendance: no-call / no-show days Sun–Sat, all employees',
+  att_late: 'Attendance: times logged in late Sun–Sat, all employees (detail shows minutes)',
+  att_late_minutes: 'Attendance: total minutes late Sun–Sat, all employees',
+  att_left_early: 'Attendance: times logged leaving early Sun–Sat, all employees',
+  att_unplanned_days: 'Attendance: unplanned days out Sun–Sat (sick + absent), all employees',
   ply_materials: 'Purchase orders placed Sun–Sat, drafts and cancelled left out',
   ply_unassigned: 'Purchase orders placed Sun–Sat with no job',
   ply_inventory: 'Price-book stock on hand × cost, taken when the week ends',
@@ -230,6 +238,31 @@ module.exports = function kpiAuto(db, h) {
           n++; detail.push({ label: `${x.name} · ${x.day}`, amount: Math.round((p - x.start) / 6e4), ref: `first visit ${hm(x.start)} (${x.job || ''}), first punch ${hm(p)} · amount = minutes late` });
         }
         return out(n);
+      }
+      case 'att_time_off_days': case 'att_sick_days': case 'att_absent_days': case 'att_no_call': case 'att_unplanned_days': {
+        const kinds = { att_time_off_days: ['time_off'], att_sick_days: ['sick'], att_absent_days: ['absent'], att_no_call: ['absent'], att_unplanned_days: ['sick', 'absent'] }[rule];
+        const rows = all(db, `SELECT a.*, u.name FROM attendance a JOIN users u ON u.id = a.user_id WHERE a.kind IN (${kinds.map(() => '?').join(',')}) AND a.start_date <= ? AND a.end_date >= ?`,
+          ...kinds, addDays(week, 6), week).filter(a => rule !== 'att_no_call' || a.no_call);
+        let n = 0;
+        for (const a of rows) {
+          const single = a.start_date === a.end_date; let days = 0;
+          for (let d = a.start_date < week ? week : a.start_date, g = 0; d <= a.end_date && inWeek(d) && g < 7; d = addDays(d, 1), g++) {
+            const wd = new Date(d + 'T12:00:00Z').getUTCDay();
+            if (!single && (wd === 0 || wd === 6)) continue;
+            days += a.hours ? Math.min(1, a.hours / 8) : 1;
+          }
+          if (!days) continue;
+          n += days;
+          detail.push({ label: `${a.name} · ${a.start_date}${a.end_date !== a.start_date ? ` to ${a.end_date}` : ''}`, amount: r2(days),
+            ref: [{ time_off: a.paid ? 'paid time off' : 'unpaid time off', sick: a.paid ? 'sick (paid)' : 'sick', absent: a.no_call ? 'absent, no call' : 'absent' }[a.kind], a.hours ? `${a.hours} h` : '', a.reason || ''].filter(Boolean).join(' · ') });
+        }
+        return out(n);
+      }
+      case 'att_late': case 'att_late_minutes': case 'att_left_early': {
+        const kind = rule === 'att_left_early' ? 'left_early' : 'late';
+        const rows = all(db, 'SELECT a.*, u.name FROM attendance a JOIN users u ON u.id = a.user_id WHERE a.kind = ? AND a.start_date BETWEEN ? AND ? ORDER BY a.start_date', kind, week, addDays(week, 6));
+        for (const a of rows) detail.push({ label: `${a.name} · ${a.start_date}`, amount: a.minutes, ref: `${a.minutes} min ${kind === 'late' ? 'late' : 'early'}${a.reason ? ` · ${a.reason}` : ''}` });
+        return out(rule === 'att_late_minutes' ? rows.reduce((s, a) => s + (a.minutes || 0), 0) : rows.length);
       }
       case 'clock_paid_hours': case 'clock_onsite_hours': case 'clock_overtime': {
         const nonJob = X.list(X.s.kpi_non_job_numbers || '0000, 0500, 1000'), otAfter = Number(X.s.overtime_weekly_hours) || 40;
