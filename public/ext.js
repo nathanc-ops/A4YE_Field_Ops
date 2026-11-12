@@ -58,6 +58,40 @@ function warnConflicts(r) {
   toast(msg, true);
 }
 
+// ---- en route: how far out, and tell the customer. Resolves to the PUT body extras, or null if cancelled.
+async function enRoutePrompt(apptId, loc) {
+  let info = {}; try { info = await GET(`/appointments/${apptId}/eta` + qs(loc || {})); } catch { /* still ask */ }
+  const est = info.estimate;
+  return new Promise(resolve => {
+    let done = false;
+    const m = formModal({ title: '🚚 On the way', okLabel: 'Start travel',
+      values: { eta_min: est ? est.minutes : 20, notify: info.notify !== false && info.customer_email ? 1 : 0 },
+      fields: [{ name: 'eta_min', label: 'About how many minutes away?', type: 'number', required: true },
+        { name: 'notify', label: info.customer_email ? 'Email the customer that I\'m on the way, with the arrival time' : 'Email the customer (no email on file)', type: 'checkbox' }],
+      extra: `<p class="small muted">${est ? `About ${est.miles} mi by road from here (a rough guess — change it if you know better). ` : ''}Starts your travel time now; tap <b>On site</b> when you get there.${info.mail === false ? ' Email isn\'t set up, so the customer won\'t get a message.' : ''}</p>`,
+      submit: async v => {
+        const n = Number(v.eta_min); if (!(n > 0 && n <= 600)) throw new Error('Minutes away: 1 to 600');
+        done = true; resolve({ eta_min: n, notify: !!v.notify });
+      } });
+    if (!info.customer_email) { const c = $('[name=notify]', m.el); if (c) { c.checked = false; c.disabled = true; } }
+    new MutationObserver((_, o) => { if (!m.el.isConnected) { o.disconnect(); if (!done) resolve(null); } }).observe(document.body, { childList: true });
+  });
+}
+function onWayToast(r) {
+  const o = r && r.on_the_way; if (!o) return toast('En route');
+  const at = o.eta_at ? ` · arriving about ${fmtTime(o.eta_at)}` : '';
+  if (o.status === 'sent') return toast(`En route${at} · customer emailed`);
+  if (o.status === 'off') return toast(`En route${at}`);
+  toast(`En route${at} — customer NOT told: ${o.error || o.status}`, true);
+}
+async function setVisitStatus(id, st, loc) {
+  let extra = {};
+  if (st === 'en_route') { extra = await enRoutePrompt(id, loc); if (!extra) return false; }
+  const r = await act(() => PUT('/appointments/' + id, { status: st, ...(loc || {}), ...extra }));
+  if (st === 'en_route') onWayToast(r); else toast(label(st));
+  return true;
+}
+
 // ---- attendance: time off, called in sick, absent, in late, left early (Schedule; counted by the KPI tracker)
 const ATT = { time_off: ['🌴', 'Time off'], sick: ['🤒', 'Called in sick'], absent: ['🚫', 'Absent'], late: ['⏰', 'In late'], left_early: ['🚪', 'Left early'] };
 const attOn = (list, userId, d) => (list || []).filter(a => a.user_id === userId && a.start_date <= d && a.end_date >= d);
@@ -526,7 +560,7 @@ async function viewDispatch(date, seg) {
         ${table([{ label: 'Time', get: a => `${fmtTime(a.start)}–${fmtTime(a.end)}` },
           { label: 'Job', html: a => `<a href="${a.href}"><b>${esc(a.job_number)}</b></a> ${a.priority === 'emergency' ? pill('emergency') : ''}<div>${esc(a.customer_name)}</div><div class="small muted">${esc(a.job_title)} · ${esc(a.address || '')}</div>` },
           { label: 'Techs', html: a => a.tech_names ? esc(a.tech_names) : '<span class="pill bad">Unassigned</span>' },
-          { label: 'Status', html: a => pill(a.status) },
+          { label: 'Status', html: a => `${pill(a.status)}${a.status === 'en_route' && a.eta_at ? `<div class="small muted">ETA ${fmtTime(a.eta_at)}${a.on_way_notice === 'sent' ? ' · customer told' : ''}</div>` : ''}` },
           { label: '', html: a => `<div class="status-btns">${next[a.status] ? `<button class="btn sm ${a.status === 'scheduled' ? 'primary' : ''}" data-st="${a.id}:${next[a.status][0]}">${next[a.status][1]}</button>` : ''}<button class="btn sm" data-edit="${a.id}">Edit</button></div>` }],
         appts, { empty: 'No visits today' })}</div>
       <div class="card"><h2>Techs</h2>${crewBlocks(d.techs).map(g => `<div class="crew-h crew-${g.key}" style="margin:8px 0 4px"><span>${esc(g.label)}</span><span class="muted">${g.rows.length}</span></div>${g.rows.map(t => `<div class="tcard"><div class="row spread"><b><span class="dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</b>${t.phone ? `<a href="tel:${esc(t.phone)}">📞</a>` : ''}</div>
@@ -540,7 +574,7 @@ async function viewDispatch(date, seg) {
   const byId = Object.fromEntries(appts.map(a => [a.id, a]));
   $$('[data-sched]').forEach(b => b.onclick = () => apptForm({ job_id: Number(b.dataset.sched), start: dayISO(date, 8), end: dayISO(date, 10) }));
   $$('[data-edit]').forEach(b => b.onclick = () => apptForm(byId[b.dataset.edit]));
-  $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); await act(() => PUT('/appointments/' + id, { status: st }), label(st)); route(); });
+  $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); if (await setVisitStatus(id, st).catch(() => false)) route(); });
   S.timer = setInterval(() => { if (!document.querySelector('.modal-bg')) route(); }, 60000);
 }
 
@@ -559,7 +593,7 @@ async function viewMyDay2() {
   ]);
   const mapUrl = a => `https://maps.google.com/?q=${encodeURIComponent([a.address, a.city, a.state, a.zip].filter(Boolean).join(' '))}`;
   $('#today').innerHTML = today.length ? today.map(a => `<div class="tcard st-${a.status}" style="border-left:5px solid var(--st)">
-      <div class="row spread"><b>${fmtTime(a.start)}–${fmtTime(a.end)} · <a href="${a.href}">${esc(a.job_number)}</a></b>${pill(a.status)}</div>
+      <div class="row spread"><b>${fmtTime(a.start)}–${fmtTime(a.end)} · <a href="${a.href}">${esc(a.job_number)}</a></b><span>${pill(a.status)}${a.status === 'en_route' && a.eta_at ? ` <span class="small muted">ETA ${fmtTime(a.eta_at)}</span>` : ''}</span></div>
       <div>${esc(a.customer_name)} — ${esc(a.job_title)}</div>
       <div class="small muted">${a.address ? `<a target="_blank" rel="noopener" href="${mapUrl(a)}">${esc([a.address, a.city].filter(Boolean).join(', '))}</a>` : ''}${a.customer_phone ? ` · <a href="tel:${esc(a.customer_phone)}">${esc(a.customer_phone)}</a>` : ''}</div>
       ${a.notes ? `<div class="small" style="margin-top:4px">📝 ${esc(a.notes)}</div>` : ''}
@@ -571,7 +605,7 @@ async function viewMyDay2() {
   $('#soon').innerHTML = table([{ label: 'When', get: a => fmtDT(a.start) }, { label: 'Job', html: a => `<b>${esc(a.job_number)}</b> ${esc(a.job_title)}<div class="small muted">${esc(a.customer_name)} · ${esc(a.address || '')}</div>` }],
     soon, { onClick: a => go(a.href), empty: 'Nothing else this week' });
   if (picks.length) $('#mypicks').innerHTML = `<div class="card" style="margin-top:14px"><h2>Pick lists</h2>${table([{ label: '#', key: 'number' }, { label: 'Job', get: p => `${p.job_number} ${p.job_title}` }, { label: 'Needed', get: p => fmtDate(p.needed_by) }, { label: 'Status', html: p => pill(p.status) }], picks, { onClick: p => go('#/pick/' + p.id) })}</div>`;
-  $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); const loc = await getLoc(); await act(() => PUT('/appointments/' + id, { status: st, ...loc }), label(st)); route(); });
+  $$('[data-st]').forEach(b => b.onclick = async () => { const [id, st] = b.dataset.st.split(':'); const loc = await getLoc(); if (await setVisitStatus(id, st, loc).catch(() => false)) route(); });
 }
 
 // ============================================================ job: visits, budget, purchasing
@@ -1164,6 +1198,7 @@ async function settingsExtras(el) {
   if (isAdmin()) {
     await loadAccounts();
     cards.push(`<div class="card"><h2>Scheduling & accounting defaults</h2><form id="defs"><div class="form-grid">
+      ${fieldHtml({ name: 'notify_on_the_way', label: 'Email the customer when a tech taps En route', type: 'select', blank: false, options: [['1', 'Yes (the tech can untick it)'], ['0', 'No']] }, s.notify_on_the_way ?? '1')}
       ${fieldHtml({ name: 'hold_followup_assignee', label: 'Follow-up tasks for jobs on hold go to', type: 'select', blank: 'Whoever puts the job on hold', options: followUpPeople() }, s.hold_followup_assignee)}
       ${fieldHtml({ name: 'day_start_hour', label: 'Tech board starts (hour, 0–23)', type: 'number' }, s.day_start_hour)}${fieldHtml({ name: 'day_end_hour', label: 'Tech board ends (hour)', type: 'number' }, s.day_end_hour)}
       ${fieldHtml({ name: 'default_deposit_account', label: 'Customer payments deposit to', type: 'select', options: (S.accounts || []).filter(a => a.subtype === 'bank').map(a => [a.number, `${a.number} · ${a.name}`]), blank: false }, s.default_deposit_account)}
@@ -1225,7 +1260,7 @@ async function settingsExtras(el) {
   };
   $('#brandreset').onclick = () => saveSettings({ brand_primary: '#e0001a', brand_accent: '#fa001c', brand_sidebar: '#000000', logo_url: '/brand/a4y-logo.png' }, 'Branding reset to All 4 You defaults');
   $('#logoclear').onclick = () => saveSettings({ logo_url: '' }, 'Logo removed');
-  $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ hold_followup_assignee: f.hold_followup_assignee.value, day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
+  $('#defs').onsubmit = e => { e.preventDefault(); const f = e.target; saveSettings({ notify_on_the_way: f.notify_on_the_way.value, hold_followup_assignee: f.hold_followup_assignee.value, day_start_hour: f.day_start_hour.value, day_end_hour: f.day_end_hour.value, default_deposit_account: f.default_deposit_account.value, default_paid_from_account: f.default_paid_from_account.value }, 'Defaults saved'); };
   $('#geof').onsubmit = e => { e.preventDefault(); const v = e.target.google_maps_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ google_maps_api_key: v }, 'Google Maps key saved'); };
   if ($('#aif')) $('#aif').onsubmit = e => { e.preventDefault(); const v = e.target.anthropic_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ anthropic_api_key: v }, 'Anthropic key saved'); };
   if ($('#aiclear')) $('#aiclear').onclick = () => { if (confirm('Remove the Anthropic key? Plan takeoffs stop working until a new one is added.')) saveSettings({ anthropic_api_key_clear: '1' }, 'Key removed'); };

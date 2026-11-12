@@ -43,6 +43,13 @@ const TEMPLATES = {
     vars: [...COMMON, ['intro', '"This confirms your estimate appointment…", or the changed-time line'], ...APPT, ['work', '"look at the work and put together a price for: …"']],
     note: 'When a visit is moved after the customer was told, "Updated time: " is put in front of the subject automatically.',
   },
+  on_the_way: {
+    label: 'Technician on the way', when: 'A tech taps En route on a visit (Settings → Email the customer when a tech is on the way)',
+    subject: '{tech_first} from {company_name} is on the way',
+    body: 'Hi {customer_first},\n\n{tech_first} from {company_name} is on the way to {address} and should arrive at about {eta_time} ({timezone}).\n\nWork: {work}\n\n{message}\n\nNeed us to wait, or a different door or gate? {call_us}.\n\n{company_name}\n{company_phone}',
+    vars: [...COMMON, ['tech_first', 'First name of the tech on the way'], ['crew', 'First names of everyone on the visit'], ['eta_time', 'e.g. 10:45 AM'], ['eta_minutes', 'e.g. 25'],
+      ['timezone', 'e.g. MST'], ['address', 'Service address'], ['work', 'The job title or estimate purpose'], ['call_us', '"call (phone) or reply to this email"']],
+  },
   appointment_cancelled: {
     label: 'Visit cancelled', when: '"Tell the customer it\'s cancelled" on a job or estimate visit',
     subject: 'Cancelled: your appointment with {company_name} — {visit_short}',
@@ -132,7 +139,7 @@ const SAMPLE = {
   customer_name: 'Maria Lopez', customer_first: 'Maria', message: '', estimate_number: 'EST-1042', estimate_title: 'Panel upgrade to 200A', estimate_total: '$3,200.00',
   valid_until: 'Dec 10, 2026', link: 'https://ops.example.com/p/sample', invoice_number: 'INV-2210', invoice_total: '$1,850.00', amount_due: '$1,850.00', due_date: 'Dec 10, 2026',
   job_title: 'Garage circuit', intro: 'This confirms your appointment with {company_name}.', visit_date: 'Thursday, November 12', visit_time: '1:00 – 2:30 PM',
-  visit_short: 'Thu, November 12, 1:00–2:30 PM', timezone: 'MST', address: '12 Elm St Boise, ID 83702', crew: 'Dana and Sam', work: 'Add 20A circuit for garage freezer',
+  visit_short: 'Thu, November 12, 1:00–2:30 PM', timezone: 'MST', tech_first: 'Dana', eta_time: '10:45 AM', eta_minutes: '25', address: '12 Elm St Boise, ID 83702', crew: 'Dana and Sam', work: 'Add 20A circuit for garage freezer',
 };
 
 function routes(app, db, { wrap, bad, admin }) {

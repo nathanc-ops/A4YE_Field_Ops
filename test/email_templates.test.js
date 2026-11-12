@@ -45,7 +45,7 @@ test('HTML: Label lines become a list, a link line becomes a button, other links
 
 test('Settings → Email templates: list, save, reject bad placeholders and a missing link, reset; admins only', async () => {
   const list = (await call('admin', 'GET', '/email-templates')).data;
-  assert.deepEqual(list.map(t => t.type), ['estimate', 'invoice', 'appointment', 'estimate_appointment', 'appointment_cancelled']);
+  assert.deepEqual(list.map(t => t.type), ['estimate', 'invoice', 'appointment', 'estimate_appointment', 'on_the_way', 'appointment_cancelled']);
   assert.equal(list.find(t => t.type === 'invoice').customized, false);
   assert.equal((await call('office', 'GET', '/email-templates')).status, 403);
   let r = await call('admin', 'PUT', '/email-templates/invoice', { subject: 'Bill {invoice_number}', body: 'Hi {customer_frist}, {link}' });

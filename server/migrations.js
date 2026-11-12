@@ -1125,6 +1125,10 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_attendance_dates ON attendance(start_date, end_date);
     CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id);`);
   },
+  // 43: en route — when the tech left, the arrival time they gave, and whether the customer was told
+  db => {
+    for (const [c, d] of [['en_route_at', 'TEXT'], ['eta_at', 'TEXT'], ['on_way_notice', 'TEXT']]) addColumn(db, 'appointments', c, d);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

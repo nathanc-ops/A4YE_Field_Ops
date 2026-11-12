@@ -122,26 +122,31 @@ module.exports = function routesExt(app, db, X) {
     setApptTechs(id, null, b.tech_ids || []);
     res.json({ id, estimate_id: eid, conflicts: conflicts(id) });
   }));
-  app.put('/api/appointments/:id', wrap((req, res) => {
+  app.put('/api/appointments/:id', wrap(async (req, res) => {
     const a = mustGet('appointments', req.params.id);
+    const onWay = async () => req.body.status === 'en_route' && a.status !== 'en_route'
+      ? H.onTheWay(a.id, { eta_min: req.body.eta_min, notify: req.body.notify, user: req.user, gps: H.gps(req.body) }) : null;
     if (req.user.role === 'tech') {
       // techs can only advance the status of their own visits
       if (!get(db, 'SELECT 1 x FROM appointment_techs WHERE appointment_id = ? AND user_id = ?', a.id, req.user.id)) throw bad('Not your appointment', 403);
-      return res.json(techStatus(a, req.body.status, req.user, H.gps(req.body)));
+      const r = tx(db, () => techStatus(a, req.body.status, req.user, H.gps(req.body)));
+      return res.json({ ...r, on_the_way: await onWay() });
     }
     const data = pick(req.body, ['start', 'end', 'status', 'notes']);
     for (const k of ['start', 'end']) if (data[k]) data[k] = new Date(data[k]).toISOString();
     checkTimes(data.start || a.start, data.end || a.end);
-    const crewBefore = crewOf(a.id);
-    // a job visit moved to another time: logged for the KPI cancellations / reschedules count
-    if (data.start && data.start !== a.start && a.job_id && !['done', 'cancelled'].includes(a.status))
-      run(db, 'INSERT INTO appointment_moves (appointment_id, job_id, from_start, to_start, user_id) VALUES (?,?,?,?,?)', a.id, a.job_id, a.start, data.start, req.user.id);
-    update('appointments', a.id, data);
-    setApptTechs(a.id, a.job_id, req.body.tech_ids);
-    noticeChanges(a, crewBefore);
-    if (data.status === 'dispatched' && a.job_id) run(db, "UPDATE jobs SET status = 'dispatched' WHERE id = ? AND status IN ('scheduled','unscheduled')", a.job_id);
-    syncJobSchedule(a.job_id);
-    res.json({ ok: true, conflicts: conflicts(a.id) });
+    tx(db, () => {
+      const crewBefore = crewOf(a.id);
+      // a job visit moved to another time: logged for the KPI cancellations / reschedules count
+      if (data.start && data.start !== a.start && a.job_id && !['done', 'cancelled'].includes(a.status))
+        run(db, 'INSERT INTO appointment_moves (appointment_id, job_id, from_start, to_start, user_id) VALUES (?,?,?,?,?)', a.id, a.job_id, a.start, data.start, req.user.id);
+      update('appointments', a.id, data);
+      setApptTechs(a.id, a.job_id, req.body.tech_ids);
+      noticeChanges(a, crewBefore);
+      if (data.status === 'dispatched' && a.job_id) run(db, "UPDATE jobs SET status = 'dispatched' WHERE id = ? AND status IN ('scheduled','unscheduled')", a.job_id);
+      syncJobSchedule(a.job_id);
+    });
+    res.json({ ok: true, conflicts: conflicts(a.id), on_the_way: await onWay() });
   }));
   // One day of a multi-day visit (a crew window repeated each day) gets its own crew or hours: that day is split out as
   // its own visit, and the days before and after stay as they were. The browser sends the day's bounds and windows in

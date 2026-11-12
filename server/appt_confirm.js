@@ -66,6 +66,52 @@ module.exports = function apptConfirm(app, db, X) {
   }
   const visit = id => { const a = H.appointments('a.id = ?', [Number(id)])[0]; if (!a) throw bad('Visit not found', 404); return a; };
 
+  // ---- on the way: a rough drive time from the tech's phone location to the service address (straight line × 1.35
+  //      for roads, at 35 mph average, rounded up to 5 minutes). A guess for prefilling; the tech corrects it.
+  function driveMinutes(apptId, g) {
+    if (!g || g.lat == null) return null;
+    const l = get(db, `SELECT l.lat, l.lng FROM appointments a LEFT JOIN jobs j ON j.id = a.job_id LEFT JOIN estimates e ON e.id = a.estimate_id
+      JOIN locations l ON l.id = COALESCE(j.location_id, e.location_id) WHERE a.id = ?`, apptId);
+    if (!l || l.lat == null || l.lng == null) return null;
+    const rad = x => x * Math.PI / 180, R = 3958.8;
+    const h = Math.sin(rad(l.lat - g.lat) / 2) ** 2 + Math.cos(rad(g.lat)) * Math.cos(rad(l.lat)) * Math.sin(rad(l.lng - g.lng) / 2) ** 2;
+    const miles = 2 * R * Math.asin(Math.sqrt(h)) * 1.35;
+    return { miles: Math.round(miles * 10) / 10, minutes: Math.max(5, Math.ceil(miles / 35 * 60 / 5) * 5) };
+  }
+  app.get('/api/appointments/:id/eta', wrap((req, res) => {
+    const a = visit(req.params.id);
+    if (req.user.role === 'tech' && !a.tech_ids.includes(req.user.id)) throw bad('Not your visit', 403);
+    const cust = get(db, 'SELECT email FROM customers WHERE id = ?', a.customer_id) || {};
+    res.json({ estimate: driveMinutes(a.id, H.gps(req.query)), customer_email: !!cust.email, notify: D.settings(db).notify_on_the_way !== '0', mail: !!mailer.config(db) });
+  }));
+  // Called after a visit goes en route (tech's phone or the office): record the ETA and email the customer.
+  // Returns what happened, so the app can say "Customer emailed" or why not.
+  H.onTheWay = async (apptId, { eta_min, notify, user, gps }) => {
+    const a = visit(apptId), now = Date.now();
+    let mins = Number(eta_min);
+    if (!(mins > 0)) { const est = driveMinutes(apptId, gps); mins = est ? est.minutes : null; }
+    const eta = mins ? new Date(now + Math.min(mins, 600) * 6e4).toISOString() : null;
+    run(db, 'UPDATE appointments SET en_route_at = ?, eta_at = ? WHERE id = ?', new Date(now).toISOString(), eta, a.id);
+    const s = D.settings(db);
+    if (notify === false || s.notify_on_the_way === '0') { run(db, "UPDATE appointments SET on_way_notice = 'off' WHERE id = ?", a.id); return { status: 'off', eta_at: eta }; }
+    if (!eta) return { status: 'no_eta', eta_at: null, error: 'No arrival time was given' };
+    const cust = get(db, 'SELECT * FROM customers WHERE id = ?', a.customer_id);
+    if (!cust || !EMAIL.test(String(cust.email || ''))) { run(db, "UPDATE appointments SET on_way_notice = 'no_email' WHERE id = ?", a.id); return { status: 'no_email', eta_at: eta, error: 'The customer has no email address' }; }
+    const tz = tzOf(s), w = when(a, tz);
+    const t = x => new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(new Date(x));
+    const crew = String(a.tech_names || '').split(', ').filter(Boolean).map(n => n.split(/\s+/)[0]);
+    const me = user ? String(get(db, 'SELECT name FROM users WHERE id = ?', user.id)?.name || '').split(/\s+/)[0] : '';
+    const where = [a.address, [a.city, a.state].filter(Boolean).join(', '), a.zip].filter(Boolean).join(' ').replace(/ ,/g, ',');
+    const isEst = a.kind === 'estimate', what = isEst ? 'estimate walkthrough' : a.job_title;
+    const vars = { ...ET.baseVars(db, cust, ''), tech_first: (user && user.role === 'tech' && me) || crew[0] || 'Your technician',
+      crew: crew.length ? `${crew.slice(0, -1).join(', ')}${crew.length > 1 ? ' and ' : ''}${crew[crew.length - 1]}` : '', eta_time: t(eta), eta_minutes: String(mins),
+      timezone: w.tz, address: where || 'your address', work: what || 'your service visit' };
+    const m = ET.render(db, 'on_the_way', vars);
+    const r = await mailer.send(db, { to: cust.email, replyTo: s.company_email || undefined, subject: m.subject, text: m.text, html: m.html, related: `appointment:${a.id}` });
+    run(db, 'UPDATE appointments SET on_way_notice = ? WHERE id = ?', r.status, a.id);
+    return { status: r.status, to: cust.email, eta_at: eta, error: r.error || (r.status === 'not_configured' ? 'Email isn\'t set up (Settings → Email)' : null) };
+  };
+
   // preview (also says whether the time changed since the last confirmation)
   app.get('/api/appointments/:id/confirmation', wrap((req, res) => {
     if (req.user.role === 'tech') throw bad('Office only', 403);
