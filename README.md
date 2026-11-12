@@ -155,6 +155,16 @@ A Salesforce-style board of every deal, from lead to paid. Stages are worked out
 - **Totals at the top:** open pipeline, with a forecast weighted by each stage's probability; booked work (won but not billed); money awaiting payment; and the 90-day win rate.
 - **Filters:** owner, residential or commercial, and search.
 - **Click a card** to set its owner, **next step** with a date (overdue ones turn red), and expected decision date. The card also has the action that moves the deal on: + Estimate, Won → mark approved, Lost (asks why), Convert to job, Schedule it, or Bill job.
+- **Drag a card** to another column, or onto a stage arrow at the top (handy when the column is scrolled out of view). On a phone, use **Move to…** in the card's panel. Each move does what the matching button does, and asks for anything it needs:
+  - a lead → Estimating opens a new estimate for them;
+  - an estimate → Proposal emails it (or, with no email, marks it sent);
+  - → Won asks which option was chosen;
+  - → In progress also creates the job and opens the schedule form;
+  - → Lost asks why;
+  - a job → To invoice opens Complete job, and → Invoiced opens its Billing tab;
+  - an invoice → Paid records the payment.
+
+  Columns a card can't go to fade while you drag. Moving backwards (say, a job back to Proposal) is refused, so open the record to undo something.
 - **The stage bar** at the top of every customer (lead), estimate and job shows where it is, with its next step.
 
 ## Reports → Jobs
