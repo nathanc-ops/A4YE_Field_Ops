@@ -136,6 +136,27 @@ Putting a job **on hold** (status menu, Edit, or a tech's phone) requires a **re
 - The person with the task gets an all-day **calendar invite** by email. After saving, a message says whether it was emailed or why not (email not set up, no email on their user, or the provider refused it); every attempt is listed on the job’s **Emails & calls** tab. Moving the date updates the same event; taking the job off hold cancels it.
 - Every change is written to the job's notes, so the history stays after the hold ends.
 
+## Pipeline (🧭)
+
+A Salesforce-style board of every deal, from lead to paid. Stages are worked out from the records you already keep, so nothing is entered twice. Each customer, estimate, job or invoice appears once, at the furthest point it has reached:
+
+| Stage | What's in it | Salesforce equivalent |
+|---|---|---|
+| Lead (10%) | Customers marked as leads (**+ Lead**), or new in the last 60 days with nothing else yet | Lead |
+| Estimating (25%) | Estimates being written | Opportunity: needs analysis |
+| Proposal sent (50%) | Estimates sent or viewed (flagged when the price has expired) | Proposal / quote |
+| Won — to schedule | Approved estimates with no job, and unscheduled jobs | Closed won → order |
+| In progress | Jobs scheduled, dispatched, underway or on hold | Order fulfilment |
+| To invoice | Completed jobs not fully invoiced | Ready to bill |
+| Invoiced | Sent invoices with a balance (flagged when past due) | Open invoice |
+| Paid | Invoices paid in the last 30 days | Cash in |
+| Lost | Declined estimates and unqualified leads, each with a reason (**Show lost**) | Closed lost |
+
+- **Totals at the top:** open pipeline, with a forecast weighted by each stage's probability; booked work (won but not billed); money awaiting payment; and the 90-day win rate.
+- **Filters:** owner, residential or commercial, and search.
+- **Click a card** to set its owner, **next step** with a date (overdue ones turn red), and expected decision date. The card also has the action that moves the deal on: + Estimate, Won → mark approved, Lost (asks why), Convert to job, Schedule it, or Bill job.
+- **The stage bar** at the top of every customer (lead), estimate and job shows where it is, with its next step.
+
 ## Reports → Jobs
 
 A list of every job in the date range. **Dates are** picks which date counts: created, scheduled/start, or completed.
@@ -389,6 +410,22 @@ The tech board, week view and dispatch list group people by the **Title** on the
 - Other staff
 
 Spellings like "Journeyman Electrician", "JW", "1st-year apprentice" and "Helper" are recognized. To move someone to a different block, change their title.
+
+## En route and the customer's "on the way" email
+
+When a tech taps **🚚 En route** (My Day, or the office on Dispatch), the app asks **about how many minutes away?** It prefills a rough drive time from the phone's location to the service address: straight-line distance × 1.35 at 35 mph. Then it:
+- starts travel time, as before;
+- keeps the arrival time on the visit, shown on Dispatch and the tech's day;
+- emails the customer "*Dana from All 4 You Electrical is on the way … should arrive at about 10:45 AM*". The wording is the **Technician on the way** template under Settings → Email templates.
+
+The tech can untick the email. **Settings → Scheduling & accounting defaults → Email the customer when a tech taps En route** turns it off for everyone. If the customer wasn't told, the app says why: no email on file, or email not set up. Text messages are not built: they need a Twilio phone number registered for business texting (A2P 10DLC).
+
+## Pick lists from the field
+
+Techs can **ask for material**: Pick Lists → **+ Ask for material**, or the job's **Pick lists** tab.
+- This starts a pick list on a job they're on, optionally filled from the approved estimate.
+- They add price-book or typed items, and can change or remove **their own** lines until picking starts.
+- Costs they type are ignored. The office sees who asked, and picks, sends to Ply, or makes a PO for shortages as usual.
 
 ## Time off & attendance
 

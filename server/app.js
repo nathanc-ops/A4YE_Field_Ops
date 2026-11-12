@@ -278,7 +278,7 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ customers & locations
-  const CUST_FIELDS = ['type', 'name', 'company', 'email', 'phone', 'alt_phone', 'billing_address', 'lead_source', 'tax_exempt', 'payment_terms_days', 'notes'];
+  const CUST_FIELDS = ['type', 'name', 'company', 'email', 'phone', 'alt_phone', 'billing_address', 'lead_source', 'tax_exempt', 'payment_terms_days', 'notes', 'lead_status', 'est_value', 'owner_id', 'next_step', 'next_step_date'];
   const LOC_FIELDS = ['label', 'address', 'city', 'state', 'zip', 'service_size', 'panel_info', 'access_notes', 'lat', 'lng', 'verified_at'];
 
   // ------------------------------------------------------------ address lookup (see geo.js)
@@ -1433,6 +1433,7 @@ function createApp(db) {
   require('./kpi')(app, db, { wrap, bad, admin });
   require('./estimating')(app, db, { wrap, bad });
   require('./takeoff')(app, db, { wrap, bad });
+  require('./pipeline')(app, db, { wrap, bad, office, today, addDays });
 
   // ------------------------------------------------------------ static
   const pub = path.join(__dirname, '..', 'public');

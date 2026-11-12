@@ -1131,6 +1131,12 @@ const MIGRATIONS = [
   },
   // 44: techs start pick lists from the field — who asked for it
   db => { addColumn(db, 'pick_lists', 'created_by', 'INTEGER REFERENCES users(id) ON DELETE SET NULL'); },
+  // 45: sales pipeline (Salesforce-style): lead status, owner, next step and expected value / close date
+  db => {
+    for (const [c, d] of [['lead_status', 'TEXT'], ['lead_status_at', 'TEXT'], ['owner_id', 'INTEGER'], ['next_step', 'TEXT'], ['next_step_date', 'TEXT'], ['est_value', 'REAL'], ['lost_reason', 'TEXT']]) addColumn(db, 'customers', c, d);
+    for (const [c, d] of [['owner_id', 'INTEGER'], ['next_step', 'TEXT'], ['next_step_date', 'TEXT'], ['close_date', 'TEXT'], ['lost_reason', 'TEXT']]) addColumn(db, 'estimates', c, d);
+    for (const [c, d] of [['pipeline_owner_id', 'INTEGER'], ['next_step', 'TEXT'], ['next_step_date', 'TEXT']]) addColumn(db, 'jobs', c, d);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

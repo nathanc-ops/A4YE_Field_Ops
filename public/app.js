@@ -221,6 +221,7 @@ const NAV = [
   { href: '#/picklists', label: 'Pick Lists', icon: '🧺', roles: ['tech'] },
   { href: '#/permits', label: 'Permits & Inspections', icon: '📋' },
   { sect: 'Sales & Billing', roles: ['admin', 'manager', 'office'] },
+  { href: '#/pipeline', label: 'Pipeline', icon: '🧭', roles: ['admin', 'manager', 'office'] },
   { href: '#/customers', label: 'Customers', icon: '👥', roles: ['admin', 'manager', 'office'] },
   { href: '#/estimates', label: 'Estimates', icon: '📝', roles: ['admin', 'manager', 'office'], perm: 'estimates' },
   { href: '#/estimates', label: 'My Estimates', icon: '📝', roles: ['tech'], perm: 'field_estimates' },
@@ -777,6 +778,7 @@ async function viewJob(id) {
     ${j.status === 'cancelled' ? `<div class="alert" style="margin-bottom:14px"><b>Cancelled${j.cancelled_at ? ` ${fmtDate(j.cancelled_at.slice(0, 10))}` : ''}.</b> ${esc(j.cancel_reason || '')}</div>` : ''}
     <div class="tabs">${tabs.map(([k, l]) => `<button class="${k === tab ? 'on' : ''}" data-tab="${k}">${l}</button>`).join('')}</div><div id="tab"></div>`;
   $$('[data-tab]').forEach(b => b.onclick = () => go(`#/jobs/${j.id}?tab=${b.dataset.tab}`));
+  pipelinePath('job', j.id);
   if ($('#canceljob')) $('#canceljob').onclick = () => cancelJobModal(j);
   wireHoldBanner(j);
   if ($('#renum')) $('#renum').onclick = () => formModal({
@@ -1022,6 +1024,7 @@ async function viewCustomer(id) {
   $('#edit').onclick = () => customerForm(c);
   $('#addloc').onclick = () => locationForm(c.id);
   commCard($('#comms'), { customer_id: c.id }, { phone: c.phone, contact: c.company ? c.name : '', rollup: true });
+  pipelinePath('lead', c.id);
 }
 
 // ============================================================ estimates & invoices (shared editor)
@@ -1168,6 +1171,7 @@ async function viewDoc(kind, id) {
     ${isEst && id !== 'new' && !doc.change_order ? `<div class="card no-print" style="margin-top:14px" id="estvisits"><div class="row spread"><h2>Site visits (${(doc.visits || []).length})</h2>${!techMode && can('jobs') && !['cancelled', 'declined', 'expired'].includes(doc.status) ? '<button type="button" class="btn sm primary" id="addestvisit">+ Schedule visit</button>' : ''}</div><p class="small muted">Walkthroughs to see the work and price it. They show on the schedule board marked EST.</p>${table([{ label: 'When', html: v => `<b>${fmtDT(v.start)}</b> – ${fmtTime(v.end)}` }, { label: 'Techs', get: v => v.tech_names || 'Unassigned' }, { label: 'Status', html: v => pill(v.status) }, { label: 'Notes', get: v => v.notes || '' }], doc.visits || [], { empty: 'No visit booked yet', onClick: !techMode && can('jobs') ? v => apptForm({ ...v, estimate_title: doc.title }) : null })}</div>` : ''}
     ${isEst && (doc.signature_name || doc.approved_option_id) ? `<div class="card" style="margin-top:14px"><h2>Customer approval</h2>${doc.approved_option_id ? `Chose <b>${esc((doc.options.find(o => o.id === doc.approved_option_id) || {}).name || '')}</b> — ${money(doc.total)}. ` : ''}${doc.signature_name ? `Signed by <b>${esc(doc.signature_name)}</b> on ${fmtDT(doc.approved_at)}` : ''}</div>` : ''}`;
 
+  if (isEst && id !== 'new') pipelinePath('estimate', doc.id);
   if (isEst && id !== 'new' && isOffice()) { const box = document.createElement('div'); box.style.marginTop = '14px'; $('#view').appendChild(box); commCard(box, { estimate_id: doc.id }, { phone: (doc.customer || {}).phone, contact: (doc.customer || {}).name }); }
   const form = $('#docform');
   const tbody = $('#items');
