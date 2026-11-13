@@ -277,6 +277,13 @@ function createApp(db) {
     if (data.active === 0 || data.active === false) run(db, 'DELETE FROM sessions WHERE user_id = ?', req.params.id);
     res.json({ ok: true });
   }));
+  // Team → Import list: update email/phone of people already here, add the rest (see team_import.js).
+  // apply:false (default) only previews.
+  app.post('/api/users/import', admin, wrap((req, res) => {
+    const TI = require('./team_import'), text = String(req.body.csv || '');
+    if (!req.body.apply) return res.json({ items: TI.plan(db, text) });
+    res.json({ items: TI.apply(db, text, { newPassword: req.body.start_password || '', hashPassword: D.hashPassword }), applied: true });
+  }));
 
   // ------------------------------------------------------------ customers & locations
   const CUST_FIELDS = ['type', 'name', 'company', 'email', 'phone', 'alt_phone', 'billing_address', 'lead_source', 'tax_exempt', 'payment_terms_days', 'notes', 'lead_status', 'est_value', 'owner_id', 'next_step', 'next_step_date'];

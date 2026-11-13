@@ -1822,12 +1822,55 @@ async function viewReports() {
 // ============================================================ team & settings
 async function viewTeam() {
   const users = await loadUsers(true);
-  $('#view').innerHTML = setTop('Team', '<button class="btn primary" id="new">+ Employee</button>', 'Wage + burden = loaded labor cost used in job costing and P&L. Bill rate is used for T&M invoices.') + `<div class="card">
+  $('#view').innerHTML = setTop('Team', '<button class="btn" id="teamimp">⇪ Import list</button> <button class="btn primary" id="new">+ Employee</button>', 'Wage + burden = loaded labor cost used in job costing and P&L. Bill rate is used for T&M invoices.') + `<div class="card">
     ${table([{ label: 'Name', html: u => `<span class="dot" style="background:${esc(u.color)}"></span> <b>${esc(u.name)}</b>${u.active ? '' : ' <span class="pill">Inactive</span>'}<div class="muted small">${esc(u.email)}</div>` },
       { label: 'Role', html: u => `${esc(label(u.role))}${u.custom_perms && u.custom_perms.length ? ` <span class="pill warn" title="${esc(u.custom_perms.join(', '))}">custom permissions</span>` : ''}` }, { label: 'Title', key: 'title' }, { label: 'License', key: 'license_number' }, { label: 'Wage', num: 1, get: u => money(u.hourly_wage) },
       { label: 'Burden', num: 1, get: u => pct(u.burden_pct) }, { label: 'Loaded cost/hr', num: 1, get: u => money(u.hourly_wage * (1 + u.burden_pct / 100)) }, { label: 'Bill rate', num: 1, get: u => money(u.bill_rate) }],
     users, { onClick: u => userForm(u) })}</div>`;
   $('#new').onclick = () => userForm({});
+  $('#teamimp').onclick = teamImport;
+}
+// Team → Import list: paste from Google Sheets (or pick a CSV) with Name / Email / Phone (/ Role). Preview first:
+// people already here get their email + phone updated; the rest are added. Role, wage, permissions untouched.
+function teamImport() {
+  const m = modal(`<h2>Import team list</h2>
+    <p class="small muted">Copy the whole sheet (heading row included: Name, Email, Phone, and optionally Role) and paste it below, or choose a CSV.
+      People already on the team — matched by email, then by name — get their <b>email and phone</b> updated. Anyone not here is added.
+      New people are never made Admin: their role text picks Technician / Office / Manager and becomes their title.</p>
+    <textarea id="ti_txt" rows="7" style="width:100%;font-family:monospace;font-size:12px" placeholder="Name	Role	Email	Phone"></textarea>
+    <div class="row" style="margin:8px 0"><input type="file" id="ti_file" accept=".csv,.tsv,.txt,text/csv"><button class="btn" id="ti_prev">Preview</button></div>
+    <div id="ti_out"></div>`, { wide: true });
+  const el = m.el; let last = '';
+  $('#ti_file', el).onchange = async e => { const f = e.target.files[0]; if (f) { $('#ti_txt', el).value = await f.text(); preview(); } };
+  const chg = it => Object.entries(it.changes || {}).map(([k, v]) => `${k}: <s class="muted">${esc(v.from || '—')}</s> → <b>${esc(v.to)}</b>`).join('<br>');
+  const ACT = { update: ['Update', 'good'], add: ['Add', 'info'], same: ['No change', ''], skip: ['Skip', 'bad'] };
+  const draw = (items, applied) => {
+    const n = k => items.filter(i => i.action === k).length;
+    $('#ti_out', el).innerHTML = `<p><b>${n('update')}</b> to update · <b>${n('add')}</b> to add · ${n('same')} already up to date · ${n('skip')} skipped${applied ? ' — <b>saved</b>' : ''}</p>
+      <div style="max-height:46vh;overflow:auto"><table class="items"><thead><tr><th>Row</th><th></th><th>Name</th><th>What happens</th></tr></thead><tbody>
+      ${items.map(it => `<tr><td class="muted">${it.row}</td><td><span class="pill ${ACT[it.action][1]}">${ACT[it.action][0]}</span></td>
+        <td><b>${esc(it.name || '—')}</b>${it.current_name && it.current_name !== it.name ? `<div class="muted small">on the team as ${esc(it.current_name)}</div>` : ''}${it.matched_by === 'name' ? '<div class="muted small">matched by name</div>' : ''}</td>
+        <td class="small">${it.action === 'update' ? chg(it) : it.action === 'add' ? `${esc(it.email)} · ${esc(it.phone || 'no phone')}<br>${esc(label(it.role))}${it.title ? ` — “${esc(it.title)}”` : ''}` : it.action === 'skip' ? esc(it.reason) : ''}
+          ${(it.warnings || []).map(w => `<div style="color:var(--warn)">⚠ ${esc(w)}</div>`).join('')}</td></tr>`).join('')}</tbody></table></div>
+      ${applied ? `<div class="row" style="margin-top:10px"><button class="btn primary" id="ti_done">Done</button></div>` : n('update') + n('add') ? `<div class="row" style="margin-top:10px;align-items:end;flex-wrap:wrap;gap:10px">
+        ${n('add') ? `<label class="small" style="flex:1;min-width:260px">Starting password for the ${n('add')} new ${n('add') === 1 ? 'person' : 'people'} (8+; leave blank to add them <b>inactive</b> and set passwords one at a time)
+          <input type="text" id="ti_pw" autocomplete="off"></label>` : ''}
+        <button class="btn primary" id="ti_apply">Save ${n('update') + n('add')} change${n('update') + n('add') === 1 ? '' : 's'}</button></div>` : ''}`;
+    const d = $('#ti_done', el); if (d) d.onclick = async () => { m.close(); await loadUsers(true); route(); };
+    const ap = $('#ti_apply', el); if (ap) ap.onclick = async () => {
+      const pw = ($('#ti_pw', el) || {}).value || '';
+      if (pw && pw.length < 8) return toast('Starting password must be 8+ characters', 'error');
+      ap.disabled = true;
+      try { const r = await POST('/users/import', { csv: last, apply: true, start_password: pw }); draw(r.items, true); toast('Team updated'); }
+      catch (e) { ap.disabled = false; toast(e.message, 'error'); }
+    };
+  };
+  const preview = async () => {
+    last = $('#ti_txt', el).value; if (!last.trim()) return toast('Paste the list first', 'error');
+    try { draw((await POST('/users/import', { csv: last })).items, false); } catch (e) { toast(e.message, 'error'); }
+  };
+  $('#ti_prev', el).onclick = preview;
+  $('#ti_txt', el).addEventListener('paste', () => setTimeout(preview, 50));
 }
 async function userForm(u) {
   const P = await GET('/permissions');
