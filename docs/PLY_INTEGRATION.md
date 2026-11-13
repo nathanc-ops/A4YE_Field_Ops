@@ -67,4 +67,7 @@ Every Ply line must be a Ply catalog material. When a pick list or PO has lines 
   - or its order number or note names the job number (4+ characters), for POs delivered to the shop or a truck *for* the job.
 
   Only POs from the last 2 years are brought in. The job's **In Ply for this job** panel lists every candidate from the last 3 years: how it matched, where it was delivered, and why it isn't here if it isn't.
+- **One PO still missing:** on the job, **In Ply for this job → Find a Ply PO by number**. Type the Ply order number (or part of it).
+  - It shows where Ply has the PO and why it isn't on a job here.
+  - **Put on this job** brings it in, received material included. A copy on another job with nothing received is moved over. One with material received has to be removed there first.
 

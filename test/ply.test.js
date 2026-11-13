@@ -347,3 +347,32 @@ test('a job\'s POs from Ply: a second Ply job record with its number, an order n
   assert.equal(row('P-5').old, true); assert.equal(row('P-5').importable, false);
   assert.equal(row('P-6'), undefined);
 });
+
+test('find a Ply PO by its number, see why it is not on a job, and put it on one', async () => {
+  const cust = (await call('POST', '/customers', { name: 'Lookup Customer' })).data.id;
+  const job = (await call('POST', '/jobs', { customer_id: cust, title: 'Lookup job', timeclock_job: '2699200' })).data.id;
+  const other = (await call('POST', '/jobs', { customer_id: cust, title: 'Other job', timeclock_job: '2699201' })).data.id;
+  const sup = { id: uuid(), name: 'Lookup Supply' };
+  const p = { id: uuid(), createdAt: new Date().toISOString().slice(0, 19), orderNumber: '#C9900001', status: 'RECEIVED', supplier: sup, location: { id: ply.locations[0].id, name: 'Main Warehouse' }, totalCost: 25, itemCount: 1 };
+  ply.pos.push(p); ply.poItems[p.id] = [{ id: uuid(), material: { id: uuid(), name: 'Conduit' }, quantity: 5, price: 5 }];
+  ply.received[p.id] = [{ id: uuid(), purchaseOrderItemId: ply.poItems[p.id][0].id, quantity: 5 }];
+  assert.match((await call('GET', '/integrations/ply/po-lookup?q=C9')).data.error, /3 characters/);
+  let r = (await call('GET', '/integrations/ply/po-lookup?q=' + encodeURIComponent('#C9900001'))).data;
+  assert.equal(r.length, 1); assert.equal(r[0].location, 'Main Warehouse'); assert.equal(r[0].match, null);
+  assert.match(r[0].reason, /isn't a job, and neither its order number nor its note names a job number/);
+  // put it on the wrong job first, then move it: nothing received yet? it was received, so it must be removed first
+  const a = (await call('POST', `/jobs/${other}/ply-po`, { ply_po_id: p.id })).data;
+  assert.equal(a.imported, true); assert.equal(a.received_lines, 1);
+  assert.match((await call('POST', `/jobs/${job}/ply-po`, { ply_po_id: p.id })).data.error, /Remove that copy/);
+  await call('POST', `/purchase-orders/${a.po_id}/remove-duplicate`, { reason: 'wrong job' });
+  const b = (await call('POST', `/jobs/${job}/ply-po`, { ply_po_id: p.id })).data;
+  assert.equal(b.imported, true);
+  const here = db.prepare('SELECT * FROM purchase_orders WHERE ply_id = ?').get(p.id);
+  assert.equal(here.job_id, job); assert.equal(db.prepare('SELECT COUNT(*) n FROM job_materials WHERE job_id = ?').get(job).n, 1);
+  assert.match(db.prepare('SELECT body FROM job_notes WHERE job_id = ? ORDER BY id DESC').get(job).body, /logged from Ply \(#C9900001\).*put on this job by Owner/);
+  await call('POST', '/integrations/ply/sync');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM purchase_orders WHERE ply_id = ?').get(p.id).n, 1, 'no second copy');
+  r = (await call('GET', '/integrations/ply/po-lookup?q=C9900001')).data;
+  assert.match(r[0].reason, /here as PO-\d+ on /);
+  assert.equal((await call('POST', `/jobs/${job}/ply-po`, { ply_po_id: p.id })).data.already, true);
+});

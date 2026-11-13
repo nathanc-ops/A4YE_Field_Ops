@@ -715,7 +715,9 @@ async function plyJobCard(j) {
   const errs = (r.errors || []).length ? `<div class="alert" style="margin:8px 0">${r.errors.map(esc).join('<br>')}</div>` : '';
   if (!r.linked) {
     el.innerHTML = `<div class="card"><h2>In Ply for this job</h2>${errs}<p>This job isn't linked to a Ply job, so POs and pick lists made in Ply can't be matched to it. Field Ops links automatically when the Ply job has the same job number (or the number in its name). Otherwise find it here:</p>
-      <div id="plypick"></div><div class="row" style="margin-top:8px"><button class="btn" id="plypush">Not in Ply? Create it there</button></div></div>`;
+      <div id="plypick"></div><div class="row" style="margin-top:8px"><button class="btn" id="plypush">Not in Ply? Create it there</button></div><div class="plyfind" style="margin-top:14px"><h3 style="margin:0 0 4px">Find a Ply PO by number</h3><p class="small muted" style="margin:0 0 6px">For a PO you know is this job's but isn't listed: see where Ply has it and why, and put it on this job.</p>
+      <form class="row plyfindf" style="gap:8px;flex-wrap:wrap"><input name="q" placeholder="e.g. #C1234567 or part of the order number" style="flex:1;min-width:240px" required><button class="btn">Find</button></form><div class="plyfindout"></div></div></div>`;
+    wirePlyFind(el, j);
     plyJobPicker($('#plypick'), j, r.suggestions);
     $('#plypush').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job created in Ply and linked'); route(); };
     return;
@@ -735,7 +737,9 @@ async function plyJobCard(j) {
     <h3 style="margin:14px 0 4px">Pick lists (${r.pick_lists.length})</h3>
     ${table([{ label: 'Pick list', html: p => `<b>${esc(p.name)}</b>${p.here ? ` <a class="small" href="#/pick/${p.here.id}">${esc(p.here.number)}</a>` : ' <span class="small muted">made in Ply</span>'}` }, { label: 'From', get: p => p.from || '—' },
       { label: 'Items', num: 1, get: p => p.items }, { label: 'Status', html: p => `${plyPill(p.status)}${p.completed_at ? `<div class="small muted">${fmtDate(String(p.completed_at).slice(0, 10))}</div>` : p.request_date ? `<div class="small muted">for ${fmtDate(p.request_date)}</div>` : ''}` }],
-      r.pick_lists, { empty: 'No Ply pick lists going to this job (the newest 300 were checked)' })}</div>`;
+      r.pick_lists, { empty: 'No Ply pick lists going to this job (the newest 300 were checked)' })}<div class="plyfind" style="margin-top:14px"><h3 style="margin:0 0 4px">Find a Ply PO by number</h3><p class="small muted" style="margin:0 0 6px">For a PO you know is this job's but isn't listed: see where Ply has it and why, and put it on this job.</p>
+      <form class="row plyfindf" style="gap:8px;flex-wrap:wrap"><input name="q" placeholder="e.g. #C1234567 or part of the order number" style="flex:1;min-width:240px" required><button class="btn">Find</button></form><div class="plyfindout"></div></div></div>`;
+  wirePlyFind(el, j);
   if ($('#plypos2')) $('#plypos2').onclick = async () => { const x = await act(() => POST('/integrations/ply/import-pos')); toast(x.imported ? `${x.imported} PO(s) brought in` : (x.errors[0] || 'Nothing new'), !x.imported && !!x.errors.length); route(); };
   $('#plyunlink').onclick = e => {
     e.preventDefault();
@@ -744,6 +748,23 @@ async function plyJobCard(j) {
     plyJobPicker($('#plypick2', m.el), j, [], () => m.close());
     $('[data-x]', m.el).onclick = m.close;
     $('#plyunl', m.el).onclick = async () => { if (!confirm('Unlink this job from its Ply job?')) return; await act(() => PUT(`/jobs/${j.id}/ply-link`, { ply_id: null }), 'Unlinked'); m.close(); route(); };
+  };
+}
+// look up a Ply PO by its order number: where Ply has it, why it is or isn't on a job, and put it on this one
+function wirePlyFind(el, j) {
+  const f = $('.plyfindf', el), out = $('.plyfindout', el); if (!f) return;
+  f.onsubmit = async e => {
+    e.preventDefault(); const q = f.q.value.trim(); out.innerHTML = '<p class="small muted">Looking through Ply\'s POs…</p>';
+    let list; try { list = await GET('/integrations/ply/po-lookup' + qs({ q })); } catch (err) { out.innerHTML = `<p class="bad small">${esc(err.message)}</p>`; return; }
+    out.innerHTML = list.length ? list.map(p => `<div class="tor-row"><div><b>${esc(p.order_number || '—')}</b> ${plyPill(p.status)} · ${esc(p.supplier || '')}${p.total != null ? ` · ${money(p.total)}` : ''}${p.created_at ? ` · ${fmtDate(String(p.created_at).slice(0, 10))}` : ''}
+        <div class="small">Delivered to: <b>${esc(p.location || 'no location')}</b>${p.location_is_job ? ' (a Ply job)' : ''}</div><div class="small muted">${esc(p.reason)}</div></div>
+        <div>${p.here && p.here.job_id === j.id ? `<a class="btn sm" href="#/purchasing/po/${p.here.id}">Open ${esc(p.here.number)}</a>` : `<button class="btn sm primary" data-attach="${esc(p.id)}">${p.here ? `Move ${esc(p.here.number)} to this job` : 'Put on this job'}</button>`}</div></div>`).join('')
+      : `<p class="small">No Ply PO with "${esc(q)}" in its order number or note (newest 6,000 checked). Check the number in Ply, including any letters.</p>`;
+    $$('[data-attach]', out).forEach(b => b.onclick = async () => {
+      if (!confirm(`Put this Ply PO on ${j.number}? Its received material will be charged to this job.`)) return;
+      const r = await act(() => POST(`/jobs/${j.id}/ply-po`, { ply_po_id: b.dataset.attach }));
+      toast(r.already ? `Already on this job as ${r.number}` : r.moved ? `${r.number} moved onto this job` : `${r.number} brought in${r.received_lines ? `, ${r.received_lines} received line(s)` : ''}`); route();
+    });
   };
 }
 // type to search Ply's jobs (by name or number, Ply-side search); click one to link it

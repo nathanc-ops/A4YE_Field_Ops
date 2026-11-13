@@ -990,6 +990,18 @@ module.exports = function routesExt(app, db, X) {
     if (!Ply.config(db)) return res.json({ connected: false });
     res.json({ connected: true, ...(await Ply.jobPly(db, +req.params.id)) });
   }));
+  // find a Ply PO by its order number: where it went, and why it is or isn't on a job here
+  app.get('/api/integrations/ply/po-lookup', office, wrap(async (req, res) => {
+    if (!Ply.config(db)) throw bad('Ply is not connected (Settings → Integrations – Ply)');
+    const q = String(req.query.q || '').trim(); if (q.replace(/^#/, '').length < 3) throw bad('Type at least 3 characters of the PO number');
+    res.json(await Ply.findPlyPO(db, q));
+  }));
+  // put a Ply PO on this job by hand
+  app.post('/api/jobs/:id/ply-po', office, wrap(async (req, res) => {
+    mustGet('jobs', +req.params.id);
+    if (!req.body.ply_po_id) throw bad('Which Ply PO?');
+    res.json(await Ply.attachPlyPO(db, H, +req.params.id, String(req.body.ply_po_id), req.user));
+  }));
   // link (or unlink) a job to a Ply job by hand, when the numbers don't match; then bring in its POs
   // search Ply's jobs by name or number while picking which one a job is (Ply searches part of the name)
   app.get('/api/integrations/ply/jobs', office, wrap(async (req, res) => {
