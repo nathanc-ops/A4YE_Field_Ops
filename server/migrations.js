@@ -1209,6 +1209,21 @@ const MIGRATIONS = [
     );`);
     db.prepare("INSERT INTO settings (key, value) VALUES ('kpi_due_days', '2') ON CONFLICT(key) DO UPDATE SET value = '2'").run();
   },
+  // 56: Housecall Pro pull — remember each record's HCP id; HCP's internal notes (customer, job, estimate) kept apart
+  //     from customer-facing text (an estimate's own notes print on the customer's copy)
+  db => {
+    addColumn(db, 'customers', 'hcp_id', 'TEXT'); addColumn(db, 'customers', 'hcp_notes', 'TEXT');
+    addColumn(db, 'locations', 'hcp_id', 'TEXT'); addColumn(db, 'jobs', 'hcp_id', 'TEXT'); addColumn(db, 'estimates', 'hcp_id', 'TEXT');
+    addColumn(db, 'job_notes', 'hcp_id', 'TEXT');
+    db.exec(`CREATE TABLE IF NOT EXISTS estimate_notes (
+      id INTEGER PRIMARY KEY, estimate_id INTEGER NOT NULL REFERENCES estimates(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, body TEXT NOT NULL, hcp_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE INDEX IF NOT EXISTS idx_estnotes ON estimate_notes(estimate_id);
+    CREATE INDEX IF NOT EXISTS idx_cust_hcp ON customers(hcp_id); CREATE INDEX IF NOT EXISTS idx_loc_hcp ON locations(hcp_id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_hcp ON jobs(hcp_id); CREATE INDEX IF NOT EXISTS idx_est_hcp ON estimates(hcp_id);
+    CREATE INDEX IF NOT EXISTS idx_jobnotes_hcp ON job_notes(hcp_id);`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

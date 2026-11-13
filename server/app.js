@@ -190,7 +190,7 @@ function createApp(db) {
     next();
   });
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account', 'anthropic_api_key', 'plaid_secret'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account', 'anthropic_api_key', 'plaid_secret', 'hcp_api_key'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
@@ -933,7 +933,14 @@ function createApp(db) {
     e.customer = get(db, 'SELECT * FROM customers WHERE id = ?', e.customer_id);
     e.public_url = `${baseUrl(req)}/p/estimate/${e.public_token}`;
     e.visits = H.appointments('a.estimate_id = ?', [e.id]);
+    e.internal_notes = all(db, 'SELECT n.*, u.name user_name FROM estimate_notes n LEFT JOIN users u ON u.id = n.user_id WHERE estimate_id = ? ORDER BY n.id DESC', e.id);
     res.json(e);
+  }));
+  // internal notes on an estimate (never on the customer's copy; Housecall Pro's estimate notes land here too)
+  app.post('/api/estimates/:id/notes', office, wrap((req, res) => {
+    const e = mustGet('estimates', req.params.id), body = String(req.body.body || '').trim();
+    if (!body) throw bad('Write the note first');
+    res.json({ id: insert('estimate_notes', { estimate_id: e.id, user_id: req.user.id, body: body.slice(0, 20000) }) });
   }));
   app.post('/api/estimates', office, wrap((req, res) => {
     const s = D.settings(db);
@@ -1462,6 +1469,12 @@ function createApp(db) {
   require('./takeoff')(app, db, { wrap, bad });
   require('./voice_estimate')(app, db, { wrap, bad });
   require('./cc_suggest')(app, db, { wrap, office });
+  // Housecall Pro pull (hcp.js): admin only; runs in the background, the page polls status
+  const HCP = require('./hcp');
+  app.get('/api/hcp/status', admin, (req, res) => res.json(HCP.status(db)));
+  app.post('/api/hcp/test', admin, wrap(async (req, res) => res.json(await HCP.test(db))));
+  app.post('/api/hcp/pull', admin, (req, res, next) => { try { res.json(HCP.start(db, { userId: req.user.id, H, full: !!req.body.full })); } catch (e) { next(e); } });
+  app.get('/api/hcp/peek', admin, wrap(async (req, res) => res.json(await HCP.peek(db, String(req.query.what || '')))));
   require('./pipeline')(app, db, { wrap, bad, office, today, addDays });
 
   // ------------------------------------------------------------ static

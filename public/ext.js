@@ -1494,6 +1494,15 @@ async function settingsExtras(el) {
     let locs = []; try { locs = JSON.parse(s.ply_locations || '[]'); } catch { locs = []; }
     let last = null; try { last = JSON.parse(s.ply_last_sync || 'null'); } catch { last = null; }
     const locOpts = locs.filter(l => l.type !== 'JOB').map(l => [l.id, `${l.name}${l.type ? ` (${label(String(l.type).toLowerCase())})` : ''}`]);
+    cards.push(`<div class="card" id="hcpcard"><h2>Housecall Pro</h2>
+      <p class="small muted">Pulls customers (with addresses and notes), estimates (options, line items, notes) and jobs (status, schedule, techs, notes) from Housecall Pro and brings Field Ops up to date. Housecall Pro wins where the two differ; a blank in Housecall Pro never erases anything here.
+        Jobs already <b>Invoiced</b> here stay Invoiced, and job titles, billing type and money are never changed. Nothing is sent to Housecall Pro.</p>
+      <details class="small" style="margin:8px 0"><summary>How to get the API key</summary><ol><li>The Housecall Pro API is on the <b>MAX</b> plan.</li><li>An admin signs in to Housecall Pro → <b>App Store</b> → <b>API</b> → generate an API key.</li><li>Paste it here. It stays on your server and is never sent to browsers.</li></ol></details>
+      <form id="hcpf"><div class="form-grid">${fieldHtml({ name: 'hcp_api_key', label: s.hcp_api_key_set ? 'API key (saved — leave blank to keep)' : 'API key', type: 'password', full: true })}</div>
+      <div class="row" style="flex-wrap:wrap;gap:8px"><button class="btn">Save key</button>${s.hcp_api_key_set ? `<button type="button" class="btn" id="hcptest">Test connection</button>
+        <button type="button" class="btn primary" id="hcppull">Pull changes now</button><button type="button" class="btn" id="hcpfull">Pull everything</button><button type="button" class="btn danger" id="hcpclear">Remove key</button>` : ''}</div></form>
+      <div id="hcpstat" style="margin-top:10px"></div>
+      ${s.hcp_api_key_set ? `<details class="small" style="margin-top:8px"><summary>See what Housecall Pro sends</summary><div class="row" style="gap:6px;margin:6px 0">${['customers', 'jobs', 'estimates', 'employees'].map(w => `<button type="button" class="btn small" data-hcppeek="${w}">${w}</button>`).join('')}</div><pre id="hcppeek" style="max-height:300px;overflow:auto;white-space:pre-wrap"></pre></details>` : ''}</div>`);
     cards.push(`<div class="card"><h2>Integrations — Ply</h2>
       <p class="small muted">Uses the Ply Public API. In Ply: <b>Settings → Workspace → API Keys → Create API Key</b>. Give it these scopes: <code>jobs:write</code>, <code>pick_lists:write</code>, <code>purchase_orders:write</code>, <code>materials:write</code>, <code>materials_availability:read</code>, <code>locations:read</code>, <code>suppliers:read</code>. The key is stored on this server only.</p>
       <p class="small">${s.ply_enabled === '1' && s.ply_api_key_set ? `<span class="pill good">Enabled</span> Use Test connection to confirm the key works.${s.ply_auto_sync !== '0' ? ' Pulls PO receipts and finished picks every hour.' : ''}` : '<span class="pill">Not connected</span>'}${last && last.at ? ` Last sync ${fmtDT(last.at)}: ${last.received_lines} PO line(s) received, ${last.picks_completed} pick(s) completed${last.errors && last.errors.length ? `, <span style="color:var(--bad)">${last.errors.length} problem(s)</span>` : ''}.` : ''}</p>
@@ -1548,6 +1557,7 @@ async function settingsExtras(el) {
     S.settings = await GET('/me').then(m => m.settings); route();
   };
   $('#plysync').onclick = async () => { const r = await act(() => POST('/integrations/ply/sync')); toast(`Ply: ${r.pos} PO(s) checked, ${r.received_lines} line(s) received, ${r.picks_completed} pick(s) completed`); if (r.errors.length) toast(r.errors.join('; '), true); route(); };
+  hcpWire(saveSettings);
   $('#plypull').onclick = async () => { const r = await act(() => POST('/integrations/ply/pull-items')); toast(`Ply catalog: ${r.updated} updated (${r.linked} newly linked), ${r.created} added to the price book`); route(); };
 }
 function ccForm(c) {
@@ -1715,4 +1725,35 @@ async function sendToPly(path, extra = {}) {
   toast(`Sent ${r.sent} line(s) to Ply${r.supplier_linked === false ? ' (no matching supplier in Ply; pick it there)' : ''}`);
   route();
   return r;
+}
+
+// Settings → Housecall Pro: save the key, test, run a pull (in the background on the server) and show its progress
+function hcpWire(saveSettings) {
+  const f = $('#hcpf'); if (!f) return;
+  f.onsubmit = e => { e.preventDefault(); const v = f.hcp_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ hcp_api_key: v }, 'Housecall Pro key saved'); };
+  if ($('#hcpclear')) $('#hcpclear').onclick = () => { if (confirm('Remove the Housecall Pro key?')) saveSettings({ hcp_api_key_clear: '1' }, 'Key removed'); };
+  if ($('#hcptest')) $('#hcptest').onclick = async () => { const r = await act(() => POST('/hcp/test')); toast(`Connected to Housecall Pro ✓ ${r.customers ?? '?'} customers, ${r.jobs ?? '?'} jobs, ${r.estimates ?? '?'} estimates`); };
+  const go = async full => {
+    if (full && !confirm('Pull every customer, estimate and job from Housecall Pro? With a long history this can take a while; you can leave this page.')) return;
+    await act(() => POST('/hcp/pull', { full })); poll();
+  };
+  if ($('#hcppull')) $('#hcppull').onclick = () => go(false);
+  if ($('#hcpfull')) $('#hcpfull').onclick = () => go(true);
+  $$('[data-hcppeek]').forEach(b => b.onclick = async () => { $('#hcppeek').textContent = 'Loading…'; try { $('#hcppeek').textContent = JSON.stringify(await GET('/hcp/peek?what=' + b.dataset.hcppeek), null, 2); } catch (e) { $('#hcppeek').textContent = e.message; } });
+  const line = (k, o) => `${k}: ${o.created} added, ${o.updated} updated, ${o.same} unchanged`;
+  const draw = st => {
+    const el = $('#hcpstat'); if (!el) return false;
+    if (st.running) {
+      el.innerHTML = `<p class="small"><span class="pill info">Pulling ${esc(st.phase)}…</span> ${st.done}${st.total != null ? ` of ${st.total}` : ''}${st.since ? ' (changes since the last pull)' : ''}</p>`;
+      $$('#hcppull, #hcpfull').forEach(b => { b.disabled = true; }); return true;
+    }
+    $$('#hcppull, #hcpfull').forEach(b => { b.disabled = false; });
+    const l = st.last;
+    el.innerHTML = !l ? '<p class="small muted">Not pulled yet. Use <b>Pull everything</b> the first time.</p>' : `<p class="small">${l.failed ? `<span class="pill bad">Stopped</span> ${esc(l.message || '')}` : '<span class="pill good">Done</span>'}
+      Last pull ${fmtDT(l.finished_at)}${l.full ? ' (everything)' : ' (changes only)'}:<br>${[line('Customers', l.stats.customers), line('Estimates', l.stats.estimates), line('Jobs', l.stats.jobs)].join('<br>')}<br>${l.stats.notes} note(s) added or updated</p>
+      ${l.problem_count ? `<details class="small"><summary style="color:var(--warn)">${l.problem_count} thing(s) to check</summary><ul>${l.problems.map(p => `<li>${esc(p)}</li>`).join('')}</ul></details>` : ''}`;
+    return false;
+  };
+  const poll = async () => { let st; try { st = await GET('/hcp/status'); } catch { return; } if (draw(st) && document.body.contains($('#hcpstat'))) setTimeout(poll, 2500); };
+  poll();
 }

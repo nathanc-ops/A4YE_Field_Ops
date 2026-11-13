@@ -327,6 +327,15 @@ function runImport(db, { type, text, mapping, options = {}, filename, userId, dr
   } catch (e) { if (e !== DRY) throw e; }
   return report;
 }
+// Same as runImport, but from records already keyed by field (the Housecall Pro pull builds them from the API)
+function importRecords(db, { type, recs, options = {}, filename, userId, H = {} }) {
+  const ctx = { db, userId, options, H, tz: 0, created: [], updated: 0, skipped: 0, errors: [], warnings: [], counts: {} };
+  ctx.made = (entity, id) => { ctx.created.push([entity, id]); ctx.counts[entity] = (ctx.counts[entity] || 0) + 1; return id; };
+  ctx.warn = (row, m) => { if (ctx.warnings.length < 300) ctx.warnings.push({ row, message: m }); };
+  let report;
+  tx(db, () => { IMPORTERS[type](ctx, recs); report = finish(ctx, { type, filename, userId, dryRun: false }); });
+  return { ...report, created_ids: ctx.created };
+}
 function finish(ctx, { type, filename, userId, dryRun }) {
   const created = ctx.created.length;
   let batchId = null;
@@ -790,4 +799,4 @@ function undoBatch(db, id, { removeFile } = {}) {
   return { removed: recs.length };
 }
 
-module.exports = { TYPES, describe, preview, runImport, undoBatch, listBatches, parseRows, parseDate, parseDateTime, parseAmount, autoMap, jobByNumber, findCustomer };
+module.exports = { TYPES, describe, preview, runImport, importRecords, undoBatch, listBatches, parseRows, parseDate, parseDateTime, parseAmount, autoMap, jobByNumber, findCustomer };

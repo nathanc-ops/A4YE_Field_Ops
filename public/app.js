@@ -682,7 +682,7 @@ async function jobSheet(R, id, setCsv) {
         [{ label: '', get: x => x.k }, { label: '#', get: x => x.number }, { label: 'Status', html: x => pill(x.status) }, { label: 'Total', num: 1, get: x => money(x.total) }, { label: 'Balance', num: 1, get: x => x.k === 'Invoice' ? money(x.balance) : '' }], '')) : ''}
       ${sec(`Emails & calls (${cm.items.length})`, list(cm.items.slice(0, 25), [{ label: 'When', get: x => fmtDT(x.at) }, { label: '', get: x => x.type === 'email' ? 'Email sent' : `${(COMM_KIND[x.kind] || x.kind).replace(/^\S+\s/, '')} ${x.direction === 'in' ? 'in' : 'out'}` },
         { label: 'Detail', get: x => x.type === 'email' ? `${x.subject} → ${x.to}` : [x.contact, x.outcome, x.body].filter(Boolean).join(' · ') }], 'None logged'))}
-      ${sec(`Notes (${(j.notes || []).length})`, list((j.notes || []).slice(0, 30), [{ label: 'When', get: n => fmtDT(n.created_at) }, { label: 'Who', get: n => n.user_name || '' }, { label: 'Note', html: n => `<span style="white-space:pre-wrap">${esc(n.body)}</span>` }], 'No notes'))}
+      ${sec(`Notes (${(j.notes || []).length})`, list((j.notes || []).slice(0, 30), [{ label: 'When', get: n => fmtDT(n.created_at) }, { label: 'Who', get: n => n.user_name || (n.hcp_id ? 'Housecall Pro' : '') }, { label: 'Note', html: n => `<span style="white-space:pre-wrap">${esc(n.body)}</span>` }], 'No notes'))}
       <p class="small muted">${(j.attachments || []).length} photo(s)/file(s) and ${(j.forms || []).filter(x => x.completed_at).length}/${(j.forms || []).length} checklist(s) on the job.</p>
     </div>`;
   setCsv(null);
@@ -899,7 +899,7 @@ async function viewJob(id) {
       ${j.completion_blockers.length && !['completed', 'invoiced', 'cancelled'].includes(j.status) ? `<div class="alert">Before completing: finish ${j.completion_blockers.map(esc).join(', ')} on the <a href="#/jobs/${j.id}?tab=forms">Checklists</a> tab.</div>` : ''}
     </div><div class="card"><h2>Notes & activity</h2>
       <form id="note" class="row"><input name="body" class="grow" placeholder="Add a note (visible to the team)"><button class="btn primary">Add</button></form>
-      <div style="margin-top:10px">${j.notes.map(n => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="small muted">${esc(n.user_name || '')} · ${fmtDT(n.created_at)}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('') || '<div class="empty">No notes yet</div>'}</div>
+      <div style="margin-top:10px">${j.notes.map(n => `<div style="padding:8px 0;border-bottom:1px solid var(--border)"><div class="small muted">${esc(n.user_name || (n.hcp_id ? 'Housecall Pro' : ''))} · ${fmtDT(n.created_at)}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('') || '<div class="empty">No notes yet</div>'}</div>
     </div></div>`;
     jobAppointmentsCard(j);
     const sig = j.attachments.find(a => a.kind === 'signature');
@@ -1072,7 +1072,8 @@ async function viewCustomer(id) {
     <div class="grid g2" style="margin-top:14px">
       <div class="card"><div class="row spread"><h2>Service locations</h2><button class="btn sm" id="addloc">+ Location</button></div>
         ${table([{ label: 'Address', html: l => `${l.label ? `<b>${esc(l.label)}</b><br>` : ''}${esc([l.address, l.city, l.state, l.zip].filter(Boolean).join(', '))}` }, { label: 'Service', key: 'service_size' }, { label: 'Panel', key: 'panel_info' }], c.locations, { onClick: l => locationForm(c.id, l), empty: 'No locations' })}
-        ${c.notes ? `<h3 style="margin-top:12px">Notes</h3><div style="white-space:pre-wrap">${esc(c.notes)}</div>` : ''}</div>
+        ${c.notes ? `<h3 style="margin-top:12px">Notes</h3><div style="white-space:pre-wrap">${esc(c.notes)}</div>` : ''}
+        ${c.hcp_notes ? `<h3 style="margin-top:12px">Notes from Housecall Pro</h3><div style="white-space:pre-wrap">${esc(c.hcp_notes)}</div>` : ''}</div>
       <div class="card"><h2>Jobs</h2>${table([{ label: 'Job', html: j => `<b>${esc(j.number)}</b> ${esc(j.title)}` }, { label: 'Date', get: j => fmtDate(j.scheduled_start) }, { label: 'Status', html: j => pill(j.status) }], c.jobs, { onClick: j => go('#/jobs/' + j.id), empty: 'No jobs' })}</div>
       ${customerEquipmentCard(c)}
       <div class="card"><h2>Estimates</h2>${table([{ label: '#', key: 'number' }, { label: 'Title', key: 'title' }, { label: 'Status', html: e => pill(e.status) }, { label: 'Total', num: 1, get: e => money(e.total) }], c.estimates, { onClick: e => go('#/estimates/' + e.id), empty: 'No estimates' })}</div>
@@ -1232,6 +1233,15 @@ async function viewDoc(kind, id) {
 
   if (isEst && id !== 'new') pipelinePath('estimate', doc.id);
   if (isEst && id !== 'new' && isOffice()) { const box = document.createElement('div'); box.style.marginTop = '14px'; $('#view').appendChild(box); commCard(box, { estimate_id: doc.id }, { phone: (doc.customer || {}).phone, contact: (doc.customer || {}).name }); }
+  if (isEst && id !== 'new' && isOffice()) {
+    // internal notes: the office's own, plus Housecall Pro's estimate notes. Never shown to the customer.
+    const nb = document.createElement('div'); nb.className = 'card'; nb.style.marginTop = '14px'; $('#view').appendChild(nb);
+    const notes = doc.internal_notes || [];
+    nb.innerHTML = `<h2>Internal notes (${notes.length})</h2><p class="small muted">Only your team sees these — they're not on the customer's estimate.</p>
+      <form id="estnote" class="row" style="align-items:flex-start;gap:8px"><textarea name="body" rows="2" style="flex:1" placeholder="Add a note"></textarea><button class="btn">Add</button></form>
+      ${notes.map(n => `<div style="border-top:1px solid var(--border);padding:8px 0"><div class="small muted">${fmtDT(n.created_at)} · ${n.hcp_id ? 'Housecall Pro' : esc(n.user_name || '')}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join('')}`;
+    $('#estnote', nb).onsubmit = async e => { e.preventDefault(); const b = e.target.body.value.trim(); if (!b) return; await act(() => POST(`/estimates/${doc.id}/notes`, { body: b }), 'Note added'); route(); };
+  }
   const form = $('#docform');
   const tbody = $('#items');
   if ($('#addestvisit')) $('#addestvisit').onclick = () => apptForm({ estimate_id: doc.id, estimate_number: doc.number, customer_name: (doc.customer || {}).name, estimate_title: doc.title,
