@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Back from your bank…</title><meta name="robots" content="noindex"></head>
+<body style="font-family:system-ui,sans-serif;background:#000;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0">
+  <p>Back from your bank — finishing the connection…</p>
+  <script>
+    // A bank that uses OAuth (Chase, Capital One, …) sends the browser here after its own sign-in page.
+    // Hand the full address back to the app, which reopens Plaid Link to finish (see public/plaid.js).
+    location.replace('/#/accounting?tab=banking&plaid_oauth=' + encodeURIComponent(location.href));
+  </script>
+</body>
+</html>

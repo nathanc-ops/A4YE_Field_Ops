@@ -1150,6 +1150,33 @@ const MIGRATIONS = [
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))`); },
   // 50: staff who aren't techs (a service manager running calls) can sit on the schedule like a tech
   db => { addColumn(db, 'users', 'on_schedule', 'INTEGER NOT NULL DEFAULT 0'); },
+  // 51: Plaid bank feeds — a connected bank (item), its accounts mapped to the chart of accounts, and which feed a bank line came from
+  db => {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS plaid_items (
+      id INTEGER PRIMARY KEY,
+      item_id TEXT NOT NULL UNIQUE,
+      access_token TEXT NOT NULL,          -- server only; never sent to browsers
+      institution_id TEXT, institution_name TEXT,
+      cursor TEXT,                         -- /transactions/sync position
+      status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error','login_required')),
+      error TEXT,
+      last_sync_at TEXT, last_sync_added INTEGER,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS plaid_accounts (
+      id INTEGER PRIMARY KEY,
+      item_id INTEGER NOT NULL REFERENCES plaid_items(id) ON DELETE CASCADE,
+      plaid_account_id TEXT NOT NULL UNIQUE,
+      name TEXT, official_name TEXT, mask TEXT, kind TEXT,
+      current_balance REAL, available_balance REAL,
+      ledger_account_id INTEGER REFERENCES accounts(id),
+      start_date TEXT,                     -- transactions before this date are not brought in
+      ignored INTEGER NOT NULL DEFAULT 0
+    );`);
+    addColumn(db, 'bank_transactions', 'plaid_account_id', 'INTEGER');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

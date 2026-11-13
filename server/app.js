@@ -190,12 +190,12 @@ function createApp(db) {
     next();
   });
 
-  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account', 'anthropic_api_key'];
+  const SECRET_KEYS = ['ply_api_key', 'ply_webhook_secret', 'google_maps_api_key', 'timeclock_key', 'smtp_pass', 'vapid_private_key', 'apns_key_p8', 'fcm_service_account', 'anthropic_api_key', 'plaid_secret'];
   function publicSettings(user) {
     const s = D.settings(db);
     for (const k of SECRET_KEYS) { s[k + '_set'] = s[k] ? '1' : ''; s[k] = ''; }
     delete s.proposal_commercial; // signature + standard text: served only to estimators by /api/estimating/proposal-template
-    if (user.role === 'tech') for (const k of Object.keys(s)) if (k.startsWith('ply_') || k.startsWith('default_') && k.endsWith('_account')) delete s[k];
+    if (user.role === 'tech') for (const k of Object.keys(s)) if (k.startsWith('ply_') || k.startsWith('plaid_') || k.startsWith('default_') && k.endsWith('_account')) delete s[k];
     return s;
   }
   app.get('/api/me', (req, res) => {
@@ -1396,6 +1396,7 @@ function createApp(db) {
 
   require('./routes_ext').webhook(app, db, { H });
   require('./routes_bank')(app, db, { wrap, bad, admin, pick, insert, update });
+  require('./routes_plaid')(app, db, { wrap, bad, admin });
   require('./routes_field')(app, db, { wrap, bad, office, admin, pick, insert, update, mustGet, H });
   // ------------------------------------------------------------ job billing (fixed price vs T&M)
   app.get('/api/jobs/:id/billing', office, wrap((req, res) => { mustGet('jobs', req.params.id); res.json(Bill.jobBilling(db, Number(req.params.id), req.query.through)); }));

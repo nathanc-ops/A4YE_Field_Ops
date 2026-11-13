@@ -1452,6 +1452,25 @@ async function settingsExtras(el) {
       <form id="aif"><div class="form-grid">${fieldHtml({ name: 'anthropic_api_key', label: s.anthropic_api_key_set ? 'Anthropic API key (saved — leave blank to keep)' : 'Anthropic API key', type: 'password', full: true })}</div>
       <details class="small" style="margin:8px 0"><summary>How to get a key</summary><ol><li>Sign in at console.anthropic.com (or create an account) and add billing.</li><li>Under <b>API keys</b>, create a key for Field Ops.</li><li>Paste it here. It stays on your server and is never sent to browsers.</li></ol></details>
       <div class="row"><button class="btn primary">Save</button>${s.anthropic_api_key_set ? '<button type="button" class="btn danger" id="aiclear">Remove key</button>' : ''}</div></form></div>`);
+    const plaidLog = await GET('/integrations/plaid/log').catch(() => []);
+    cards.push(`<div class="card"><h2>Integrations — Plaid (bank feeds)</h2>
+      <p class="small muted">Plaid connects the business bank and credit card accounts so transactions come into Accounting → Banking every hour. Each person signs in to their bank inside Plaid's own window; this server only ever holds Plaid's access token, never a bank password.</p>
+      <p class="small">${s.plaid_client_id && s.plaid_secret_set ? `<span class="pill good">Keys saved</span> ${s.plaid_env === 'production' ? 'Live banks.' : '<b>Sandbox</b> — test banks only (sign in with user_good / pass_good).'} Connect banks under Accounting → Banking.` : '<span class="pill">Not set up</span>'}</p>
+      <form id="plaidf"><div class="form-grid">
+        ${fieldHtml({ name: 'plaid_client_id', label: 'Client ID', full: true }, s.plaid_client_id)}
+        ${fieldHtml({ name: 'plaid_secret', label: s.plaid_secret_set ? 'Secret (saved — leave blank to keep)' : 'Secret (for the environment below)', type: 'password', full: true })}
+        ${fieldHtml({ name: 'plaid_env', label: 'Environment', type: 'select', options: [['sandbox', 'Sandbox — test data'], ['production', 'Production — real banks']], blank: false }, s.plaid_env || 'sandbox')}
+        ${fieldHtml({ name: 'plaid_auto_sync', label: 'Sync every hour', type: 'checkbox' }, s.plaid_auto_sync !== '0')}
+        ${fieldHtml({ name: 'plaid_redirect_uri', label: 'OAuth redirect URI (needed for Chase, Capital One, Wells Fargo and other OAuth banks)', full: true, placeholder: 'https://ops.all4youelectrical.com/plaid-oauth.html' }, s.plaid_redirect_uri)}
+      </div>
+      <details class="small" style="margin:8px 0"><summary>How to set up Plaid</summary><ol>
+        <li>Sign up at dashboard.plaid.com with the business. Sandbox keys are available right away; Production needs Plaid to approve the application and the <b>Transactions</b> product (their security questionnaire and company profile). Plaid bills per connected account.</li>
+        <li>Under <b>Developers → Keys</b>, copy the client ID and the secret for the environment you're using. Paste them here. The secret stays on this server.</li>
+        <li>For OAuth banks: under <b>Developers → API → Allowed redirect URIs</b>, add <code>https://&lt;your Field Ops address&gt;/plaid-oauth.html</code> and paste the same address above. It must be HTTPS (it won't work on a plain localhost copy).</li>
+        <li>Go to Accounting → Banking → <b>Connect a bank</b>.</li></ol></details>
+      <div class="row"><button class="btn primary">Save</button>${s.plaid_secret_set ? '<button type="button" class="btn danger" id="plaidclear">Remove secret</button>' : ''}</div></form>
+      ${plaidLog.length ? `<h3 style="margin-top:14px">Recent activity</h3>${table([{ label: 'When', get: l => fmtDT(l.created_at) }, { label: 'Call', key: 'event' }, { label: 'Status', html: l => `<span class="pill ${l.status === 'ok' ? 'good' : 'bad'}">${esc(l.status)}</span>` }],
+        plaidLog.slice(0, 10), { onClick: l => modal(`<h2>${esc(l.event)}</h2><pre style="white-space:pre-wrap;font-size:12px">${esc(l.detail)}</pre>`) })}` : ''}</div>`);
     const log = await GET('/integrations/ply/log');
     let locs = []; try { locs = JSON.parse(s.ply_locations || '[]'); } catch { locs = []; }
     let last = null; try { last = JSON.parse(s.ply_last_sync || 'null'); } catch { last = null; }
@@ -1496,6 +1515,10 @@ async function settingsExtras(el) {
   if ($('#aif')) $('#aif').onsubmit = e => { e.preventDefault(); const v = e.target.anthropic_api_key.value.trim(); if (!v) return toast('Paste the key first', true); saveSettings({ anthropic_api_key: v }, 'Anthropic key saved'); };
   if ($('#aiclear')) $('#aiclear').onclick = () => { if (confirm('Remove the Anthropic key? Plan takeoffs stop working until a new one is added.')) saveSettings({ anthropic_api_key_clear: '1' }, 'Key removed'); };
   if ($('#geoclear')) $('#geoclear').onclick = () => { if (confirm('Remove the Google Maps key? Address lookup falls back to the free US Census check.')) saveSettings({ google_maps_api_key_clear: '1' }, 'Key removed'); };
+  const plf = $('#plaidf');
+  if (plf) plf.onsubmit = e => { e.preventDefault(); saveSettings({ plaid_client_id: plf.plaid_client_id.value.trim(), plaid_secret: plf.plaid_secret.value.trim(), plaid_env: plf.plaid_env.value,
+    plaid_auto_sync: plf.plaid_auto_sync.checked ? '1' : '0', plaid_redirect_uri: plf.plaid_redirect_uri.value.trim() }, 'Plaid settings saved'); };
+  if ($('#plaidclear')) $('#plaidclear').onclick = () => { if (confirm('Remove the Plaid secret? Bank feeds stop syncing until a new one is added.')) saveSettings({ plaid_secret_clear: '1' }, 'Secret removed'); };
   const pf = $('#plyf');
   pf.onsubmit = e => { e.preventDefault(); saveSettings({ ply_enabled: pf.ply_enabled.checked ? '1' : '0', ply_api_key: pf.ply_api_key.value.trim(), ply_env: pf.ply_env.value,
     ply_auto_sync: pf.ply_auto_sync.checked ? '1' : '0', ply_from_location_id: pf.ply_from_location_id.value, ply_po_location_id: pf.ply_po_location_id.value }, 'Ply settings saved'); };
@@ -1522,13 +1545,14 @@ function ccForm(c) {
 const signed = n => `<span style="font-variant-numeric:tabular-nums;white-space:nowrap">${n < 0 ? '−' : '+'}${money(Math.abs(n))}</span>`;
 async function bankingTab(E, params) {
   const accts = await GET('/banking/accounts');
+  if (params.get('plaid_oauth')) return resumePlaidOAuth(params, () => route());
   if (!accts.length) { E.innerHTML = '<div class="empty">No bank or credit card accounts. Add one in Chart of accounts with Detail = Bank account or Credit card.</div>'; return; }
   const acctId = Number(params.get('acct')) || accts[0].id;
   const acct = accts.find(a => a.id === acctId) || accts[0];
   const status = params.get('status') ?? 'unmatched';
   const [txs, rules, recs] = await Promise.all([GET('/banking/transactions' + qs({ account_id: acct.id, status })), GET('/banking/rules'), GET('/reconciliations' + qs({ account_id: acct.id }))]);
   const lastDone = recs.find(r => r.status === 'completed');
-  E.innerHTML = `<div class="grid g4">${accts.map(a => `<a class="card kpi" href="#/accounting${qs({ tab: 'banking', acct: a.id })}" style="text-decoration:none;color:inherit;${a.id === acct.id ? 'outline:2px solid var(--brand)' : ''}">
+  E.innerHTML = `<div id="plaidfeeds"></div><div class="grid g4">${accts.map(a => `<a class="card kpi" href="#/accounting${qs({ tab: 'banking', acct: a.id })}" style="text-decoration:none;color:inherit;${a.id === acct.id ? 'outline:2px solid var(--brand)' : ''}">
       <div class="label">${esc(a.number)} · ${esc(a.name)}</div><div class="value">${money0(a.book_balance)}</div>
       <div class="sub">${a.to_review ? `<span class="pill warn">${a.to_review} to review</span> ` : ''}${a.last_reconciled ? `Reconciled through ${fmtDate(a.last_reconciled.statement_date)}` : 'Never reconciled'}</div></a>`).join('')}</div>
     <div class="card" style="margin-top:14px"><div class="row spread"><h2>${esc(acct.name)} — bank transactions</h2>
@@ -1536,7 +1560,7 @@ async function bankingTab(E, params) {
         ${acct.subtype === 'credit_card' ? '<label class="check small"><input type="checkbox" id="flip"> Purchases show as positive in my file</label>' : ''}
         <button class="btn" id="automatch">Auto-match</button>
         <button class="btn primary" id="reconcile">${acct.open_reconciliation ? 'Resume reconciliation' : 'Reconcile'}</button></div></div>
-      <p class="small muted">Download a CSV or OFX/QFX statement from your bank's website and import it. Lines that match something already in the books are matched automatically; review the rest.</p>
+      <p class="small muted">Connected banks (Bank feeds, above) bring transactions in on their own. Or download a CSV or OFX/QFX statement from your bank's website and import it. Lines that match something already in the books are matched automatically; review the rest.</p>
       <div class="tabs" style="border:0">${[['unmatched', `To review (${acct.to_review})`], ['matched', 'Matched'], ['excluded', 'Excluded'], ['', 'All']].map(([v, l]) => `<button class="${v === status ? 'on' : ''}" data-s="${v}">${l}</button>`).join('')}</div>
       ${table([{ label: 'Date', get: t => fmtDate(t.date) }, { label: 'Bank description', html: t => `${esc(t.description)}${t.reference ? ` <span class="muted small">#${esc(t.reference)}</span>` : ''}` },
         { label: 'Amount', num: 1, html: t => signed(t.amount) },
@@ -1563,6 +1587,7 @@ async function bankingTab(E, params) {
           { label: '', html: r => `<button class="btn sm danger" data-delrule="${r.id}">✕</button>` }], rules, { empty: 'No rules' })}</div></div>`;
 
   const reload = () => route();
+  plaidFeeds($('#plaidfeeds'), reload);
   $$('[data-s]').forEach(b => b.onclick = () => go('#/accounting' + qs({ tab: 'banking', acct: acct.id, status: b.dataset.s })));
   $('#stmt').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;

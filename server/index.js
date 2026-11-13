@@ -28,6 +28,15 @@ const plySync = async () => {
 };
 setTimeout(plySync, 40000).unref();
 setInterval(plySync, 60 * 60 * 1000).unref();
+// Plaid bank feeds: pull new bank and card transactions every hour (Accounting → Banking)
+const Plaid = require('./plaid');
+const plaidSync = async () => {
+  if (!Plaid.config(db).configured || D.settings(db).plaid_auto_sync === '0') return;
+  try { for (const r of await Plaid.syncAll(db)) if (r.error) console.error(`Plaid sync (${r.institution}) failed:`, r.error); else if (r.added) console.log(`Plaid sync (${r.institution}): ${r.added} new, ${r.matched} matched`); }
+  catch (e) { console.error('Plaid sync failed:', e.message); }
+};
+setTimeout(plaidSync, 50000).unref();
+setInterval(plaidSync, 60 * 60 * 1000).unref();
 // finish requests in flight and close the database cleanly on restart/shutdown
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { server.close(() => { try { db.close(); } catch { /* already closed */ } process.exit(0); }); server.closeIdleConnections(); setTimeout(() => process.exit(0), 5000).unref(); });
 // Weekly History: record each open project's current % complete for this week (hourly, so the week's last value sticks)
