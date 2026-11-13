@@ -223,6 +223,7 @@ function createApp(db) {
       if (k.endsWith('_clear')) { const base = k.slice(0, -6); if (SECRET_KEYS.includes(base) && v) up.run(base, ''); continue; }
       if (SECRET_KEYS.includes(k) && !v) continue; // blank = keep existing secret
       if (k === 'smtp_pass') { up.run(k, String(v).replace(/\s+/g, '')); continue; } // pasted keys pick up stray spaces/newlines
+      if (k === 'job_number_next' && v !== '' && v != null && !(Number.isInteger(Number(v)) && Number(v) > 0 && Number(v) < 1e12)) throw bad('The next job number must be a whole number');
       up.run(k, String(v ?? ''));
     }
     res.json(publicSettings(req.user));

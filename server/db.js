@@ -379,12 +379,25 @@ function nextJobNumber(db) {
   // numbers in this style: the prefix, then digits only
   const row = get(db, `SELECT MAX(CAST(substr(number, ?) AS INTEGER)) n FROM jobs WHERE number GLOB ? AND substr(number, ?) NOT GLOB '*[^0-9]*' AND length(number) > ?`,
     prefix.length + 1, `${esc}[0-9]*`, prefix.length + 1, prefix.length);
-  let n = Math.max(row && row.n ? row.n + 1 : 1001, Number(s.job_number_next) > 0 ? Math.floor(Number(s.job_number_next)) : 0);
+  // "Next job number" set in Settings: count up from exactly there (lower than the highest is fine), skipping numbers
+  // already used. Not set: carry on after the highest job numbered this way.
+  const start = Number(s.job_number_next) > 0 ? Math.floor(Number(s.job_number_next)) : 0;
+  let n = start || (row && row.n ? row.n + 1 : 1001);
   while (get(db, 'SELECT 1 x FROM jobs WHERE lower(number) = lower(?)', `${prefix}${n}`)) n++;
   return `${prefix}${n}`;
 }
+// the number for a job being created now: like nextJobNumber, and moves the Settings counter past it
+function takeJobNumber(db) {
+  const number = nextJobNumber(db), s = settings(db);
+  if (Number(s.job_number_next) > 0) {
+    const prefix = s.job_number_prefix == null ? 'J-' : String(s.job_number_prefix);
+    const n = Number(number.slice(prefix.length));
+    if (Number.isFinite(n)) run(db, "INSERT INTO settings (key, value) VALUES ('job_number_next', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", String(n + 1));
+  }
+  return number;
+}
 function nextNumber(db, table, prefix) {
-  if (table === 'jobs') return nextJobNumber(db);
+  if (table === 'jobs') return takeJobNumber(db);   // only called when creating a job
   const row = get(db, `SELECT MAX(CAST(substr(number, ?) AS INTEGER)) n FROM ${table} WHERE number GLOB ?`, prefix.length + 2, `${prefix}-[0-9]*`);
   let n = row && row.n ? row.n + 1 : 1001;
   while (get(db, `SELECT 1 x FROM ${table} WHERE number = ?`, `${prefix}-${n}`)) n++;
@@ -398,4 +411,4 @@ function settings(db) {
 }
 
 module.exports = {
-  customerSortKey, open, all, get, run, tx, nextNumber, nextJobNumber, settings, hashPassword, verifyPassword, token };
+  customerSortKey, open, all, get, run, tx, nextNumber, nextJobNumber, takeJobNumber, settings, hashPassword, verifyPassword, token };

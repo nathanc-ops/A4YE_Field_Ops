@@ -1869,8 +1869,8 @@ async function jobNumberSetup(el) {
   const d = await GET('/settings/job-numbers');
   el.innerHTML = `<form id="jnf"><div class="form-grid">
       ${fieldHtml({ name: 'job_number_prefix', label: 'Prefix (blank = plain numbers like 5816)', placeholder: 'none' }, d.prefix)}
-      ${fieldHtml({ name: 'job_number_next', label: 'Continue from (optional)', type: 'number', placeholder: 'e.g. 5816' }, d.next_floor)}
-    </div><p class="small" style="margin:8px 0">Next new job will be <b>${esc(d.next)}</b>. New numbers count on from the highest job already numbered this way (and never below "Continue from"). Admins can change any one job's number with the <b>Job #</b> button on the job.</p>
+      ${fieldHtml({ name: 'job_number_next', label: 'Next job number (optional)', type: 'number', placeholder: 'e.g. 5816' }, d.next_floor)}
+    </div><p class="small" style="margin:8px 0">Next new job will be <b>${esc(d.next)}</b>. With <b>Next job number</b> set, new jobs count up from exactly that number, even if it's lower than jobs you already have, skipping any number already in use. Leave it blank to carry on after the highest job numbered this way. Admins can still change any job's number on the job (Job #).</p>
     <div class="row"><button class="btn primary">Save</button>${d.with_j_prefix && d.prefix !== 'J-' ? `<button type="button" class="btn" id="stripj">Remove "J-" from ${d.with_j_prefix.toLocaleString()} existing job${d.with_j_prefix === 1 ? '' : 's'}…</button>` : ''}</div></form>`;
   $('#jnf', el).onsubmit = async e => { e.preventDefault(); const f = e.target;
     const prefix = f.job_number_prefix.value.trim();

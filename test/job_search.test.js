@@ -105,3 +105,18 @@ test('job numbers without the J- prefix: plain numbering, continue-from, removin
   const c = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Prefixed' })).data.id;
   assert.equal(db.prepare('SELECT number FROM jobs WHERE id = ?').get(c).number, 'A4-1001');
 });
+
+test('the next job number can be set lower than jobs already used; it counts up from there and skips taken numbers', async () => {
+  await call('admin', 'PUT', '/settings', { job_number_prefix: '', job_number_next: '' });
+  for (const n of ['7000', '7002']) { const id = (await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: 'Existing' })).data.id; await call('admin', 'PUT', `/jobs/${id}/number`, { number: n }); }
+  assert.match((await call('admin', 'PUT', '/settings', { job_number_next: '12.5' })).data.error, /whole number/);
+  await call('admin', 'PUT', '/settings', { job_number_next: '6999' });   // below the highest (7002)
+  assert.equal((await call('admin', 'GET', '/settings/job-numbers')).data.next, '6999');
+  const made = [];
+  for (let i = 0; i < 3; i++) made.push((await call('admin', 'POST', '/jobs', { customer_id: ids.cust, title: `New ${i}` })).data.id);
+  assert.deepEqual(made.map(id => db.prepare('SELECT number FROM jobs WHERE id = ?').get(id).number), ['6999', '7001', '7003'], '7000 and 7002 are taken, so they are skipped');
+  assert.equal((await call('admin', 'GET', '/settings/job-numbers')).data.next_floor, '7004', 'the counter moves on');
+  // cleared: back to after the highest
+  await call('admin', 'PUT', '/settings', { job_number_next: '' });
+  assert.equal((await call('admin', 'GET', '/settings/job-numbers')).data.next, String(Math.max(...db.prepare("SELECT number FROM jobs WHERE number NOT GLOB '*[^0-9]*'").all().map(r => Number(r.number))) + 1));
+});
