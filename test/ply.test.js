@@ -320,3 +320,30 @@ test('jobs match Ply by the time clock job #, search finds it by number, and a d
   db.prepare("UPDATE purchase_orders SET status = 'submitted' WHERE id = ?").run(mine);
   assert.match((await call('POST', `/purchase-orders/${mine}/remove-duplicate`, {})).data.error, /void that bill first/);
 });
+
+test('a job\'s POs from Ply: a second Ply job record with its number, an order number naming it, and older than 180 days', async () => {
+  const cust = (await call('POST', '/customers', { name: 'Sample Owner' })).data.id;
+  const job = (await call('POST', '/jobs', { customer_id: cust, title: 'Plant upgrade', timeclock_job: '2699100' })).data.id;
+  const main = { id: uuid(), name: '2699100 Plant upgrade', number: '2699100', active: true };
+  const phase2 = { id: uuid(), name: '2699100 Plant upgrade - phase 2', active: true };   // a second record for the same project
+  ply.jobs.push(main, phase2);
+  const sup = { id: uuid(), name: 'Valley Supply' }, day = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 19);
+  const mk = (orderNumber, location, createdAt, note) => { const p = { id: uuid(), createdAt, orderNumber, status: 'CONFIRMED', supplier: sup, location, totalCost: 10, itemCount: 1, note };
+    ply.pos.push(p); ply.poItems[p.id] = [{ id: uuid(), material: { id: uuid(), name: 'Item ' + orderNumber }, quantity: 1, price: 10 }]; ply.received[p.id] = []; return p; };
+  const onMain = mk('P-1', { id: main.id, name: main.name }, day(5));
+  const onPhase2 = mk('P-2', { id: phase2.id, name: phase2.name }, day(5));
+  const toShop = mk('2699100-07', { id: ply.locations[0].id, name: 'Main Warehouse' }, day(5));
+  const old = mk('P-4', { id: main.id, name: main.name }, day(400));
+  const tooOld = mk('P-5', { id: main.id, name: main.name }, day(800));
+  const other = mk('P-6', { id: ply.locations[0].id, name: 'Main Warehouse' }, day(5), 'stock reorder');
+  await call('POST', '/integrations/ply/sync');
+  const here = id => db.prepare('SELECT job_id FROM purchase_orders WHERE ply_id = ?').get(id);
+  for (const p of [onMain, onPhase2, toShop, old]) assert.equal((here(p.id) || {}).job_id, job, `${p.orderNumber} lands on the job`);
+  assert.equal(here(tooOld.id), undefined, 'older than 2 years stays out'); assert.equal(here(other.id), undefined, 'a stock PO stays out');
+  assert.match(db.prepare("SELECT body FROM job_notes WHERE job_id = ? AND body LIKE '%2699100-07%'").get(job).body, /matched: its order number names the job number \(delivered to Main Warehouse\)/);
+  const panel = (await call('GET', `/jobs/${job}/ply`)).data;
+  const row = n => panel.pos.find(p => p.order_number === n);
+  assert.ok(row('P-2').here && row('2699100-07').here && row('P-4').here);
+  assert.equal(row('P-5').old, true); assert.equal(row('P-5').importable, false);
+  assert.equal(row('P-6'), undefined);
+});

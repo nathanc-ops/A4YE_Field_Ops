@@ -720,12 +720,17 @@ async function plyJobCard(j) {
     $('#plypush').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job created in Ply and linked'); route(); };
     return;
   }
-  const notHere = r.pos.filter(p => !p.here && !p.removed).length;
+  const notHere = r.pos.filter(p => !p.here && !p.removed && p.importable).length;
   el.innerHTML = `<div class="card"><div class="row spread"><h2 style="margin:0">In Ply for this job</h2><span class="small muted">Ply job: <b>${esc((r.ply_job && r.ply_job.name) || 'linked')}</b>${r.ply_job && r.ply_job.active === false ? ' (archived in Ply)' : ''} · <a href="#" id="plyunlink">change</a></span></div>${errs}
     <h3 style="margin:12px 0 4px">Purchase orders (${r.pos.length})</h3>
-    ${table([{ label: 'Ply PO', html: p => `<b>${esc(p.order_number || '—')}</b><div class="small muted">${esc(p.supplier || '')}</div>` }, { label: 'Status', html: p => `${plyPill(p.status)}${p.received_at ? `<div class="small muted">${fmtDate(String(p.received_at).slice(0, 10))}</div>` : ''}` },
-      { label: 'Total', num: 1, get: p => p.total != null ? money(p.total) : '—' }, { label: 'Here', html: p => p.here ? `<a href="#/purchasing/po/${p.here.id}">${esc(p.here.number)}</a> ${pill(p.here.status)}` : p.removed ? `<span class="pill" title="${esc(p.removed)}">removed here as a duplicate</span>` : '<span class="pill warn">not brought in yet</span>' }],
-      r.pos, { empty: 'No Ply POs delivered to this job' })}
+    <p class="small muted" style="margin:0 0 6px">Every Ply PO from the last 3 years that is this job's: delivered to its Ply job, to another Ply job with its number, or naming the job number in the order number or note.</p>
+    ${table([{ label: 'Ply PO', html: p => `<b>${esc(p.order_number || '—')}</b><div class="small muted">${esc(p.supplier || '')}${p.created_at ? ` · ${fmtDate(String(p.created_at).slice(0, 10))}` : ''}</div>` },
+      { label: 'Status', html: p => `${plyPill(p.status)}${p.received_at ? `<div class="small muted">${fmtDate(String(p.received_at).slice(0, 10))}</div>` : ''}` },
+      { label: 'Total', num: 1, get: p => p.total != null ? money(p.total) : '—' },
+      { label: 'How it matched', html: p => `<span class="small ${p.importable ? 'muted' : 'warn'}">${esc(p.why || '')}${p.location ? `<br>to: ${esc(p.location)}` : ''}</span>` },
+      { label: 'Here', html: p => p.here ? `<a href="#/purchasing/po/${p.here.id}">${esc(p.here.number)}</a> ${pill(p.here.status)}` : p.removed ? `<span class="pill" title="${esc(p.removed)}">removed here as a duplicate</span>`
+        : p.importable ? '<span class="pill warn">not brought in yet</span>' : p.old ? '<span class="pill">older than 2 years — not brought in</span>' : '<span class="pill bad">not matched to this job</span>' }],
+      r.pos, { empty: 'No Ply POs for this job (checked: delivered to its Ply job, Ply jobs with its number, and order numbers / notes naming it)' })}
     ${notHere ? `<div class="row" style="margin-top:8px"><button class="btn sm primary" id="plypos2">Bring in ${notHere} PO(s) now</button></div>` : ''}
     <h3 style="margin:14px 0 4px">Pick lists (${r.pick_lists.length})</h3>
     ${table([{ label: 'Pick list', html: p => `<b>${esc(p.name)}</b>${p.here ? ` <a class="small" href="#/pick/${p.here.id}">${esc(p.here.number)}</a>` : ' <span class="small muted">made in Ply</span>'}` }, { label: 'From', get: p => p.from || '—' },

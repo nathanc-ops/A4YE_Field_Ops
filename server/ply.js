@@ -301,6 +301,33 @@ async function searchPlyJobs(db, q, { archived = false, list = null, cached = fa
   return list.filter(hit).sort((a, b) => (norm(b.number) === t) - (norm(a.number) === t) || (a.active === false) - (b.active === false) || String(a.name).localeCompare(String(b.name)));
 }
 
+// Which job a Ply PO belongs to. Ply's API ties a PO to a job only by where it's delivered, so, in order:
+//   1. delivered to the job's linked Ply job;
+//   2. delivered to another Ply job record carrying the same job number (a second record for the same project);
+//   3. its order number or note names the job number (POs delivered to the shop or a truck "for" the job).
+// Only an unambiguous match counts; numbers shorter than 4 characters aren't used for 3.
+const LOOKBACK_DAYS = 730;
+function poMatcher(db, plyJobs) {
+  const jobs = all(db, "SELECT id, number, title, ply_id, timeclock_job FROM jobs WHERE status != 'cancelled'");
+  const byLoc = new Map(), how = new Map();
+  for (const j of jobs) if (j.ply_id) { byLoc.set(String(j.ply_id), j); how.set(String(j.ply_id), 'delivered to its Ply job'); }
+  const numsOf = j => [...new Set([norm(j.timeclock_job), norm(j.number)].filter(Boolean))];
+  if (plyJobs) for (const x of plyJobs) {
+    if (byLoc.has(String(x.id))) continue;
+    const owners = jobs.filter(j => numsOf(j).some(n => norm(x.number) === n || (` ${norm(x.name)} `).includes(` ${n} `)));
+    if (owners.length === 1) { byLoc.set(String(x.id), owners[0]); how.set(String(x.id), `delivered to the Ply job "${x.name}", which carries its number`); }
+  }
+  const tokens = jobs.map(j => ({ j, nums: numsOf(j).filter(n => n.replace(/\D/g, '').length >= 4) })).filter(t => t.nums.length);
+  return p => {
+    const loc = p.location && String(p.location.id);
+    if (loc && byLoc.has(loc)) return { job: byLoc.get(loc), why: how.get(loc) };
+    const text = ` ${norm(p.orderNumber)} ${norm(p.note)} `;
+    const hits = tokens.filter(t => t.nums.some(n => text.includes(` ${n} `)));
+    if (hits.length === 1) return { job: hits[0].j, why: `its ${(` ${norm(p.orderNumber)} `).includes(` ${hits[0].nums.find(n => text.includes(` ${n} `))} `) ? 'order number' : 'note'} names the job number${p.location && p.location.name ? ` (delivered to ${p.location.name})` : ''}` };
+    return null;
+  };
+}
+
 // Everything Ply has for one job, read live for the job's Purchasing tab: its Ply job, POs delivered there (and whether
 // each is here yet), and pick lists going there with their status. Each part says why if it can't be read.
 async function jobPly(db, jobId) {
@@ -321,10 +348,21 @@ async function jobPly(db, jobId) {
   try { const r = await request(db, 'GET', `/jobs/${encodeURIComponent(j.ply_id)}`, null, { quiet: true }); out.ply_job = { id: r.id, name: r.name, number: r.number || null, active: r.active !== false }; }
   catch (e) { note('Reading the Ply job', 'jobs:read', e); }
   try {
-    const pos = await listAll(db, '/purchase-orders', { locationId: j.ply_id });
-    out.pos = pos.map(p => { const here = get(db, 'SELECT id, number, status FROM purchase_orders WHERE ply_id = ?', String(p.id)), ign = get(db, 'SELECT reason FROM ply_ignored WHERE ply_id = ?', String(p.id));
+    // delivered to the linked Ply job, plus anything the import would match to this job (other Ply job records with its
+    // number, an order number or note naming it), plus POs that name the number but match more than one job
+    let plyJobs = null; try { plyJobs = await allPlyJobs(db); } catch { /* reported above if it matters */ }
+    const match = poMatcher(db, plyJobs);
+    const since = new Date(Date.now() - LOOKBACK_DAYS * 864e5).toISOString().slice(0, 10);
+    const every = await listAll(db, '/purchase-orders', { createdAfter: new Date(Date.now() - 3 * 365 * 864e5).toISOString().slice(0, 10) });
+    const nums = [norm(j.timeclock_job), norm(j.number)].filter(n => n && n.replace(/\D/g, '').length >= 4);
+    const pos = every.filter(p => { const m = match(p); if (m && m.job.id === j.id) return true;
+      return (p.location && String(p.location.id) === String(j.ply_id)) || nums.some(n => (` ${norm(p.orderNumber)} ${norm(p.note)} `).includes(` ${n} `)); });
+    out.pos = pos.map(p => {
+      const m = match(p), mine = m && m.job.id === j.id, old = String(p.createdAt || '').slice(0, 10) < since;
+      const why = mine ? m.why : m ? `matched to ${m.job.number} instead` : `delivered to ${(p.location && p.location.name) || 'a location that is not this job'}, and the job number in it matches more than one job`; const here = get(db, 'SELECT id, number, status FROM purchase_orders WHERE ply_id = ?', String(p.id)), ign = get(db, 'SELECT reason FROM ply_ignored WHERE ply_id = ?', String(p.id));
       return { id: p.id, order_number: p.orderNumber || null, status: p.status, supplier: p.supplier && p.supplier.name, total: p.totalCost ?? p.subtotal ?? null, created_at: p.createdAt, due_date: p.dueDate || null,
-        received_at: p.receivedAt || null, here: here ? { id: here.id, number: here.number, status: here.status } : null, removed: ign ? ign.reason || 'removed as a duplicate' : null }; });
+        received_at: p.receivedAt || null, here: here ? { id: here.id, number: here.number, status: here.status } : null, removed: ign ? ign.reason || 'removed as a duplicate' : null,
+        location: p.location && p.location.name || null, why, importable: mine && !old, old }; });
   } catch (e) { note('Reading POs', 'purchase_orders:read', e); }
   try {
     // the API can't filter pick lists by destination: read the newest few hundred and keep the ones going to this job
@@ -344,26 +382,26 @@ async function jobPly(db, jobId) {
 
 // POs created in Ply for a job (delivered to the job's Ply location) → a PO on the job here, logged in the job's notes.
 // One listing call covers every job; open jobs not yet linked to Ply are linked when Ply has a job with the same number.
-async function importJobPOs(db, H, { days = 180 } = {}) {
+async function importJobPOs(db, H, { days = LOOKBACK_DAYS } = {}) {
   const out = { imported: 0, linked_jobs: 0, received_lines: 0, skipped: 0, errors: [] };
   // link open jobs to Ply jobs made by hand in Ply (same job number)
   const unlinked = all(db, "SELECT id, number, title, timeclock_job FROM jobs WHERE ply_id IS NULL AND status NOT IN ('cancelled')");
-  if (unlinked.length) {
+  let plyJobs = null;
+  try { plyJobs = await allPlyJobs(db); } catch (e) { out.errors.push(`Reading Ply jobs: ${e.message}${/permission|scope/i.test(e.message) ? ' (the key needs jobs:read)' : ''}`); }
+  if (unlinked.length && plyJobs) {
     try {
-      const plyJobs = await allPlyJobs(db);
       for (const j of unlinked) {
         const m = matchPlyJob(j, plyJobs);
         if (m && !get(db, 'SELECT 1 x FROM jobs WHERE ply_id = ?', String(m.id))) { run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', String(m.id), j.id); out.linked_jobs++; }
       }
     } catch (e) { out.errors.push(`Linking jobs to Ply: ${e.message}${/permission|scope/i.test(e.message) ? ' (the key needs jobs:read)' : ''}`); }   // jobs already linked still get their POs
   }
-  const jobs = new Map(all(db, "SELECT id, number, ply_id FROM jobs WHERE ply_id IS NOT NULL").map(j => [String(j.ply_id), j]));
-  if (!jobs.size) return out;
+  const match = poMatcher(db, plyJobs);
   const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
   const pos = await listAll(db, '/purchase-orders', { createdAfter: since });
   for (const p of pos) {
-    const job = p.location && jobs.get(String(p.location.id));
-    if (!job) continue;                                                       // to a warehouse, truck or someone else's job
+    const m = match(p), job = m && m.job;
+    if (!job) continue;                                                       // to a warehouse or truck with no job named, or someone else's job
     if (get(db, 'SELECT 1 x FROM purchase_orders WHERE ply_id = ?', String(p.id))) continue;   // ours, or already imported
     if (get(db, 'SELECT 1 x FROM ply_ignored WHERE ply_id = ?', String(p.id))) continue;          // removed here as a duplicate
     try {
@@ -384,7 +422,7 @@ async function importJobPOs(db, H, { days = 180 } = {}) {
         items.forEach((it, i) => lineFromPly(db, id, it, i));
         const num = get(db, 'SELECT number FROM purchase_orders WHERE id = ?', id).number;
         run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', job.id, null,
-          `${num} logged from Ply${p.orderNumber ? ` (${p.orderNumber})` : ''}: ${sname}, ${items.length} line(s), $${(Number(p.totalCost) || sub).toFixed(2)} — ${String(p.status || '').toLowerCase().replace(/_/g, ' ')}`);
+          `${num} logged from Ply${p.orderNumber ? ` (${p.orderNumber})` : ''}: ${sname}, ${items.length} line(s), $${(Number(p.totalCost) || sub).toFixed(2)} — ${String(p.status || '').toLowerCase().replace(/_/g, ' ')}${m.why && !/^delivered to its Ply job$/.test(m.why) ? ` (matched: ${m.why})` : ''}`);
         return id;
       });
       out.imported++;

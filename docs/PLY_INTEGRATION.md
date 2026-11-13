@@ -61,3 +61,10 @@ Every Ply line must be a Ply catalog material. When a pick list or PO has lines 
   - It shows what removing it undoes: received material comes back off the job, and shop receipts come back out of stock. You pick the PO it duplicates, and a note goes on the job.
   - If it came from Ply, or was sent there, the Ply sync leaves that Ply PO alone from then on. It stays in Ply, so cancel it there if it shouldn't be ordered.
   - It's refused while a vendor bill is entered from it (void the bill first), or while its material is billed to the customer.
+- **Which Ply POs belong to a job:** Ply's API ties a PO to a job only by where it's delivered. So a PO is brought onto a job when:
+  - it's delivered to the job's linked Ply job;
+  - or it's delivered to another Ply job record carrying the same job number (a second record for the same project);
+  - or its order number or note names the job number (4+ characters), for POs delivered to the shop or a truck *for* the job.
+
+  Only POs from the last 2 years are brought in. The job's **In Ply for this job** panel lists every candidate from the last 3 years: how it matched, where it was delivered, and why it isn't here if it isn't.
+
