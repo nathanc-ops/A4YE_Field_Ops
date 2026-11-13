@@ -867,13 +867,20 @@ module.exports = function routesExt(app, db, X) {
   // ================================================================ accounting (admin only)
   app.get('/api/accounts', office, wrap((req, res) => {
     const bal = A.balances(db, { to: req.query.as_of || '9999-12-31' });
-    res.json(bal.filter(a => req.query.all || a.active));
+    const list = bal.filter(a => req.query.all || a.active);
+    if (req.user.role === 'admin' || req.query.meta) {   // which accounts are locked by automatic posting / have history (for Edit and Delete)
+      const meta = new Map(A.accountMeta(db).map(m => [m.id, m]));
+      for (const a of list) { const m = meta.get(a.id); a.system = m ? m.system : false; a.used = m ? m.used : true; }
+    }
+    res.json(list);
   }));
   app.post('/api/accounts', admin, wrap((req, res) => {
     if (!req.body.number || !req.body.name || !req.body.type) throw bad('Number, name and type are required');
-    res.json({ id: insert('accounts', pick(req.body, ['number', 'name', 'type', 'subtype', 'description', 'active'])) });
+    if (get(db, 'SELECT id FROM accounts WHERE number = ?', String(req.body.number).trim())) throw bad(`Account number ${req.body.number} is already used`);
+    res.json({ id: insert('accounts', pick({ ...req.body, number: String(req.body.number).trim(), name: String(req.body.name).trim() }, ['number', 'name', 'type', 'subtype', 'description', 'active'])) });
   }));
-  app.put('/api/accounts/:id', admin, wrap((req, res) => { update('accounts', req.params.id, pick(req.body, ['number', 'name', 'subtype', 'description', 'active'])); res.json({ ok: true }); }));
+  app.put('/api/accounts/:id', admin, wrap((req, res) => res.json(A.updateAccount(db, Number(req.params.id), pick(req.body, ['number', 'name', 'type', 'subtype', 'description', 'active'])))));
+  app.delete('/api/accounts/:id', admin, wrap((req, res) => { A.deleteAccount(db, Number(req.params.id)); res.json({ ok: true }); }));
 
   app.get('/api/journal', admin, wrap((req, res) => {
     const from = req.query.from || '0000-01-01', to = req.query.to || '9999-12-31';

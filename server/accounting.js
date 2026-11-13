@@ -261,8 +261,91 @@ function apAging(db) {
   return { buckets, total: r2(rows.reduce((s, r) => s + r.balance, 0)), bills: rows };
 }
 
+// ------------------------------------------------------------ chart of accounts maintenance
+// Accounts the program posts to by number. Their numbers and types are fixed (renaming is fine) and they can't be deleted,
+// or invoices, payments, bills, expenses, stock and labor would stop posting.
+const CORE_ACCOUNTS = ['1000', '1200', '1300', '2000', '2050', '2100', '2200', '3950', '4000', '4100', '5000', '5900', '6000'];
+function systemAccountNumbers(db) {
+  const s = settings(db);
+  const set = new Set([...CORE_ACCOUNTS, ...Object.values(CATEGORY_ACCOUNTS).flat()]);
+  for (const k of ['default_deposit_account', 'default_paid_from_account']) if (s[k]) {
+    const a = get(db, 'SELECT number FROM accounts WHERE number = ? OR id = ?', String(s[k]), Number(s[k]) || -1);
+    if (a) set.add(a.number);
+  }
+  return set;
+}
+// Everything that points at an account: every table with a foreign key to accounts, found from the schema so new tables are covered.
+function accountUsage(db, id) {
+  const out = [];
+  for (const { name } of all(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")) {
+    for (const fk of all(db, `PRAGMA foreign_key_list("${name}")`)) {
+      if (fk.table !== 'accounts' || name === 'accounts') continue;
+      const n = get(db, `SELECT COUNT(*) n FROM "${name}" WHERE "${fk.from}" = ?`, id).n;
+      if (n) out.push({ table: name, column: fk.from, count: n });
+    }
+  }
+  return out;
+}
+const USAGE_LABEL = { journal_lines: 'ledger line', bank_transactions: 'bank transaction', bank_imports: 'statement import', bank_rules: 'bank rule',
+  reconciliations: 'reconciliation', expenses: 'expense', payments: 'customer payment', bill_lines: 'bill line', bill_payments: 'bill payment',
+  plaid_accounts: 'bank feed', pricebook: 'price book item' };
+function describeUsage(usage) {
+  return usage.map(u => { const l = USAGE_LABEL[u.table] || u.table.replace(/_/g, ' '); return `${u.count} ${l}${u.count === 1 ? '' : 's'}`; }).join(', ');
+}
+const TYPES = ['asset', 'liability', 'equity', 'income', 'cogs', 'expense'];
+function updateAccount(db, id, b) {
+  const a = get(db, 'SELECT * FROM accounts WHERE id = ?', id);
+  if (!a) throw err('Account not found', 404);
+  const sys = systemAccountNumbers(db).has(a.number);
+  const ch = {};
+  if (b.name !== undefined) { const n = String(b.name || '').trim(); if (!n) throw err('Name is required'); ch.name = n; }
+  const num = b.number == null ? '' : String(b.number).trim();
+  if (b.number !== undefined && num !== a.number) {
+    if (!num) throw err('Number is required');
+    if (sys) throw err(`${a.number} is used by automatic posting, so its number can't change. You can rename it.`);
+    if (get(db, 'SELECT id FROM accounts WHERE number = ? AND id != ?', num, a.id)) throw err(`Account number ${num} is already used`);
+    ch.number = num;
+  }
+  if (b.type !== undefined && b.type !== a.type) {
+    if (!TYPES.includes(b.type)) throw err('Unknown account type');
+    if (sys) throw err(`${a.number} is used by automatic posting, so its type can't change`);
+    if (get(db, 'SELECT 1 FROM journal_lines WHERE account_id = ? LIMIT 1', a.id)) throw err("This account has ledger activity, so its type can't change (it would move past amounts between statements). Make a new account instead.");
+    ch.type = b.type;
+  }
+  if (b.subtype !== undefined && (b.subtype || null) !== a.subtype) {
+    const st = b.subtype || null;
+    if (sys) throw err(`${a.number} is used by automatic posting, so its detail can't change`);
+    if (st !== a.subtype && ['bank', 'credit_card'].includes(a.subtype) && get(db, 'SELECT 1 FROM bank_transactions WHERE account_id = ? LIMIT 1', a.id))
+      throw err('This account has bank transactions, so it has to stay a bank / credit card account');
+    ch.subtype = st;
+  }
+  if (b.description !== undefined) ch.description = b.description || null;
+  if (b.active !== undefined) {
+    const on = b.active === true || b.active === 1 || b.active === '1' ? 1 : 0;
+    if (!on && sys) throw err(`${a.number} is used by automatic posting and has to stay active`);
+    ch.active = on;
+  }
+  const keys = Object.keys(ch);
+  if (keys.length) run(db, `UPDATE accounts SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`, ...keys.map(k => ch[k]), a.id);
+  return get(db, 'SELECT * FROM accounts WHERE id = ?', a.id);
+}
+// Only an account nothing has ever touched can be deleted; one with history can be made inactive instead.
+function deleteAccount(db, id) {
+  const a = get(db, 'SELECT * FROM accounts WHERE id = ?', id);
+  if (!a) throw err('Account not found', 404);
+  if (systemAccountNumbers(db).has(a.number)) throw err(`${a.number} ${a.name} is used by automatic posting and can't be deleted. You can rename it.`);
+  const usage = accountUsage(db, a.id);
+  if (usage.length) throw Object.assign(err(`${a.number} ${a.name} can't be deleted because it's used by ${describeUsage(usage)}. Untick Active to hide it instead; its history stays in the books.`, 409), { usage });
+  run(db, 'DELETE FROM accounts WHERE id = ?', a.id);
+}
+function accountMeta(db) {
+  const sys = systemAccountNumbers(db);
+  return all(db, 'SELECT id, number FROM accounts').map(a => ({ id: a.id, system: sys.has(a.number), used: accountUsage(db, a.id).length > 0 }));
+}
+
 module.exports = {
   assertNotReconciled, accountId, assertOpen, closedThrough, post, unpost, postInvoice, postPayment, postBill, postBillPayment, postExpense, postJobMaterial,
   postInventoryAdjustment, postLaborWeek, laborStatus, laborForWeek, mondayOf, rebuild, billTotals, refreshBillStatus, expenseAccount,
   trialBalance, incomeStatement, balanceSheet, generalLedger, apAging, balances,
+  systemAccountNumbers, accountUsage, updateAccount, deleteAccount, accountMeta,
 };

@@ -1221,11 +1221,17 @@ async function viewAccounting() {
       <a href="#/accounting?tab=statements">Full statements →</a></div>`;
   }
   if (tab === 'coa') {
-    E.innerHTML = `<div class="card"><div class="row spread"><h2>Chart of accounts</h2><button class="btn" id="newacct">+ Account</button></div>
-      ${table([{ label: '#', key: 'number' }, { label: 'Account', html: a => `<b>${esc(a.name)}</b>` }, { label: 'Type', get: a => label(a.type) }, { label: 'Detail', get: a => label(a.subtype || '') },
-        { label: 'Balance', num: 1, get: a => money(a.balance) }, { label: '', html: a => `<button class="btn sm" data-ea="${a.id}">Edit</button>` }], S.accounts, { onClick: a => go('#/accounting/ledger/' + a.id) })}</div>`;
+    const showAll = params.get('inactive') === '1';
+    const accts = showAll ? await GET('/accounts?all=1') : S.accounts;
+    E.innerHTML = `<div class="card"><div class="row spread"><h2>Chart of accounts</h2><div class="row"><label class="check small"><input type="checkbox" id="showinact" ${showAll ? 'checked' : ''}> Show inactive</label><button class="btn" id="newacct">+ Account</button></div></div>
+      <p class="small muted">Click Edit to rename an account. 🔒 accounts are used by automatic posting: you can rename them, but their number and type stay put. An account can be deleted only if nothing has ever been posted to it; otherwise untick Active to hide it.</p>
+      ${table([{ label: '#', html: a => `${esc(a.number)}${a.system ? ' <span title="Used by automatic posting: rename only">🔒</span>' : ''}` }, { label: 'Account', html: a => `<b>${esc(a.name)}</b>${a.active ? '' : ' <span class="pill">Inactive</span>'}` }, { label: 'Type', get: a => label(a.type) }, { label: 'Detail', get: a => label(a.subtype || '') },
+        { label: 'Balance', num: 1, get: a => money(a.balance) },
+        { label: '', html: a => `<div class="status-btns"><button class="btn sm" data-ea="${a.id}">Edit</button>${!a.system && !a.used ? `<button class="btn sm danger" data-da="${a.id}" title="Delete this unused account">✕</button>` : ''}</div>` }], accts, { onClick: a => go('#/accounting/ledger/' + a.id) })}</div>`;
     $('#newacct').onclick = () => accountForm({});
-    $$('[data-ea]').forEach(b => b.onclick = () => accountForm(S.accounts.find(a => a.id === Number(b.dataset.ea))));
+    $('#showinact').onchange = e => go('#/accounting' + qs({ tab: 'coa', inactive: e.target.checked ? '1' : '' }));
+    $$('[data-ea]').forEach(b => b.onclick = () => accountForm(accts.find(a => a.id === Number(b.dataset.ea))));
+    $$('[data-da]').forEach(b => b.onclick = () => deleteAccountPrompt(accts.find(a => a.id === Number(b.dataset.da))));
   }
   if (tab === 'journal') {
     const from = params.get('from') || addDaysStr(todayStr(), -30), to = params.get('to') || todayStr(), src = params.get('src') || '';
@@ -1308,14 +1314,27 @@ async function statements(E, params) {
   $('#sf').onsubmit = e => { e.preventDefault(); const f = e.target; go('#/accounting' + qs({ tab: 'statements', st, from: f.from && f.from.value, to: f.to && f.to.value, as_of: f.as_of && f.as_of.value })); };
 }
 function accountForm(a) {
-  formModal({
-    title: a.id ? `Edit ${a.number}` : 'New account', values: a,
-    fields: [{ name: 'number', label: 'Number', required: true }, { name: 'name', label: 'Name', required: true },
-      ...(a.id ? [] : [{ name: 'type', label: 'Type', type: 'select', options: ['asset', 'liability', 'equity', 'income', 'cogs', 'expense'], required: true }]),
-      { name: 'subtype', label: 'Detail', type: 'select', options: [['bank', 'Bank account'], ['credit_card', 'Credit card'], ['fixed', 'Fixed asset']], blank: '—' },
-      { name: 'description', label: 'Description', full: true }, { name: 'active', label: 'Active', type: 'checkbox', default: 1 }],
+  const locked = !!a.system;
+  const typeOk = !a.id || (!a.system && !a.used);
+  const m = formModal({
+    title: a.id ? `Edit ${a.number} ${a.name}` : 'New account', values: a,
+    fields: [...(locked ? [{ name: 'number', type: 'hidden' }] : [{ name: 'number', label: 'Number', required: true }]), { name: 'name', label: 'Name', required: true },
+      ...(typeOk ? [{ name: 'type', label: 'Type', type: 'select', options: ['asset', 'liability', 'equity', 'income', 'cogs', 'expense'], required: true }] : []),
+      ...(locked ? [] : [{ name: 'subtype', label: 'Detail', type: 'select', options: [['bank', 'Bank account'], ['credit_card', 'Credit card'], ['fixed', 'Fixed asset'],
+        ...(a.subtype && !['bank', 'credit_card', 'fixed'].includes(a.subtype) ? [[a.subtype, label(a.subtype)]] : [])], blank: '—' }]),
+      { name: 'description', label: 'Description', full: true }, ...(locked ? [] : [{ name: 'active', label: 'Active', type: 'checkbox', default: 1 }])],
+    extra: a.id ? `<p class="small muted" style="margin-top:8px">${locked ? `🔒 Account ${esc(a.number)} is used by automatic posting. You can rename it; its number and type can't change and it can't be deleted.`
+      : a.used ? "This account has history, so its type is fixed and it can't be deleted. Untick Active to hide it from lists; its history stays in the books." : 'Nothing has been posted to this account yet.'}</p>
+      ${!locked && !a.used ? '<button type="button" class="btn danger sm" data-delacct>Delete account</button>' : ''}` : '',
     submit: async d => { if (a.id) await PUT('/accounts/' + a.id, d); else await POST('/accounts', d); S.accounts = null; toast('Saved'); route(); },
   });
+  const del = $('[data-delacct]', m.el);
+  if (del) del.onclick = async () => { if (await deleteAccountPrompt(a)) m.close(); };
+}
+async function deleteAccountPrompt(a) {
+  if (!confirm(`Delete account ${a.number} ${a.name}? This can't be undone.`)) return false;
+  try { await DEL('/accounts/' + a.id); } catch (e) { toast(e.message, true); return false; }
+  S.accounts = null; toast(`Deleted ${a.number} ${a.name}`); route(); return true;
 }
 async function showEntry(id) {
   const e = await GET('/journal/' + id);
