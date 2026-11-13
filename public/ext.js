@@ -984,13 +984,14 @@ async function viewPO(id) {
   const [vendors, pb] = await Promise.all([loadVendors(true), loadPricebook(true)]);
   let po = id === 'new' ? { lines: [], status: 'draft', vendor_id: params.get('vendor_id') ? Number(params.get('vendor_id')) : null, job_id: params.get('job_id') ? Number(params.get('job_id')) : null, deliver_to: params.get('job_id') ? 'job' : 'shop', tax: 0, shipping: 0, order_date: todayStr() } : await GET('/purchase-orders/' + id);
   const locked = ['received', 'cancelled'].includes(po.status);
+  const codeLocked = po.status === 'cancelled';   // cost codes stay editable after receiving
   const plyOn = S.settings.ply_enabled === '1';
   const row = (l, i) => `<tr data-i="${i}">
     <td><input class="desc" data-k="description" value="${esc(l.description)}" list="pblist" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="qty" value="${esc(l.qty)}" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="unit_cost" value="${esc(l.unit_cost)}" ${locked ? 'disabled' : ''}></td>
-    <td class="cccell"><input class="ccin" data-k="cc_text" list="cclist" placeholder="Search code or name" value="${esc(ccText(l.cost_code_id))}" ${locked ? 'disabled' : ''} title="${esc(ccText(l.cost_code_id))}">
-      ${!locked && (l._sugg || []).length && !(l._sugg[0] && String(l._sugg[0].id) === String(l.cost_code_id)) ? `<div class="ccsug">${l._sugg.map(sg => `<button type="button" class="chip" data-cc="${sg.id}" title="${esc(sg.why)}">${String(sg.id) === String(l.cost_code_id) ? '✓ ' : ''}${esc(sg.code)} ${esc(sg.name)}</button>`).join('')}</div>` : ''}</td>
+    <td class="cccell"><input class="ccin" data-k="cc_text" list="cclist" placeholder="Search code or name" value="${esc(ccText(l.cost_code_id))}" ${codeLocked ? 'disabled' : ''} title="${esc(ccText(l.cost_code_id))}">
+      ${!codeLocked && (l._sugg || []).length && !(l._sugg[0] && String(l._sugg[0].id) === String(l.cost_code_id)) ? `<div class="ccsug">${l._sugg.map(sg => `<button type="button" class="chip" data-cc="${sg.id}" title="${esc(sg.why)}">${String(sg.id) === String(l.cost_code_id) ? '✓ ' : ''}${esc(sg.code)} ${esc(sg.name)}</button>`).join('')}</div>` : ''}</td>
     <td class="num">${num(l.qty_received || 0)}</td><td class="num" data-ext>${money((+l.qty || 0) * (+l.unit_cost || 0))}</td>
     <td>${locked || l.qty_received ? '' : `<button type="button" class="btn sm danger" data-rm="${i}">✕</button>`}</td></tr>`;
   $('#view').innerHTML = setTop(id === 'new' ? 'New purchase order' : `PO ${esc(po.number)}`, id === 'new' ? '' : `${pill(po.status)} ${po.ply_id ? `<span class="pill good">Ply: ${esc(po.ply_status || 'sent')}</span>` : ''}
@@ -1033,11 +1034,17 @@ async function viewPO(id) {
     const l = po.lines[e.target.closest('tr').dataset.i], c = ccFromText(e.target.value);
     if (c === undefined) { toast('Pick a cost code from the list (type part of the code or name)', true); e.target.value = ccText(l.cost_code_id); return; }
     l.cost_code_id = c ? c.id : null; draw();
+    if (locked && l.id) saveCode(l);
   });
   tb.addEventListener('click', e => {
     const b = e.target.closest('[data-rm]'); if (b) { po.lines.splice(+b.dataset.rm, 1); draw(); return; }
-    const s = e.target.closest('[data-cc]'); if (s) { po.lines[s.closest('tr').dataset.i].cost_code_id = Number(s.dataset.cc); draw(); }
+    const s = e.target.closest('[data-cc]'); if (s) { const l = po.lines[s.closest('tr').dataset.i]; l.cost_code_id = Number(s.dataset.cc); draw(); if (locked && l.id) saveCode(l); }
   });
+  // on a received PO the rest is locked, so a code change saves on its own
+  const saveCode = async l => {
+    const r = await act(() => PUT(`/purchase-orders/${po.id}/codes`, { lines: [{ id: l.id, cost_code_id: l.cost_code_id }] })).catch(() => null);
+    if (r) toast(r.changed ? `Cost code saved${r.received_updated ? ' — received material on the job updated too' : ''}` : 'No change');
+  };
   // suggestions: price-book code, how it was coded before, trade words; refreshed as the description is typed
   const jobOf = () => (form.job_id && form.job_id.value) || po.job_id || '';
   const suggestFor = l => { clearTimeout(l._t); l._t = setTimeout(async () => {
@@ -1047,7 +1054,7 @@ async function viewPO(id) {
     draw();
     if (ix != null && key) { const el = $(`tr[data-i="${ix}"] [data-k="${key}"]`, tb); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* number inputs */ } } }
   }, 450); };
-  if (!locked) { const need = po.lines.filter(l => !l.cost_code_id && String(l.description || '').trim());
+  if (!codeLocked) { const need = po.lines.filter(l => !l.cost_code_id && String(l.description || '').trim());
     if (need.length) POST('/cost-codes/suggest', { job_id: jobOf(), lines: need.map(l => ({ description: l.description, pricebook_id: l.pricebook_id })) }).then(r => { need.forEach((l, i) => { l._sugg = r[i] || []; }); draw(); }).catch(() => null); }
   form.tax.oninput = totals; form.shipping.oninput = totals;
   form.job_id.onchange = () => { form.deliver_to.value = form.job_id.value ? 'job' : 'shop'; };

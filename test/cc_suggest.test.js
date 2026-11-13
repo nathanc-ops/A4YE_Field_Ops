@@ -51,3 +51,27 @@ test('the price-book code wins; then how the same item was coded before', async 
   const many = (await call('admin', 'POST', '/cost-codes/suggest', { lines: [{ description: 'EMT 3/4 10ft' }, { description: 'widget' }] })).data;
   assert.equal(many[0][0].code, '0810'); assert.deepEqual(many[1], []);
 });
+
+test('a received PO\'s cost code can still be changed; the received material and its bill line follow', async () => {
+  const cust = (await call('admin', 'POST', '/customers', { name: 'Code Customer' })).data.id;
+  const job = (await call('admin', 'POST', '/jobs', { customer_id: cust, title: 'Code job' })).data.id;
+  const vend = (await call('admin', 'POST', '/vendors', { name: 'Code Supply' })).data.id;
+  const po = (await call('admin', 'POST', '/purchase-orders', { vendor_id: vend, job_id: job, deliver_to: 'job', lines: [{ description: '4 square box', qty: 10, unit_cost: 3 }] })).data.id;
+  await call('admin', 'POST', `/purchase-orders/${po}/receive`, { all: true });
+  assert.equal(db.prepare('SELECT status FROM purchase_orders WHERE id = ?').get(po).status, 'received');
+  const line = db.prepare('SELECT * FROM po_lines WHERE po_id = ?').get(po);
+  const jm = db.prepare('SELECT * FROM job_materials WHERE po_line_id = ?').get(line.id);
+  const bill = db.prepare("INSERT INTO bills (vendor_id, po_id, vendor_invoice, bill_date, status) VALUES (?, ?, 'B-9', date('now'), 'open')").run(vend, po).lastInsertRowid;
+  db.prepare('INSERT INTO bill_lines (bill_id, account_id, description, amount, job_id, job_material_id) VALUES (?,?,?,?,?,?)').run(bill, db.prepare("SELECT id FROM accounts WHERE number = '5100'").get().id, 'boxes', 30, job, jm.id);
+  // the normal save still refuses line edits on a received PO
+  assert.match((await call('admin', 'PUT', `/purchase-orders/${po}`, { lines: [{ id: line.id, description: 'x', qty: 1, unit_cost: 1 }] })).data.error, /locked/);
+  const r = (await call('admin', 'PUT', `/purchase-orders/${po}/codes`, { lines: [{ id: line.id, cost_code_id: cc('0870') }] })).data;
+  assert.equal(r.changed, 1); assert.equal(r.received_updated, 1);
+  assert.equal(db.prepare('SELECT cost_code_id FROM po_lines WHERE id = ?').get(line.id).cost_code_id, cc('0870'));
+  assert.equal(db.prepare('SELECT cost_code_id FROM job_materials WHERE id = ?').get(jm.id).cost_code_id, cc('0870'));
+  assert.equal(db.prepare('SELECT cost_code_id FROM bill_lines WHERE job_material_id = ?').get(jm.id).cost_code_id, cc('0870'));
+  assert.match(db.prepare('SELECT body FROM job_notes WHERE job_id = ? ORDER BY id DESC').get(job).body, /"4 square box" none → 0870 \(received material updated too\)/);
+  assert.equal((await call('admin', 'PUT', `/purchase-orders/${po}/codes`, { lines: [{ id: line.id, cost_code_id: cc('0870') }] })).data.changed, 0, 'same code: nothing');
+  assert.equal((await call('admin', 'PUT', `/purchase-orders/${po}/codes`, { lines: [{ id: 999999, cost_code_id: cc('0870') }] })).status, 400);
+  assert.equal((await call('tech', 'PUT', `/purchase-orders/${po}/codes`, { lines: [{ id: line.id, cost_code_id: null }] })).status, 403);
+});

@@ -540,13 +540,26 @@ module.exports = function routesExt(app, db, X) {
     const billed = get(db, "SELECT COUNT(*) n FROM bills WHERE po_id = ? AND status != 'void'", po.id).n > 0;
     return { ...po, lines, subtotal, total: r2(subtotal + (po.tax || 0) + (po.shipping || 0)), received_value, billed };
   };
+  // a PO line's cost code, carried to the job materials received from it and the vendor-bill lines for those
+  // (job costing reads those). Returns the old and new code when it changed.
+  function setLineCode(line, codeId) {
+    codeId = codeId ? Number(codeId) : null;
+    if ((line.cost_code_id || null) === codeId) return null;
+    if (codeId && !get(db, 'SELECT 1 x FROM cost_codes WHERE id = ?', codeId)) throw bad('That cost code no longer exists');
+    run(db, 'UPDATE po_lines SET cost_code_id = ? WHERE id = ?', codeId, line.id);
+    const mats = all(db, 'SELECT id FROM job_materials WHERE po_line_id = ?', line.id).map(m => m.id);
+    for (const m of mats) { run(db, 'UPDATE job_materials SET cost_code_id = ? WHERE id = ?', codeId, m); run(db, 'UPDATE bill_lines SET cost_code_id = ? WHERE job_material_id = ?', codeId, m); }
+    const code = id => id ? (get(db, 'SELECT code FROM cost_codes WHERE id = ?', id) || {}).code : 'none';
+    return { from: code(line.cost_code_id), to: code(codeId), received: mats.length };
+  }
   function savePOLines(poId, lines) {
     if (!Array.isArray(lines)) return;
     const keep = new Set();
     lines.forEach((l, i) => {
       if (!l.description) return;
       const data = { pricebook_id: l.pricebook_id || null, description: l.description, qty: Number(l.qty) || 0, unit_cost: Number(l.unit_cost) || 0, cost_code_id: l.cost_code_id || null, sort: i };
-      if (l.id && get(db, 'SELECT 1 x FROM po_lines WHERE id = ? AND po_id = ?', l.id, poId)) { update('po_lines', l.id, data); keep.add(Number(l.id)); }
+      const cur = l.id ? get(db, 'SELECT * FROM po_lines WHERE id = ? AND po_id = ?', l.id, poId) : null;
+      if (cur) { setLineCode(cur, data.cost_code_id); update('po_lines', l.id, data); keep.add(Number(l.id)); }
       else keep.add(insert('po_lines', { po_id: poId, ...data }));
     });
     for (const l of all(db, 'SELECT id, qty_received FROM po_lines WHERE po_id = ?', poId))
@@ -581,6 +594,17 @@ module.exports = function routesExt(app, db, X) {
     update('purchase_orders', po.id, { ...pick(req.body, PO_FIELDS), ...(req.body.status === 'cancelled' ? { status: 'cancelled' } : {}) });
     savePOLines(po.id, req.body.lines);
     res.json({ ok: true });
+  }));
+  // cost codes on any PO, received ones included (lines are otherwise locked once received)
+  app.put('/api/purchase-orders/:id/codes', office, wrap((req, res) => {
+    const po = mustGet('purchase_orders', +req.params.id), changes = [];
+    for (const l of req.body.lines || []) {
+      const line = get(db, 'SELECT * FROM po_lines WHERE id = ? AND po_id = ?', +l.id, po.id); if (!line) throw bad('That line is not on this PO');
+      const c = setLineCode(line, l.cost_code_id); if (c) changes.push({ ...c, description: line.description });
+    }
+    if (changes.length && po.job_id) run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', po.job_id, req.user.id,
+      `${po.number}: cost code changed — ${changes.map(c => `"${c.description}" ${c.from} → ${c.to}${c.received ? ' (received material updated too)' : ''}`).join('; ')}`);
+    res.json({ ok: true, changed: changes.length, received_updated: changes.reduce((a, c) => a + c.received, 0) });
   }));
   app.delete('/api/purchase-orders/:id', office, wrap((req, res) => {
     const po = mustGet('purchase_orders', req.params.id);

@@ -451,6 +451,7 @@ Each PO line's cost code is a **search box**. Type part of the code or name ("08
   - a small nudge for codes in the job's budget.
 - **Demolition codes** are suggested only when the line says remove or demo.
 - **When opening a PO,** lines with no code get suggestions right away.
+- **After receiving:** a PO's cost codes can still be changed after it's marked received; the rest of the PO stays locked. The change saves as soon as you pick a code. The job-material lines received from that PO line, and the vendor-bill lines for them, move to the new code too, so job costing follows. A note goes on the job.
 
 ## Pick lists from the field
 
