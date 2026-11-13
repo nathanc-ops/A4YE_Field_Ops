@@ -175,6 +175,17 @@ A list of every job in the date range. **Dates are** picks which date counts: cr
 - The top cards show totals, with a count of jobs per status underneath. **Export CSV** downloads the list.
 - **Click a job** for its one-page report: customer and site, dates, scope and completion notes, visits, hours by person, materials, permits, estimates and invoices, emails and calls, and notes. Use **Print / save as PDF** to print or save it.
 
+## 🎤 Speak the scope (estimates)
+
+On any estimate (office or a tech's field estimate), **🎤 Speak the scope** under the line items opens a microphone.
+- **Talking:** say what the customer wants the way you'd tell the office. The words appear in a box you can correct or type into. The browser does the listening: Chrome, Edge, and Safari on iPhone and iPad work, on the https address. Where it can't listen (Firefox), use the phone keyboard's 🎤 dictation key or type.
+- **Building:** **Build the estimate with Claude** sends the text, not audio, to Claude with your price book. It returns:
+  - lines that use **price-book items at price-book prices**;
+  - **custom lines** with a suggested price, marked *priced by Claude — check*, only where the price book has nothing that fits;
+  - its assumptions, and questions to confirm with the customer.
+- **Adding:** tick the lines you want and press **Add**. The estimate title fills in if it was empty, and you can choose to put the assumptions in *Notes to customer*. Nothing is saved until you press **Save**, and the usual field-estimate rules (review, custom lines, discounts) still apply.
+- **Setup:** it uses the Anthropic API key from Settings → Plan takeoff (Claude), with the same model as the plan takeoff, at medium effort. Each build is one request.
+
 ## Emails & calls
 
 Each **customer**, **job** (tab **Emails & calls**), **estimate** (under the lines) and **Estimating takeoff** (tab **Calls & emails**) has a communication log.

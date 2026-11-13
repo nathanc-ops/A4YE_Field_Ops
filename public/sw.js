@@ -3,7 +3,7 @@
 //  - The app's own files (HTML, JS, CSS, icons) are fetched from the network first, so an update shows up right away;
 //    the last copy is kept and used only when the network is down.
 //  - /api/* and customer pages (/p/...) are never cached: data always comes live from the server.
-const CACHE = 'fieldops-shell-v25';
+const CACHE = 'fieldops-shell-v26';
 const SHELL = ['/', '/styles.css', '/app.js', '/lookup.js', '/ext.js', '/billing.js', '/import.js', '/projects.js', '/report_doc.js', '/workbook.js', '/field.js', '/notify.js', '/kpi.js', '/estimating.js', '/pipeline.js',
   '/brand/a4y-logo.png', '/brand/favicon.png', '/icons/icon-192.png', '/manifest.webmanifest'];
 

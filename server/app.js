@@ -1433,6 +1433,7 @@ function createApp(db) {
   require('./kpi')(app, db, { wrap, bad, admin });
   require('./estimating')(app, db, { wrap, bad });
   require('./takeoff')(app, db, { wrap, bad });
+  require('./voice_estimate')(app, db, { wrap, bad });
   require('./pipeline')(app, db, { wrap, bad, office, today, addDays });
 
   // ------------------------------------------------------------ static

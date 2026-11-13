@@ -685,6 +685,62 @@ async function jobSheet(R, id, setCsv) {
   setCsv(null);
 }
 
+// ---- 🎤 speak the scope: the browser's speech-to-text fills an editable transcript; Claude turns it into lines from
+//      the price book; the person ticks which lines to add. Nothing is saved until they press Save on the estimate.
+function voiceScope({ doc, form, opt, draw, techMode }) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const m = modal(`<h2>🎤 Speak the scope</h2>
+    <p class="small muted">Say what the customer wants, like you'd tell the office: <i>"Add two 20 amp GFCI outlets in the garage on a new circuit, swap the panel cover, and put four 6 inch LED cans in the kitchen."</i> You can fix the words before Claude builds it.</p>
+    ${SR ? '<div class="row" style="gap:10px;align-items:center"><button type="button" class="btn go" id="vmic">🎤 Start talking</button><span class="small muted" id="vstate">Microphone off</span></div>'
+      : '<div class="alert info">This browser can\'t listen here (Firefox, or the page isn\'t on https). Tap the 🎤 on your phone\'s keyboard to dictate into the box, or type.</div>'}
+    <textarea id="vtext" rows="7" style="width:100%;margin-top:8px" placeholder="What you say appears here. You can type or fix it too."></textarea>
+    <div class="small muted" id="vint" style="min-height:1.2em"></div>
+    <div id="vout"></div>
+    <div class="actions"><button type="button" class="btn" data-x>Close</button><button type="button" class="btn primary" id="vgo">Build the estimate with Claude</button></div>`, { wide: true });
+  const ta = $('#vtext', m.el), state = $('#vstate', m.el), interim = $('#vint', m.el);
+  let rec = null, on = false;
+  const stop = () => { on = false; if (rec) try { rec.stop(); } catch { /* already stopped */ } if ($('#vmic', m.el)) { $('#vmic', m.el).textContent = '🎤 Start talking'; $('#vmic', m.el).className = 'btn go'; } if (state) state.textContent = 'Microphone off'; interim.textContent = ''; };
+  if (SR) $('#vmic', m.el).onclick = () => {
+    if (on) return stop();
+    rec = new SR(); rec.lang = 'en-US'; rec.continuous = true; rec.interimResults = true;
+    rec.onresult = e => { let tmp = ''; for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) ta.value = (ta.value ? ta.value.replace(/\s*$/, ' ') : '') + t.trim(); else tmp += t; } interim.textContent = tmp; };
+    rec.onerror = e => { state.textContent = e.error === 'not-allowed' ? 'Microphone blocked — allow it in the browser, or type' : `Stopped (${e.error})`; on = false; };
+    rec.onend = () => { if (on) { try { rec.start(); } catch { stop(); } } };   // phones stop after a pause: keep listening until they tap Stop
+    try { rec.start(); on = true; $('#vmic', m.el).textContent = '⏹ Stop'; $('#vmic', m.el).className = 'btn stop'; state.textContent = 'Listening… talk normally'; } catch (e) { state.textContent = e.message; }
+  };
+  const close = m.close; m.close = () => { stop(); close(); };
+  $('[data-x]', m.el).onclick = () => m.close();
+  $('#vgo', m.el).onclick = async () => {
+    stop();
+    const scope = ta.value.trim(); if (scope.length < 10) return toast('Say or type a bit more about the work', true);
+    const out = $('#vout', m.el), go = $('#vgo', m.el);
+    go.disabled = true; out.innerHTML = '<p class="muted">Claude is building the estimate from your price book… (usually 15–40 seconds)</p>';
+    let r;
+    try { r = await POST('/estimates/voice-draft', { scope, customer_id: form.customer_id && form.customer_id.value || doc.customer_id || null, job_id: doc.job_id || null, existing: doc.items.map(i => i.description).filter(Boolean) }); }
+    catch (e) { go.disabled = false; out.innerHTML = `<p class="bad">${esc(e.message)}</p>`; return; }
+    go.disabled = false; go.textContent = 'Build it again';
+    const custom = r.lines.filter(l => !l.from_book).length;
+    out.innerHTML = `<div class="card" style="margin-top:10px"><h3 style="margin-top:0">${esc(r.title || 'Estimate')}</h3><p class="small">${esc(r.summary || '')}</p>
+      <table class="items"><thead><tr><th></th><th>Line</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Total</th></tr></thead><tbody>
+      ${r.lines.map((l, i) => `<tr><td><input type="checkbox" data-vl="${i}" checked style="width:auto"></td><td>${esc(l.description)} ${l.from_book ? '<span class="pill">price book</span>' : '<span class="pill warn" title="Not in the price book: Claude suggested this price">priced by Claude — check</span>'}<div class="small muted">${esc(l.why || '')}</div></td>
+        <td class="num">${num(l.qty)}</td><td class="num">${money(l.unit_price)}</td><td class="num">${money(l.qty * l.unit_price)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No lines — add more detail and build it again</td></tr>'}</tbody></table>
+      ${custom && techMode && S.settings.tech_custom_lines === 'block' ? '<p class="small warn">Custom lines aren\'t allowed for field estimates here — untick them, or the office has to add them.</p>' : ''}
+      ${r.assumptions.length ? `<h4>Assumptions</h4><ul class="small">${r.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : ''}
+      ${r.questions.length ? `<h4>Check with the customer</h4><ul class="small">${r.questions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : ''}
+      <label class="check"><input type="checkbox" id="vnotes" ${r.assumptions.length ? '' : 'disabled'}> Put the assumptions in "Notes to customer"</label>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn primary" id="vadd">Add the ticked lines to the estimate</button></div></div>`;
+    $('#vadd', m.el).onclick = () => {
+      const pick = $$('[data-vl]', m.el).filter(c => c.checked).map(c => r.lines[+c.dataset.vl]);
+      if (!pick.length) return toast('Tick at least one line', true);
+      for (const l of pick) doc.items.push({ pricebook_id: l.pricebook_id, description: l.description, qty: l.qty, unit_price: l.unit_price, unit_cost: l.unit_cost ?? 0, taxable: l.taxable ?? 1, cost_code_id: l.cost_code_id || null, opt: opt() });
+      if (form.title && !form.title.value.trim() && r.title) form.title.value = r.title;
+      if ($('#vnotes', m.el).checked && form.notes) form.notes.value = [form.notes.value.trim(), r.assumptions.map(a => `• ${a}`).join('\n')].filter(Boolean).join('\n\n');
+      draw(); m.close();
+      toast(`${pick.length} line(s) added — check them, then Save`);
+    };
+  };
+}
+
 // after a hold change: say whether the calendar invite went
 function inviteToast(r, fallback) {
   const i = r && r.invite;
@@ -1154,7 +1210,7 @@ async function viewDoc(kind, id) {
       <datalist id="pblist">${pb.map(p => `<option value="${esc(p.name)}">${esc(p.code || '')} · ${money(p.unit_price)}</option>`).join('')}</datalist>
       ${isEst ? '<div id="optbar"></div>' : ''}
       <div class="table-wrap"><table class="items"><thead><tr><th>Description (type to search price book)</th><th>Qty</th><th>Price</th>${seeCosts ? '<th>Your cost</th>' : ''}<th>Cost code</th><th>Tax</th><th class="num">Amount</th><th></th></tr></thead><tbody id="items"></tbody></table></div>
-      ${locked ? '' : '<div class="row" style="margin-top:8px"><button type="button" class="btn" id="addline">+ Line</button><button type="button" class="btn" id="addlabor">+ Labor hours</button></div>'}
+      ${locked ? '' : '<div class="row" style="margin-top:8px"><button type="button" class="btn" id="addline">+ Line</button><button type="button" class="btn" id="addlabor">+ Labor hours</button>' + (isEst ? '<button type="button" class="btn primary" id="voicebtn" title="Say (or type) the scope; Claude builds the lines from the price book">🎤 Speak the scope</button>' : '') + '</div>'}
       <div class="row" style="align-items:flex-start;margin-top:14px">
         <div class="grow form-grid" style="max-width:520px">
           ${fieldHtml({ name: 'tax_rate', label: techMode ? 'Tax rate % (set by office)' : 'Tax rate %', type: 'number' }, doc.tax_rate)}${fieldHtml({ name: 'discount', label: techMode ? `Discount $ (up to ${maxDisc}% without review)` : 'Discount $', type: 'number' }, doc.discount)}
@@ -1287,6 +1343,7 @@ async function viewDoc(kind, id) {
       const loaded = S.users.filter(u => u.role === 'tech' && u.hourly_wage).map(u => u.hourly_wage * (1 + u.burden_pct / 100));
       doc.items.push({ description: 'Electrical labor', qty: 1, unit_price: rate, unit_cost: loaded.length ? Math.round(loaded.reduce((a, b) => a + b, 0) / loaded.length * 100) / 100 : 0, taxable: 0, opt: optTab }); draw();
     };
+    if ($('#voicebtn')) $('#voicebtn').onclick = () => voiceScope({ doc, form, opt: () => optTab, draw, techMode });
   }
   const loadSub = async () => {
     const cid = form.customer_id.value;
