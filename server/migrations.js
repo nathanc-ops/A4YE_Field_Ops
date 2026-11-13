@@ -1148,6 +1148,8 @@ const MIGRATIONS = [
   // 49: Ply records removed here on purpose (a doubled-up PO): the sync leaves them alone instead of bringing them back
   db => { db.exec(`CREATE TABLE IF NOT EXISTS ply_ignored (ply_id TEXT PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'po', number TEXT, job_id INTEGER, reason TEXT,
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))`); },
+  // 50: staff who aren't techs (a service manager running calls) can sit on the schedule like a tech
+  db => { addColumn(db, 'users', 'on_schedule', 'INTEGER NOT NULL DEFAULT 0'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

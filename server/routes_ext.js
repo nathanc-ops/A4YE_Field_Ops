@@ -383,7 +383,8 @@ module.exports = function routesExt(app, db, X) {
     const day = req.query.date || today();
     const from = C.startOfDay(day), to = C.endOfDay(day);
     const appts = H.appointments("a.start < ? AND a.end > ? AND a.status != 'cancelled'", [to, from]);
-    const techs = all(db, "SELECT id, name, color, title, phone FROM users WHERE active = 1 AND role = 'tech' ORDER BY name").map(u => {
+    // techs, and anyone else set to show on the schedule (Team → Show on the schedule, e.g. a service manager)
+    const techs = all(db, "SELECT id, name, color, title, phone, role FROM users WHERE active = 1 AND (role = 'tech' OR on_schedule = 1) ORDER BY name").map(u => {
       const mine = appts.filter(a => a.tech_ids.includes(u.id));
       const clock = get(db, `SELECT t.*, j.number job_number FROM time_entries t LEFT JOIN jobs j ON j.id = t.job_id WHERE t.user_id = ? AND t.clock_out IS NULL`, u.id);
       return { ...u, booked_hours: r2(mine.reduce((s, a) => s + C.visitHoursOnDay(a, day), 0)), appointments: mine.length, clock };

@@ -250,9 +250,9 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ users / employees
-  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id'];
+  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id', 'on_schedule'];
   app.get('/api/users', wrap((req, res) => {
-    const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions';
+    const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active, on_schedule' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions, on_schedule';
     const s = D.settings(db);
     res.json(all(db, `SELECT ${cols} FROM users ORDER BY active DESC, name`).map(u => {
       if (req.user.role !== 'admin') { delete u.permissions; return u; }

@@ -422,6 +422,10 @@ A visit can span several days, e.g. a crew 7:00–3:30 from the 16th to the 20th
 - Choose *Every day of the visit* to change the whole visit as before.
 - A customer who was emailed a confirmation is only flagged when a day's **hours** change, not its crew.
 
+## Non-techs on the schedule
+
+**Team → (person) → Show on the schedule like a tech** puts a manager or office person (a service manager who runs calls) on the **Tech board**, **Week**, and **Dispatch** (the Techs list), every day, like a tech. They sit in the Masters & foremen block unless their title says otherwise. They can be booked on visits as before, and appear in the Jobs report's tech filter. Off by default.
+
 ## Schedule blocks
 
 The tech board, week view and dispatch list group people by the **Title** on their Team profile:

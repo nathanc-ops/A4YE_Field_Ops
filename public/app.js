@@ -435,7 +435,7 @@ async function viewSchedule() {
     GET('/jobs' + qs({ from: start.toISOString(), to: end.toISOString() })),
     isOffice() ? GET('/jobs' + qs({ status: 'unscheduled' })) : Promise.resolve([]),
   ]);
-  const techs = S.users.filter(u => u.active && (u.role === 'tech' || jobs.some(j => j.tech_ids.includes(u.id))));
+  const techs = S.users.filter(u => u.active && (u.role === 'tech' || u.on_schedule || jobs.some(j => j.tech_ids.includes(u.id))));
   const rows = [...techs.map(t => ({ id: t.id, name: t.name, color: t.color })), { id: 0, name: 'Unassigned', color: '#94a3b8' }];
   const shift = n => { const d = new Date(start); d.setDate(d.getDate() + n); return localDate(d); };
   const chip = j => `<a class="chip ${j.priority === 'emergency' ? 'emergency' : ''} ${j.status}" draggable="${isOffice()}" data-job="${j.id}" href="#/jobs/${j.id}"
@@ -625,7 +625,7 @@ async function jobsReport(R, { params, from, to, sub, setCsv }) {
   const f = { date_by: params.get('date_by') || 'created', status: params.get('status') || '', job_type: params.get('job_type') || '', tech_id: params.get('tech_id') || '', kind: params.get('kind') || '' };
   const d = await GET('/reports/jobs' + qs({ from, to, ...f }));
   const costs = can('see_costs'), T = d.totals;
-  const techs = (S.users || []).filter(u => u.active && u.role === 'tech');
+  const techs = (S.users || []).filter(u => u.active && (u.role === 'tech' || u.on_schedule));
   R.innerHTML = `<form id="jf" class="row no-print" style="gap:8px;flex-wrap:wrap;margin:-4px 0 14px">
       <label class="small">Dates are <select name="date_by" style="width:auto">${[['created', 'Created'], ['scheduled', 'Scheduled / start'], ['completed', 'Completed']].map(([k, l]) => `<option value="${k}" ${k === f.date_by ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <select name="status" style="width:auto"><option value="">All but cancelled</option><option value="open" ${f.status === 'open' ? 'selected' : ''}>Open (not done)</option>${JOB_STATUSES.map(s => `<option value="${s}" ${s === f.status ? 'selected' : ''}>${label(s)}</option>`).join('')}</select>
@@ -1816,6 +1816,7 @@ async function userForm(u) {
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },
       { name: 'password', label: u.id ? 'New password (leave blank to keep)' : 'Password (8+ chars)', type: 'password', required: !u.id },
       { name: 'timeclock_id', label: 'Time clock ID (A4Y Time Clock employee ID)', placeholder: 'e.g. E0A1B2C3D4F' },
+      { name: 'on_schedule', label: 'Show on the schedule like a tech (Tech board, Week, Dispatch) — e.g. a service manager who runs calls', type: 'checkbox', full: true },
       { name: 'active', label: 'Active (can sign in)', type: 'checkbox', default: 1 }],
     extra: `<h3 style="margin-top:14px">Permissions</h3><div id="perms"></div>`,
     submit: async (d, form) => {

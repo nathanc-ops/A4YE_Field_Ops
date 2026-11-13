@@ -354,10 +354,10 @@ function visitHoursOnDay(a, day) {
 const CREW = [['master', 'Masters & foremen'], ['journeyman', 'Journeymen'], ['apprentice', 'Apprentices'], ['other', 'Other staff'], ['office', 'Office']];
 function crewOf(userId) {
   const u = S.users.find(x => x.id === userId) || {}, t = String(u.title || '');
-  if (u.role && u.role !== 'tech' && !/journey|apprent|foreman|master|helper/i.test(t)) return 'office';
+  if (u.role && u.role !== 'tech' && !u.on_schedule && !/journey|apprent|foreman|master|helper/i.test(t)) return 'office';
   if (/apprent|helper|trainee|\bappr\b/i.test(t)) return 'apprentice';
   if (/journey|\bjw\b|\bjm\b|\bjman\b/i.test(t)) return 'journeyman';
-  if (/master|foreman|supervisor|super\b/i.test(t)) return 'master';
+  if (/master|foreman|supervisor|super\b/i.test(t) || (u.on_schedule && u.role !== 'tech')) return 'master';
   return 'other';
 }
 // rows → [{key, label, rows}] in crew order; empty groups dropped. Row id 0 (Unassigned) goes in its own block at the end.
@@ -379,7 +379,7 @@ async function viewBoard(date, seg) {
   const appts = disp ? disp.appointments : await GET('/appointments' + qs({ from, to }));
   const att = await GET('/attendance' + qs({ from: date, to: date })).catch(() => []);
   const techUsers = isOffice()
-    ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id))))
+    ? S.users.filter(u => u.active && (u.role === 'tech' || u.on_schedule || appts.some(a => a.tech_ids.includes(u.id))))
     : S.users.filter(u => u.id === S.user.id);
   const rows = techUsers.map(u => ({ id: u.id, name: u.name, color: u.color, title: u.title, clock: disp && (disp.techs.find(t => t.id === u.id) || {}).clock, booked: disp && (disp.techs.find(t => t.id === u.id) || {}).booked_hours }));
   if (isOffice()) rows.push({ id: 0, name: 'Unassigned', color: '#94a3b8' });
@@ -522,7 +522,7 @@ async function viewWeek(date, seg) {
   const sunday = addDaysStr(monday, 6);
   const projs = projAll.filter(pj => (!pj.start_date || pj.start_date <= sunday) && (!pj.end_date || pj.end_date >= monday)
     && (pj.start_date || pj.end_date || appts.some(a => a.job_id === pj.id)));
-  const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || appts.some(a => a.tech_ids.includes(u.id)) || follows.some(f => f.hold_assignee === u.id) || att.some(x => x.user_id === u.id))) : S.users.filter(u => u.id === S.user.id);
+  const techs = isOffice() ? S.users.filter(u => u.active && (u.role === 'tech' || u.on_schedule || appts.some(a => a.tech_ids.includes(u.id)) || follows.some(f => f.hold_assignee === u.id) || att.some(x => x.user_id === u.id))) : S.users.filter(u => u.id === S.user.id);
   const tasksFor = (r, d) => follows.filter(f => f.hold_follow_up === d && (r.id ? f.hold_assignee === r.id : !f.hold_assignee));
   const rows = [...techs.map(t => ({ id: t.id, name: t.name, color: t.color })), ...(isOffice() ? [{ id: 0, name: 'Unassigned', color: '#94a3b8' }] : [])];
   const onDay = (a, d) => Date.parse(a.start) < Date.parse(dayISO(addDaysStr(d, 1))) && Date.parse(a.end) > Date.parse(dayISO(d));
