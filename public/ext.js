@@ -952,6 +952,16 @@ function vendorContactForm(v, c) {
     await act(() => DEL('/vendor-contacts/' + c.id), 'Removed'); m.close(); route(); };
 }
 
+// cost code shown as "0810 · EMT"; typed text → a code (the exact entry, or a code number typed on its own)
+const ccText = id => { const c = S.costCodes.find(x => String(x.id) === String(id)); return c ? `${c.code} · ${c.name}` : ''; };
+function ccFromText(t) {
+  t = String(t || '').trim(); if (!t) return null;
+  const exact = S.costCodes.find(c => `${c.code} · ${c.name}`.toLowerCase() === t.toLowerCase()); if (exact) return exact;
+  const code = t.split(/[\s·]/)[0]; const byCode = S.costCodes.filter(c => c.code === code); if (byCode.length === 1) return byCode[0];
+  const byName = S.costCodes.filter(c => c.kind !== 'labor' && `${c.code} ${c.name}`.toLowerCase().includes(t.toLowerCase())); return byName.length === 1 ? byName[0] : undefined;
+}
+const ccDatalist = () => `<datalist id="cclist">${S.costCodes.filter(c => c.kind !== 'labor').map(c => `<option value="${esc(`${c.code} · ${c.name}`)}">${esc(c.details || c.division_name || '')}</option>`).join('')}</datalist>`;
+
 // a PO that's here twice (entered here and in Ply, or twice): say what removing it undoes, pick the copy it duplicates
 async function removeDuplicatePO(po) {
   const c = await GET(`/purchase-orders/${po.id}/remove-check`);
@@ -978,7 +988,8 @@ async function viewPO(id) {
     <td><input class="desc" data-k="description" value="${esc(l.description)}" list="pblist" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="qty" value="${esc(l.qty)}" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="unit_cost" value="${esc(l.unit_cost)}" ${locked ? 'disabled' : ''}></td>
-    <td><select data-k="cost_code_id" style="width:130px" ${locked ? 'disabled' : ''}><option value="">—</option>${S.costCodes.map(c => `<option value="${c.id}" ${String(c.id) === String(l.cost_code_id) ? 'selected' : ''}>${esc(c.code)} ${esc(c.name)}</option>`).join('')}</select></td>
+    <td class="cccell"><input class="ccin" data-k="cc_text" list="cclist" placeholder="Search code or name" value="${esc(ccText(l.cost_code_id))}" ${locked ? 'disabled' : ''} title="${esc(ccText(l.cost_code_id))}">
+      ${!locked && (l._sugg || []).length && !(l._sugg[0] && String(l._sugg[0].id) === String(l.cost_code_id)) ? `<div class="ccsug">${l._sugg.map(sg => `<button type="button" class="chip" data-cc="${sg.id}" title="${esc(sg.why)}">${String(sg.id) === String(l.cost_code_id) ? '✓ ' : ''}${esc(sg.code)} ${esc(sg.name)}</button>`).join('')}</div>` : ''}</td>
     <td class="num">${num(l.qty_received || 0)}</td><td class="num" data-ext>${money((+l.qty || 0) * (+l.unit_cost || 0))}</td>
     <td>${locked || l.qty_received ? '' : `<button type="button" class="btn sm danger" data-rm="${i}">✕</button>`}</td></tr>`;
   $('#view').innerHTML = setTop(id === 'new' ? 'New purchase order' : `PO ${esc(po.number)}`, id === 'new' ? '' : `${pill(po.status)} ${po.ply_id ? `<span class="pill good">Ply: ${esc(po.ply_status || 'sent')}</span>` : ''}
@@ -996,7 +1007,7 @@ async function viewPO(id) {
       ${fieldHtml({ name: 'expected_date', label: 'Needed / expected', type: 'date' }, po.expected_date)}
       ${fieldHtml({ name: 'notes', label: 'Notes to vendor', full: true }, po.notes)}
     </div></div>
-    <div class="card"><h2>Lines</h2><datalist id="pblist">${pb.filter(p => p.kind === 'material' || p.kind === 'equipment').map(p => `<option value="${esc(p.name)}">${esc(p.code || '')} · on hand ${num(p.qty_on_hand)}</option>`).join('')}</datalist>
+    <div class="card"><h2>Lines</h2>${ccDatalist()}<datalist id="pblist">${pb.filter(p => p.kind === 'material' || p.kind === 'equipment').map(p => `<option value="${esc(p.name)}">${esc(p.code || '')} · on hand ${num(p.qty_on_hand)}</option>`).join('')}</datalist>
       <div class="table-wrap"><table class="items"><thead><tr><th>Item</th><th>Qty</th><th>Unit cost</th><th>Cost code</th><th class="num">Received</th><th class="num">Ext.</th><th></th></tr></thead><tbody id="lines"></tbody></table></div>
       ${locked ? '' : '<button type="button" class="btn" id="addl" style="margin-top:8px">+ Line</button>'}
       <div class="row" style="align-items:flex-start;margin-top:12px"><div class="grow form-grid" style="max-width:360px">${fieldHtml({ name: 'tax', label: 'Tax $', type: 'number' }, po.tax)}${fieldHtml({ name: 'shipping', label: 'Freight $', type: 'number' }, po.shipping)}</div><div class="totals" id="pot"></div></div></div>
@@ -1012,11 +1023,31 @@ async function viewPO(id) {
   tb.addEventListener('input', e => {
     const tr = e.target.closest('tr[data-i]'); if (!tr) return; const l = po.lines[tr.dataset.i]; const k = e.target.dataset.k;
     l[k] = e.target.value;
-    if (k === 'description') { const p = pb.find(x => x.name === e.target.value); if (p) { Object.assign(l, { pricebook_id: p.id, unit_cost: p.unit_cost, cost_code_id: l.cost_code_id || p.cost_code_id }); draw(); return; } }
+    if (k === 'cc_text') { delete l.cc_text; return; }
+    if (k === 'description') { const p = pb.find(x => x.name === e.target.value); if (p) { Object.assign(l, { pricebook_id: p.id, unit_cost: p.unit_cost, cost_code_id: l.cost_code_id || p.cost_code_id }); suggestFor(l); draw(); return; } l.pricebook_id = null; suggestFor(l); }
     $('[data-ext]', tr).textContent = money((+l.qty || 0) * (+l.unit_cost || 0)); totals();
   });
-  tb.addEventListener('change', e => { if (e.target.dataset.k === 'cost_code_id') po.lines[e.target.closest('tr').dataset.i].cost_code_id = e.target.value || null; });
-  tb.addEventListener('click', e => { const b = e.target.closest('[data-rm]'); if (b) { po.lines.splice(+b.dataset.rm, 1); draw(); } });
+  tb.addEventListener('change', e => {
+    if (e.target.dataset.k !== 'cc_text') return;
+    const l = po.lines[e.target.closest('tr').dataset.i], c = ccFromText(e.target.value);
+    if (c === undefined) { toast('Pick a cost code from the list (type part of the code or name)', true); e.target.value = ccText(l.cost_code_id); return; }
+    l.cost_code_id = c ? c.id : null; draw();
+  });
+  tb.addEventListener('click', e => {
+    const b = e.target.closest('[data-rm]'); if (b) { po.lines.splice(+b.dataset.rm, 1); draw(); return; }
+    const s = e.target.closest('[data-cc]'); if (s) { po.lines[s.closest('tr').dataset.i].cost_code_id = Number(s.dataset.cc); draw(); }
+  });
+  // suggestions: price-book code, how it was coded before, trade words; refreshed as the description is typed
+  const jobOf = () => (form.job_id && form.job_id.value) || po.job_id || '';
+  const suggestFor = l => { clearTimeout(l._t); l._t = setTimeout(async () => {
+    if (!String(l.description || '').trim()) { l._sugg = []; return draw(); }
+    try { l._sugg = await GET('/cost-codes/suggest' + qs({ description: l.description, pricebook_id: l.pricebook_id || '', job_id: jobOf() })); } catch { l._sugg = []; }
+    const focus = document.activeElement, pos = focus && focus.selectionStart, ix = focus && focus.closest && focus.closest('tr[data-i]') ? focus.closest('tr[data-i]').dataset.i : null, key = focus && focus.dataset ? focus.dataset.k : null;
+    draw();
+    if (ix != null && key) { const el = $(`tr[data-i="${ix}"] [data-k="${key}"]`, tb); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* number inputs */ } } }
+  }, 450); };
+  if (!locked) { const need = po.lines.filter(l => !l.cost_code_id && String(l.description || '').trim());
+    if (need.length) POST('/cost-codes/suggest', { job_id: jobOf(), lines: need.map(l => ({ description: l.description, pricebook_id: l.pricebook_id })) }).then(r => { need.forEach((l, i) => { l._sugg = r[i] || []; }); draw(); }).catch(() => null); }
   form.tax.oninput = totals; form.shipping.oninput = totals;
   form.job_id.onchange = () => { form.deliver_to.value = form.job_id.value ? 'job' : 'shop'; };
   if ($('#addl')) $('#addl').onclick = () => { po.lines.push({ description: '', qty: 1, unit_cost: 0 }); draw(); $$('#lines .desc').pop().focus(); };

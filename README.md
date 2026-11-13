@@ -441,6 +441,17 @@ When a tech taps **🚚 En route** (My Day, or the office on Dispatch), the app 
 
 The tech can untick the email. **Settings → Scheduling & accounting defaults → Email the customer when a tech taps En route** turns it off for everyone. If the customer wasn't told, the app says why: no email on file, or email not set up. Text messages are not built: they need a Twilio phone number registered for business texting (A2P 10DLC).
 
+## Cost codes on PO lines
+
+Each PO line's cost code is a **search box**. Type part of the code or name ("0810", "strut", "fixtures") and pick from the list.
+- **Suggestions:** as you type the line's description, up to three suggested codes appear under the box. Click one to use it; hover to see why it was suggested. They come from, in order:
+  - the code set on the price-book item;
+  - how the same item or description was coded before (POs, job materials, pick lists, vendor bills);
+  - trade words such as EMT, THHN, GFCI, strut, Wago, troffer or wall pack, matched against the cost codes' names and descriptions;
+  - a small nudge for codes in the job's budget.
+- **Demolition codes** are suggested only when the line says remove or demo.
+- **When opening a PO,** lines with no code get suggestions right away.
+
 ## Pick lists from the field
 
 Techs can **ask for material**: Pick Lists → **+ Ask for material**, or the job's **Pick lists** tab.

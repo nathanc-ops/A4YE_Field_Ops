@@ -1435,6 +1435,7 @@ function createApp(db) {
   require('./estimating')(app, db, { wrap, bad });
   require('./takeoff')(app, db, { wrap, bad });
   require('./voice_estimate')(app, db, { wrap, bad });
+  require('./cc_suggest')(app, db, { wrap, office });
   require('./pipeline')(app, db, { wrap, bad, office, today, addDays });
 
   // ------------------------------------------------------------ static

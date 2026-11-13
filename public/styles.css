@@ -793,3 +793,9 @@ a.pill.att-absent { color: var(--bad); } a.pill.att-sick, a.pill.att-late, a.pil
 .plyres { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px; margin-top: 8px; max-height: 320px; overflow-y: auto; }
 .plyhit { text-align: left; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
 .plyhit:hover:not([disabled]) { border-color: var(--series-1); } .plyhit[disabled] { opacity: .55; cursor: not-allowed; }
+
+/* PO line cost code: search box + suggestions */
+.cccell { min-width: 210px; } .cccell .ccin { width: 100%; }
+.ccsug { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ccsug .chip { font-size: 11px; padding: 2px 6px; border: 1px dashed var(--series-1); background: transparent; color: var(--text); border-radius: 999px; cursor: pointer; }
+.ccsug .chip:hover { background: color-mix(in srgb, var(--series-1) 15%, transparent); }
