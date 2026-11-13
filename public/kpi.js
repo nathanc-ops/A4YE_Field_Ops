@@ -123,11 +123,53 @@ async function viewKpi() {
   $('#kshade').onclick = kpiClose;
   const el = $('#kbody');
   KPI.updated = at => { if ($('#kupd') && at) { $('#kupd').textContent = `Updated ${kpiStamp(at)}`; } };
-  if (tab === 'dash') return kpiMaster(el, week);
+  kpiPollStop();
+  if (tab === 'dash') { kpiPollStart(() => kpiDashTick(el, week)); return kpiMaster(el, week); }
   if (tab === 'setup') return kpiSetup(el);
   if (tab === 'import') return kpiImport(el);
   const idx = me.owners.findIndex(o => `o${o.id}` === tab);
+  kpiPollStart(() => kpiPageTick());
   return kpiOwner(el, Number(tab.slice(1)), week, kpiColor(idx));
+}
+// ---------------------------------------------------------------- live: re-read the open page every minute
+// Auto numbers are worked out from Field Ops' records each time the server is asked, so polling keeps them current.
+// Typed numbers, open "replace" boxes and the row you're in are never touched; a locked (submitted) week doesn't change.
+const KPI_POLL_MS = 60 * 1000;
+function kpiPollStop() { if (KPI.poll) { clearInterval(KPI.poll.t); KPI.poll = null; } }
+function kpiPollStart(tick) {
+  kpiPollStop();
+  const hash = location.hash;
+  KPI.poll = { t: setInterval(() => {
+    if (location.hash !== hash || !$('#kbody')) return kpiPollStop();
+    if (document.hidden) return;
+    tick().catch(() => { /* offline for a moment: try again next minute */ });
+  }, KPI_POLL_MS) };
+}
+async function kpiDashTick(el, week) {
+  if ($('#kdrawer') && $('#kdrawer').classList.contains('open')) return;   // don't redraw under an open detail drawer
+  await kpiMaster(el, week);
+}
+async function kpiPageTick() {
+  const E = KPI.edit; if (!E) return;
+  const p = await GET(`/kpi/page?owner=${E.owner}&week=${E.p.week}`);
+  if (KPI.edit !== E) return;
+  if (!!p.locked !== !!E.p.locked) { if (!E.dirty) return viewKpi(); return; }   // submitted or reopened elsewhere
+  E.p.others = p.others; E.p.report = p.report; E.p.updated_at = p.updated_at;
+  const fresh = new Map(p.sections.flatMap(s => s.metrics).map(m => [m.id, m]));
+  const active = document.activeElement && document.activeElement.closest ? document.activeElement.closest('tr') : null;
+  for (const m of E.mets) {
+    const n = fresh.get(m.id); if (!n) continue;
+    const changed = n.auto_value !== m.auto_value || n.value !== m.value || n.auto_source !== m.auto_source || JSON.stringify(n.trend) !== JSON.stringify(m.trend);
+    if (!changed) continue;
+    const typed = m.input !== 'calc' && (E.override[m.id] || (m.auto_value == null && E.vals[m.id] != null && E.vals[m.id] !== m.value));
+    Object.assign(m, { auto_value: n.auto_value, auto_source: n.auto_source, auto_link: n.auto_link, trend: n.trend, wrong_way: n.wrong_way, entered_by: n.entered_by, entered_at: n.entered_at,
+      ...(typed ? {} : { value: n.value, origin: n.origin }) });
+    if (!typed && m.input !== 'calc' && m.auto_value == null && !E.dirty) E.vals[m.id] = n.origin === 'manual' ? n.value : null;
+    const row = $(`#kr_${CSS.escape(m.id)}`);
+    if (row && row !== active && !typed) { kpiRow(m.id); row.classList.add('kflash'); setTimeout(() => row.classList.remove('kflash'), 1600); }
+  }
+  kpiLive();
+  KPI.updated(p.updated_at);
 }
 const kpiDirtyOk = () => !(KPI.edit && KPI.edit.dirty) || confirm('You have unsaved changes on this page. Leave without saving?');
 window.addEventListener('beforeunload', e => { if (KPI.edit && KPI.edit.dirty && /^#\/kpi/.test(location.hash)) { e.preventDefault(); e.returnValue = ''; } });
@@ -151,7 +193,7 @@ async function kpiMaster(el, week) {
     ${bar(H, 'kteambar')}<div class="klegend"><span><i class="bg-G"></i>${H.green} green</span><span><i class="bg-Y"></i>${H.yellow} yellow</span><span><i class="bg-R"></i>${H.red} red</span><span><i class="bg-N"></i>${H.no_data} no data</span>${H.info ? `<span>${H.info} tracked for info</span>` : ''}</div>
     <div class="ksect" id="kowners"><h2>Team</h2><span class="muted small">Click a person to filter the KPI list</span></div>
     <div class="kcards">${d.reports.map((r, i) => { const st = KPI_STATE[r.state];
-      return `<div class="kcard ${KPI.filter.owner === String(r.id) ? 'on' : ''}" data-fo="${r.id}"><div class="top">${kpiAv(r.name, kpiColor(i))}<h3><span>${esc(r.name)}</span><span class="chip ${st[1]}" title="${esc(r.at ? `${kpiStamp(r.at)} by ${r.by || ''}` : '')}">${st[0]}</span></h3></div>
+      return `<div class="kcard ${KPI.filter.owner === String(r.id) ? 'on' : ''}" data-fo="${r.id}"><div class="top">${kpiAv(r.name, kpiColor(i))}<h3><span>${esc(r.name)}</span><span class="chip ${st[1]}" title="${esc(r.at ? `${kpiStamp(r.at)} by ${r.by || ''}` : '')}">${r.locked ? '🔒 ' : ''}${st[0]}${(r.state === 'in' || r.state === 'late') && !r.locked ? ' · reopened' : ''}</span></h3></div>
         ${bar(r, 'mini')}<div class="pills">${['green', 'yellow', 'red', 'no_data'].map(k => `<span class="pill k-${k}" data-fo2="${r.id}" data-fs2="${k}">${r[k]} ${k.replace('_', ' ')}</span>`).join('')}</div>
         <div class="foot"><div class="sub">${r.need_note ? `<span class="warn">${r.need_note} off-target without cause/fix</span>` : 'Every off-target KPI explained'}</div><a class="open" href="#/kpi?tab=o${r.id}&week=${d.week}">Open page ›</a></div></div>`; }).join('')}</div>
     <div class="ksect" id="kkpis"><h2>All KPIs</h2></div>
@@ -286,16 +328,25 @@ async function kpiOwner(el, ownerId, week, color) {
   for (const m of mets) { if (m.section !== last) { rows += `<tr class="sec"><td colspan="4">${esc(m.section)}</td></tr>`; last = m.section; } rows += `<tr id="kr_${esc(m.id)}"></tr>`; }
   el.innerHTML = `<div class="kfade"><div class="kohead">${kpiAv(p.owner.name, color, 'lg')}<div class="grow"><h1>${esc(p.owner.name)}'s KPIs</h1>
       <div class="muted">Week of <b>${kpiWeekLabel(p.week)}</b> (Sun–Sat) · due ${esc(kpiDue(p.due))}</div>
-      ${sub ? `<div class="ok" style="margin-top:4px">Submitted ${esc(kpiStamp(sub.at))}${p.report.state === 'late' ? ' (late)' : ''}.${edit ? ' You can still correct numbers and submit again.' : ''}</div>` : ''}</div>
+      ${p.locked ? `<div class="ok" style="margin-top:4px">🔒 Submitted and locked ${esc(kpiStamp(p.locked.at))}${p.report.state === 'late' ? ' (late)' : ''} by ${esc(p.locked.by || '')}. These numbers are final for the week.</div>`
+        : sub ? `<div class="warn" style="margin-top:4px">Reopened after it was submitted${p.reopens && p.reopens[0] ? `: ${esc(p.reopens[0].reason)} (${esc(p.reopens[0].by_label || '')})` : ''}. Submit again to lock it.</div>`
+        : !p.week_over ? '<div class="muted" style="margin-top:4px"><span class="klivedot"></span> Live — auto numbers update as work is logged. Submit on Monday, once the week is over; that locks it.</div>'
+        : '<div class="muted" style="margin-top:4px"><span class="klivedot"></span> Week is over — auto numbers are still live until you submit, which locks them.</div>'}
+      ${p.can_reopen ? '<div style="margin-top:6px"><button class="btn sm" id="kreopen">Reopen this week</button></div>' : ''}</div>
       <div class="kprog">${kpiRing(0)}<div><div class="pt" id="kpg_txt">—</div><div class="pl" id="kpg_sub">KPIs with a number</div></div></div></div>
     <div class="knote">Blue ${kpiSrc('auto')} numbers fill themselves; type the rest. Anything yellow or red needs a cause and a fix before you can submit.</div>
     <div class="ktablewrap"><div class="scroll"><table class="ktab kfrm"><tr class="hd"><th>KPI</th><th class="num">This week</th><th class="num hide-sm">Target</th><th>Status</th></tr>${rows}</table></div></div>
     <div class="ksect"><h2>Anything else worth reporting?</h2></div><p class="muted" style="margin-top:-4px">A number outside your assigned KPIs goes here, with an explanation of why it matters.</p>
     <div class="ktablewrap"><div class="scroll"><table class="ktab kfrm" id="kextras"></table></div></div>${edit ? '<p><button class="btn" id="kaddx">+ Add an item</button></p>' : ''}</div>
-    ${edit ? `<div class="kbar"><span class="muted small">Signed in as ${esc(p.signed_in_as || '')}</span><span class="msg" id="kbarmsg"></span><button class="btn" id="ksave">Save draft</button><button class="btn primary" id="ksub">Submit week</button></div>` : ''}`;
+    ${edit ? `<div class="kbar"><span class="muted small">Signed in as ${esc(p.signed_in_as || '')}</span><span class="msg" id="kbarmsg"></span><button class="btn" id="ksave">Save draft</button><button class="btn primary" id="ksub" ${p.week_over ? '' : 'disabled title="The week isn\'t over yet. Submit on Monday."'}>${p.week_over ? 'Submit &amp; lock week' : 'Submit opens Sunday'}</button></div>` : ''}`;
   mets.forEach(m => kpiRow(m.id));
   kpiExtras();
   kpiLive();
+  if ($('#kreopen')) $('#kreopen').onclick = async () => {
+    const reason = prompt(`Reopen ${p.owner.name}'s week of ${kpiWeekLabel(p.week)}? Its numbers go back to live until it's submitted again.\n\nWhy is it being reopened?`);
+    if (!reason || !reason.trim()) return;
+    try { await POST('/kpi/page/reopen', { owner: ownerId, week, reason }); toast('Week reopened'); kpiOwner(el, ownerId, week, color); } catch (e) { toast(e.message, true); }
+  };
   if (!edit) return;
   $('#kaddx').onclick = () => { E.extras.push({ item: '', value: '', explanation: '' }); kpiExtras(); };
   $('#ksave').onclick = () => kpiSave(false, el, ownerId, week, color);
@@ -370,6 +421,7 @@ function kpiExtras() {
 }
 async function kpiSave(submit, el, ownerId, week, color) {
   const E = KPI.edit, msg = $('#kbarmsg'); clearTimeout(E.t); kpiLive();
+  if (submit && !confirm('Submit and lock this week? After submitting, the numbers are final: auto numbers stop updating and the page can\'t be edited unless it is reopened.')) return;
   const values = {}, reasons = {}, notes = {}, problems = [];
   for (const m of E.mets) {
     if (m.input === 'calc') continue;
@@ -391,7 +443,7 @@ async function kpiSave(submit, el, ownerId, week, color) {
   try {
     const r = await PUT('/kpi/page', { owner: ownerId, week, values, reasons, notes, extras, submit });
     let t = 'Saved.';
-    if (submit && r.submitted) t = `Submitted.${r.blank && r.blank.length ? ` Still blank: ${r.blank.length} KPI(s).` : ''}`;
+    if (submit && r.submitted) t = `Submitted and locked.${r.blank && r.blank.length ? ` Still blank: ${r.blank.length} KPI(s).` : ''}`;
     else if (submit && r.need_notes.length) t = `Saved, not submitted: ${r.need_notes.map(n => `${n.id} ${n.metric}`).join('; ')} still need a cause and fix.`;
     E.dirty = false;
     await kpiOwner(el, ownerId, week, color);

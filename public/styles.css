@@ -805,3 +805,9 @@ textarea.desc { width: 100%; min-height: 36px; resize: vertical; overflow: hidde
 .desc-cell { min-width: 260px; }
 .pbdrop { position: absolute; z-index: 60; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); max-height: 300px; overflow-y: auto; }
 .pbopt { padding: 6px 10px; cursor: pointer; } .pbopt:hover, .pbopt.on { background: color-mix(in srgb, var(--series-1) 18%, transparent); }
+/* KPI live updates */
+.klivedot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 0 3px rgba(61,220,132,.18); margin-right: 4px; animation: kpulse 2s ease-in-out infinite; vertical-align: middle; }
+@keyframes kpulse { 50% { opacity: .35; } }
+tr.kflash td { animation: kflash 1.6s ease-out; }
+@keyframes kflash { from { background: rgba(61,220,132,.22); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .klivedot, tr.kflash td { animation: none; } }

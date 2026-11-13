@@ -1192,6 +1192,23 @@ const MIGRATIONS = [
   db => { db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('workweek_start', 'sun')").run(); },
   // 54: salaried (overtime-exempt) staff: paid a set salary each week, never overtime. Hourly wage still drives job costing.
   db => { addColumn(db, 'users', 'pay_type', "TEXT NOT NULL DEFAULT 'hourly'"); addColumn(db, 'users', 'salary_annual', 'REAL NOT NULL DEFAULT 0'); },
+  // 55: KPI weeks lock when the owner submits (every number on the page, formulas included, is kept as it was); pages are due Monday
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS kpi_locks (
+      week TEXT NOT NULL, owner_id INTEGER NOT NULL REFERENCES kpi_owners(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, by_label TEXT, at TEXT NOT NULL,
+      PRIMARY KEY (week, owner_id)
+    );
+    CREATE TABLE IF NOT EXISTS kpi_lock_values (
+      week TEXT NOT NULL, metric_id TEXT NOT NULL REFERENCES kpi_metrics(id) ON DELETE CASCADE, owner_id INTEGER NOT NULL, value REAL,
+      PRIMARY KEY (week, metric_id)
+    );
+    CREATE TABLE IF NOT EXISTS kpi_reopens (
+      id INTEGER PRIMARY KEY, week TEXT NOT NULL, owner_id INTEGER NOT NULL REFERENCES kpi_owners(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL, locked_at TEXT, user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, by_label TEXT, at TEXT NOT NULL
+    );`);
+    db.prepare("INSERT INTO settings (key, value) VALUES ('kpi_due_days', '2') ON CONFLICT(key) DO UPDATE SET value = '2'").run();
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

@@ -60,6 +60,12 @@ Requires **Node 22.13+**. It uses Node's built-in `node:sqlite`, so there are no
 | **Reports** | P&L (revenue by segment → COGS → gross profit → overhead → net), 12-month trend, job costing (budget vs actual, margin), hours on job, payroll with weekly overtime, tech performance (utilization, revenue/hour), A/R aging, estimate close rate and lead-source ROI. CSV export and print on all of them. |
 | **Roles** | **Admin**: everything. **Office**: everything except team and settings. **Tech**: their own jobs, the clock, material logging, checklists and photos, and estimates on their jobs within your guardrails. Techs never see wages or financials, and see costs only if you allow it. |
 
+### KPIs: live numbers and weekly lock
+
+- **Live:** auto KPI numbers are worked out from Field Ops' records each time a page is read, and an open KPI page or team overview re-reads every minute (a green dot shows it's live). Numbers you're typing, a "replace this number" box you've opened and the row you're in are never overwritten.
+- **Submit on Monday:** a week (Sunday–Saturday) can be submitted once it's over; pages are due Monday 11:59 PM (Targets & set-up → due days).
+- **Lock:** submitting locks that page for that week. Every number on it, formulas included, stays exactly as submitted: auto numbers stop updating and nobody can edit it, admins included. Someone allowed to fill in anyone's page can **Reopen this week** with a reason (logged on the page); submitting again locks it again. The team overview shows 🔒 on locked pages.
+
 ### How the numbers are calculated
 
 - **Labor cost** = hours × loaded rate, where the loaded rate is wage × (1 + burden %). Set each employee's wage and burden (payroll taxes, workers' comp, benefits) on the Team page. Wrong burden percentages make every margin wrong.

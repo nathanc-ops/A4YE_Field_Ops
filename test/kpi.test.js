@@ -212,6 +212,9 @@ test('trend turns a green number red; extras need an explanation; drill-down sho
   // P1 (Higher, target 80 after set-up test): 4 weeks in a row each lower than the last, all still >= 80 → red, wrong way
   const W = ['2026-10-04', '2026-10-11', '2026-10-18', '2026-10-25'];
   db.prepare("UPDATE kpi_owners SET user_id = ? WHERE id = ?").run(ids.pat, ids.Pat);
+  // Pat submitted W[3] earlier, which locked it: it has to be reopened (with a reason) before anything on it can change
+  assert.equal((await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], values: { P1: 110 } })).status, 409);
+  assert.equal((await call('boss', 'POST', '/kpi/page/reopen', { owner: ids.Pat, week: W[3], reason: 'testing the trend rule' })).status, 200);
   for (const [w, v] of [[W[0], 140], [W[1], 130], [W[2], 120]]) await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: w, values: { P1: v } });
   await call('pat', 'PUT', '/kpi/page', { owner: ids.Pat, week: W[3], values: { P1: 110 } });
   let pg = (await call('pat', 'GET', `/kpi/page?owner=${ids.Pat}&week=${W[3]}`)).data;

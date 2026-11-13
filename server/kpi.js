@@ -10,6 +10,10 @@
 //  - Status: Higher/Lower against the target. Within BAND (25%) of the target is yellow, beyond is red. Info metrics have
 //    no status; no number says "no data"; a number with no target set isn't scored (shown as info, target "not set").
 //  - A yellow or red row needs a Cause and a Fix before the page can be submitted (the Command Center web app's rule).
+//  - Live: auto numbers are worked out from Field Ops' records every time a page is read, and open pages re-read every minute.
+//  - Locking: a week can be submitted once it's over (after Saturday night); submitting locks that owner's page for that week.
+//    Every number on it, formulas included, is kept exactly as submitted: auto numbers stop updating and nobody can edit it.
+//    Someone allowed to fill in anyone's page can reopen it with a reason (logged); submitting again locks it again.
 //  - An auto number (pulled, or imported from the sheet) shows as "auto". Replacing it keeps the auto number beside the
 //    typed one and needs a reason.
 // Definitions, settings and history come in from the sheet (download it as .xlsx) — nothing about the company's metrics
@@ -81,7 +85,7 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   const S = () => D.settings(db);
   const cfg = () => {
     const s = S(), tz = (() => { try { new Intl.DateTimeFormat('en-US', { timeZone: s.timezone || 'America/Boise' }); return s.timezone || 'America/Boise'; } catch { return 'America/Boise'; } })();
-    return { tz, band: num(s.kpi_band) ?? 0.25, otRate: num(s.kpi_ot_rate), dueDays: num(s.kpi_due_days) ?? 3, dueTime: /^\d\d:\d\d$/.test(s.kpi_due_time || '') ? s.kpi_due_time : '23:59',
+    return { tz, band: num(s.kpi_band) ?? 0.25, otRate: num(s.kpi_ot_rate), dueDays: num(s.kpi_due_days) ?? 2, dueTime: /^\d\d:\d\d$/.test(s.kpi_due_time || '') ? s.kpi_due_time : '23:59',
       history: Math.min(52, Math.max(4, num(s.kpi_history_weeks) ?? 12)), headlines: str(s.kpi_headlines || DEFAULT_HEADLINES).split(/[\s,]+/).filter(Boolean) };
   };
   const consts = c => ({ OT_RATE: c.otRate, BAND: c.band });
@@ -102,6 +106,22 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   const currentWeek = c => addDays(sundayOf(localNow(c.tz).slice(0, 10)), -7);
   const dueOf = (week, c) => `${addDays(week, 6 + c.dueDays)} ${c.dueTime}`;
 
+  // ---------------------------------------------------------------- locks (a submitted week)
+  const lockOf = (week, ownerId) => get(db, 'SELECT * FROM kpi_locks WHERE week = ? AND owner_id = ?', week, ownerId) || null;
+  const lockedOwners = weeks => {
+    const out = new Map(); if (!weeks.length) return out;
+    for (const r of all(db, `SELECT week, owner_id FROM kpi_locks WHERE week IN (${weeks.map(() => '?').join(',')})`, ...weeks)) {
+      if (!out.has(r.week)) out.set(r.week, new Set()); out.get(r.week).add(r.owner_id);
+    }
+    return out;
+  };
+  const lockedValues = weeks => {
+    const out = new Map(); if (!weeks.length) return out;
+    for (const r of all(db, `SELECT week, metric_id, value FROM kpi_lock_values WHERE week IN (${weeks.map(() => '?').join(',')})`, ...weeks)) {
+      if (!out.has(r.week)) out.set(r.week, new Map()); out.get(r.week).set(r.metric_id, r.value);
+    }
+    return out;
+  };
   // ---------------------------------------------------------------- numbers for a set of weeks (with calcs worked out)
   const metricsAll = () => all(db, 'SELECT m.*, o.name owner FROM kpi_metrics m JOIN kpi_owners o ON o.id = m.owner_id ORDER BY o.sort, o.name, m.sort, m.id');
   const trees = new Map();
@@ -112,13 +132,14 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     if (weeks.length) for (const r of all(db, `SELECT * FROM kpi_values WHERE week IN (${weeks.map(() => '?').join(',')})`, ...weeks)) {
       if (!raw.has(r.week)) raw.set(r.week, new Map()); raw.get(r.week).set(r.metric_id, r);
     }
-    const out = new Map();
+    const out = new Map(), frozen = lockedValues(weeks);
     for (const w of weeks) {
-      const rows = raw.get(w) || new Map(), memo = new Map();
+      const rows = raw.get(w) || new Map(), memo = new Map(), fz = frozen.get(w) || new Map();
       const look = (id, seen = new Set()) => {
         if (memo.has(id)) return memo.get(id);
         const m = byId.get(id); let v = null;
-        if (m && m.input === 'calc') {
+        if (fz.has(id)) v = fz.get(id);                       // a locked page: the number as it was submitted
+        else if (m && m.input === 'calc') {
           if (seen.has(id)) return null; seen.add(id);
           const t = treeOf(m); v = t ? evalTree(t, x => look(x, seen), consts(c)) : null;
           seen.delete(id);
@@ -164,11 +185,12 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     if (!autos.length) return;
     const from = AUTO.startWeek(c, sundayOf), last = addDays(currentWeek(c), 7);
     if (!from) return;
-    const X = AUTO.context(c), now = Date.now(), at = new Date().toISOString(), memo = new Map();
+    const X = AUTO.context(c), now = Date.now(), at = new Date().toISOString(), memo = new Map(), locked = lockedOwners(weeks);
     for (const w of weeks) {
       if (w < from || w > last) continue;
-      const ended = now > AUTO.satNight(w, c.tz);
+      const ended = now > AUTO.satNight(w, c.tz), lk = locked.get(w) || new Set();
       for (const m of autos) {
+        if (lk.has(m.owner_id)) continue;                     // submitted and locked: leave the number as it was
         const row = get(db, 'SELECT * FROM kpi_values WHERE week = ? AND metric_id = ?', w, m.id);
         if (row && String(row.auto_source || '').startsWith('Feed:')) continue;
         if (AUTO.NOW_ONLY.has(m.rule)) {
@@ -215,7 +237,7 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
   const subsOf = (week, ownerId) => all(db, 'SELECT at, by_label FROM kpi_submissions WHERE week = ? AND owner_id = ? ORDER BY at', week, ownerId);
   function reportState(week, ownerId, c) {
     const subs = subsOf(week, ownerId), due = dueOf(week, c);
-    if (subs.length) { const first = localNow(c.tz, new Date(subs[0].at)); return { state: first > due ? 'late' : 'in', at: subs[subs.length - 1].at, first_at: subs[0].at, by: subs[subs.length - 1].by_label }; }
+    if (subs.length) { const first = localNow(c.tz, new Date(subs[0].at)); return { state: first > due ? 'late' : 'in', at: subs[subs.length - 1].at, first_at: subs[0].at, by: subs[subs.length - 1].by_label, locked: !!lockOf(week, ownerId) }; }
     return { state: localNow(c.tz) > due ? 'missing' : 'open' };
   }
   const weekParam = (v, c) => { const w = str(v) || currentWeek(c); if (!isSunday(w)) throw bad('Week must be the Sunday date it starts on (YYYY-MM-DD)'); return w; };
@@ -262,8 +284,11 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     const others = {};
     for (const id of inputsOf(mine, byId)) { const m = byId.get(id); if (m && m.owner_id !== owner.id) others[id] = { value: sc.get(id).value, metric: m.metric, unit: m.unit }; }
     const flat = sections.flatMap(x => x.metrics);
+    const lock = lockOf(week, owner.id);
     res.json({ week, week_end: addDays(week, 6), due: dueOf(week, c), tz: c.tz, owner: { id: owner.id, name: owner.name, user_name: owner.user_name },
-      can_edit: canEdit(a, owner.id), report: reportState(week, owner.id, c), submissions: subsOf(week, owner.id), band: c.band, ot_rate: c.otRate, sections, others,
+      can_edit: canEdit(a, owner.id) && !lock, locked: lock ? { at: lock.at, by: lock.by_label } : null, can_reopen: !!lock && a.edit_all,
+      week_over: Date.now() > AUTO.satNight(week, c.tz), live: !lock, reopens: all(db, 'SELECT reason, locked_at, by_label, at FROM kpi_reopens WHERE week = ? AND owner_id = ? ORDER BY id DESC', week, owner.id),
+      report: reportState(week, owner.id, c), submissions: subsOf(week, owner.id), band: c.band, ot_rate: c.otRate, sections, others,
       extras: extrasOf(week, [owner.id]), weeks: sc.size ? [...sc.values()][0].weeks : [],
       counts: { total: flat.length, with_number: flat.filter(x => x.value != null).length, need_note: flat.filter(x => x.needs_note).length },
       updated_at: updatedAt(), signed_in_as: req.user.email });
@@ -275,6 +300,9 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
     const a = access(req.user), c = cfg(), b = req.body || {}, week = weekParam(b.week, c);
     const owner = get(db, 'SELECT * FROM kpi_owners WHERE id = ?', Number(b.owner)); if (!owner) throw bad('No such KPI page', 404);
     if (!canEdit(a, owner.id)) throw bad('Only the page\'s owner (or someone allowed to fill in anyone\'s page) can enter these numbers', 403);
+    const lk = lockOf(week, owner.id);
+    if (lk) throw bad(`${owner.name}'s week of ${week} was submitted and locked ${lk.at.slice(0, 10)}. Someone allowed to fill in anyone's page can reopen it.`, 409);
+    if (b.submit && Date.now() <= AUTO.satNight(week, c.tz)) throw bad(`The week of ${week} isn't over until Saturday night. Save a draft now and submit it on Monday.`);
     const mine = new Map(all(db, 'SELECT * FROM kpi_metrics WHERE owner_id = ? AND active = 1', owner.id).map(m => [m.id, m]));
     const now = new Date().toISOString(), who = label(req.user), onBehalf = owner.user_id !== req.user.id;
     let changed = 0; const whyMissing = [];
@@ -328,9 +356,26 @@ module.exports = function kpiRoutes(app, db, { wrap, bad, admin }) {
       const all_ = metricsAll().filter(m => m.active), sc = score(week, all_, c), notes = latestNotes(week, [...mine.keys()]);
       need = [...mine.values()].filter(m => NEEDS(sc.get(m.id).status) && !explained(notes.get(m.id))).map(m => ({ id: m.id, metric: m.metric }));
       blank = [...mine.values()].filter(m => m.input !== 'calc' && sc.get(m.id).value == null).map(m => ({ id: m.id, metric: m.metric }));
-      if (!need.length) { run(db, 'INSERT OR IGNORE INTO kpi_submissions (week, owner_id, user_id, by_label, at) VALUES (?,?,?,?,?)', week, owner.id, req.user.id, who, now); submitted = true; }
+      if (!need.length) {
+        run(db, 'INSERT OR IGNORE INTO kpi_submissions (week, owner_id, user_id, by_label, at) VALUES (?,?,?,?,?)', week, owner.id, req.user.id, who, now);
+        // lock: keep every number on this page as it is right now, formulas included (they can read other pages that keep changing)
+        run(db, 'INSERT INTO kpi_locks (week, owner_id, user_id, by_label, at) VALUES (?,?,?,?,?)', week, owner.id, req.user.id, who, now);
+        for (const m of mine.values()) run(db, 'INSERT OR REPLACE INTO kpi_lock_values (week, metric_id, owner_id, value) VALUES (?,?,?,?)', week, m.id, owner.id, sc.get(m.id).value);
+        submitted = true;
+      }
     }
-    res.json({ ok: true, changed, submitted, need_notes: need, blank });
+    res.json({ ok: true, changed, submitted, locked: submitted, need_notes: need, blank });
+  }));
+  // reopen a locked week (people who can fill in anyone's page), with a reason; the page goes back to live numbers until it's submitted again
+  app.post('/api/kpi/page/reopen', wrap((req, res) => {
+    const a = access(req.user), c = cfg(), b = req.body || {}, week = weekParam(b.week, c);
+    if (!a.edit_all) throw bad('Only people allowed to fill in anyone\'s page can reopen a submitted week', 403);
+    const lk = lockOf(week, Number(b.owner)); if (!lk) throw bad('That week isn\'t locked');
+    const reason = str(b.reason).slice(0, 1000); if (!reason) throw bad('Say why the week is being reopened');
+    run(db, 'INSERT INTO kpi_reopens (week, owner_id, reason, locked_at, user_id, by_label, at) VALUES (?,?,?,?,?,?,?)', week, lk.owner_id, reason, lk.at, req.user.id, label(req.user), new Date().toISOString());
+    run(db, 'DELETE FROM kpi_lock_values WHERE week = ? AND owner_id = ?', week, lk.owner_id);
+    run(db, 'DELETE FROM kpi_locks WHERE week = ? AND owner_id = ?', week, lk.owner_id);
+    res.json({ ok: true });
   }));
 
   // the team overview (see-everyone only)
