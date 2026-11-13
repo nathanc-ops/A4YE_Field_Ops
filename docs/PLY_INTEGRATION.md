@@ -56,3 +56,8 @@ Every Ply line must be a Ply catalog material. When a pick list or PO has lines 
   - It shows the Ply job the job is linked to, every Ply PO delivered to it (marked *not brought in yet* until imported), and the Ply pick lists going there, each with its Ply status.
   - Not linked: pick the Ply job from the list, or create it in Ply. Jobs link automatically only when the Ply job has the same job number, or the number in its name.
   - A message about a missing permission names the scope to add to the key.
+- **Job numbers:** a job links to its Ply job by its **Time clock job #** (the number the field uses) or its Field Ops number, found in the Ply job's number or its name. Archived Ply jobs count too. Jobs sent to Ply carry the time clock job # when one is set. The search box on a job finds Ply jobs by number as well as name.
+- **A PO that's here twice** (for example written in Ply and also entered here): open the copy to drop and press **Remove (duplicate)**.
+  - It shows what removing it undoes: received material comes back off the job, and shop receipts come back out of stock. You pick the PO it duplicates, and a note goes on the job.
+  - If it came from Ply, or was sent there, the Ply sync leaves that Ply PO alone from then on. It stays in Ply, so cancel it there if it shouldn't be ordered.
+  - It's refused while a vendor bill is entered from it (void the bill first), or while its material is billed to the customer.

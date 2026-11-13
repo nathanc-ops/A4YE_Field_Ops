@@ -587,6 +587,45 @@ module.exports = function routesExt(app, db, X) {
     if (po.status !== 'draft') throw bad('Only draft POs can be deleted — cancel it instead');
     run(db, 'DELETE FROM purchase_orders WHERE id = ?', po.id); res.json({ ok: true });
   }));
+  // ---- a doubled-up PO (the same order entered here and in Ply, or twice): what removing it would undo, then remove it.
+  //      Received material comes back off the job (or out of stock); a vendor bill or a customer invoice blocks it.
+  function removalCheck(po) {
+    const bills = all(db, "SELECT id, vendor_invoice, status FROM bills WHERE po_id = ? AND status != 'void'", po.id);
+    const mats = all(db, `SELECT jm.id, jm.description, jm.qty, jm.invoiced, i.number invoice_number FROM po_receipts r JOIN po_lines l ON l.id = r.po_line_id
+      JOIN job_materials jm ON jm.id = r.job_material_id LEFT JOIN invoices i ON i.id = jm.invoice_id WHERE l.po_id = ?`, po.id);
+    const stock = all(db, `SELECT l.pricebook_id, SUM(r.qty) qty, l.description FROM po_receipts r JOIN po_lines l ON l.id = r.po_line_id
+      WHERE l.po_id = ? AND r.job_material_id IS NULL AND l.pricebook_id IS NOT NULL GROUP BY l.pricebook_id`, po.id);
+    const blockers = [...bills.map(b => `vendor bill ${b.vendor_invoice || '#' + b.id} was entered from it — void that bill first (it's the cost on the books)`),
+      ...[...new Set(mats.filter(m => m.invoiced).map(m => m.invoice_number || 'an invoice'))].map(n => `its material is billed to the customer on ${n} — take it off that invoice first`)];
+    // likely twins: other POs on the same job, same vendor or within a dollar
+    const t = H.poTotals(po);
+    const twins = po.job_id ? all(db, "SELECT p.*, v.name vendor_name FROM purchase_orders p JOIN vendors v ON v.id = p.vendor_id WHERE p.job_id = ? AND p.id != ? AND p.status != 'cancelled'", po.job_id, po.id)
+      .map(H.poTotals).map(p => ({ id: p.id, number: p.number, vendor_name: p.vendor_name, total: p.total, status: p.status, source: p.source || null, ply_number: p.ply_number || null,
+        likely: p.vendor_id === po.vendor_id || Math.abs((p.total || 0) - (t.total || 0)) < 1 })) : [];
+    return { blockers, undo: { job_materials: mats.length, stock: stock.map(s => ({ ...s, qty: Math.round(s.qty * 1000) / 1000 })) }, twins, ply: po.ply_id ? { id: po.ply_id, number: po.ply_number || null, from_ply: po.source === 'ply' } : null };
+  }
+  app.get('/api/purchase-orders/:id/remove-check', office, wrap((req, res) => res.json(removalCheck(mustGet('purchase_orders', +req.params.id)))));
+  app.post('/api/purchase-orders/:id/remove-duplicate', office, wrap((req, res) => {
+    const po = mustGet('purchase_orders', +req.params.id), c = removalCheck(po);
+    if (c.blockers.length) throw bad(`Can't remove ${po.number}: ${c.blockers.join('; ')}`);
+    const keep = req.body.keep_id ? get(db, 'SELECT id, number FROM purchase_orders WHERE id = ? AND id != ?', +req.body.keep_id, po.id) : null;
+    if (req.body.keep_id && !keep) throw bad('Pick the PO this one duplicates');
+    const reason = String(req.body.reason || '').trim().slice(0, 300);
+    tx(db, () => {
+      // received material off the job; shop receipts back out of stock
+      for (const m of all(db, 'SELECT r.job_material_id id FROM po_receipts r JOIN po_lines l ON l.id = r.po_line_id WHERE l.po_id = ? AND r.job_material_id IS NOT NULL', po.id))
+        run(db, 'DELETE FROM job_materials WHERE id = ?', m.id);
+      for (const s of c.undo.stock) run(db, 'UPDATE pricebook SET qty_on_hand = qty_on_hand - ? WHERE id = ?', s.qty, s.pricebook_id);
+      run(db, 'UPDATE bills SET po_id = NULL WHERE po_id = ?', po.id);   // only void bills are left pointing at it
+      run(db, 'DELETE FROM purchase_orders WHERE id = ?', po.id);       // lines and receipts go with it
+      // the sync must not bring it back from Ply
+      if (po.ply_id) run(db, 'INSERT INTO ply_ignored (ply_id, kind, number, job_id, reason, user_id) VALUES (?,?,?,?,?,?) ON CONFLICT(ply_id) DO NOTHING',
+        String(po.ply_id), 'po', po.ply_number || po.number, po.job_id, reason || (keep ? `duplicate of ${keep.number}` : 'removed as a duplicate'), req.user.id);
+      if (po.job_id) run(db, 'INSERT INTO job_notes (job_id, user_id, body) VALUES (?,?,?)', po.job_id, req.user.id,
+        `${po.number}${po.ply_number ? ` (Ply ${po.ply_number})` : ''} removed as a duplicate${keep ? ` of ${keep.number}` : ''}${reason ? `: ${reason}` : ''}${c.undo.job_materials ? ` — ${c.undo.job_materials} received material line(s) taken off the job` : ''}`);
+    });
+    res.json({ ok: true, undone: c.undo, ply_ignored: !!po.ply_id });
+  }));
   app.post('/api/purchase-orders/:id/submit', office, wrap(async (req, res) => {
     const po = mustGet('purchase_orders', req.params.id);
     if (!get(db, 'SELECT COUNT(*) n FROM po_lines WHERE po_id = ?', po.id).n) throw bad('PO has no lines');
@@ -957,8 +996,7 @@ module.exports = function routesExt(app, db, X) {
     if (!Ply.config(db)) throw bad('Ply is not connected (Settings → Integrations – Ply)');
     const q = String(req.query.q || '').trim().slice(0, 100);
     if (q.length < 2) return res.json([]);
-    const one = async active => (await Ply.request(db, 'GET', '/jobs', null, { query: { textToSearch: q, active, page: 0, size: 25, sort: 'name,asc' }, quiet: true })).data || [];
-    const found = [...await one(true), ...(req.query.archived === '1' ? await one(false) : [])];
+    const found = await Ply.searchPlyJobs(db, q, { archived: req.query.archived === '1', cached: true });   // job # or name, Ply's number field included
     const linked = new Map(all(db, 'SELECT id, number, ply_id FROM jobs WHERE ply_id IS NOT NULL').map(x => [String(x.ply_id), x]));
     res.json(found.slice(0, 40).map(x => ({ id: x.id, name: x.name, number: x.number || null, active: x.active !== false,
       address: x.address ? [x.address.address, x.address.city].filter(Boolean).join(', ') : null, linked_to: linked.has(String(x.id)) ? linked.get(String(x.id)).number : null })));

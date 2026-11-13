@@ -284,3 +284,39 @@ test('search Ply jobs by name while linking: open ones, archived on request, and
   const linked = ply.jobs.find(x => db.prepare('SELECT 1 FROM jobs WHERE ply_id = ?').get(x.id));
   if (linked) { const hit = (await call('GET', '/integrations/ply/jobs?q=' + encodeURIComponent(linked.name.slice(0, 6)))).data.find(x => x.id === linked.id); if (hit) assert.ok(hit.linked_to, 'shows it is taken'); }
 });
+
+test('jobs match Ply by the time clock job #, search finds it by number, and a doubled-up PO can be removed for good', async () => {
+  const cust = (await call('POST', '/customers', { name: 'Sample Builder' })).data.id;
+  const job = (await call('POST', '/jobs', { customer_id: cust, title: 'Shop remodel', timeclock_job: '2699001' })).data.id;
+  // in Ply the job goes by the time clock number, in its number field only (name doesn't carry it), and is archived
+  const pj = { id: uuid(), name: 'Shop remodel - north bay', number: '2699001', active: false };
+  ply.jobs.push(pj);
+  assert.deepEqual((await call('GET', '/integrations/ply/jobs?q=2699001&archived=1')).data.map(x => x.id), [pj.id], 'found by number, not just name');
+  const sup = { id: uuid(), name: 'Desert Supply' };
+  const plyPo = { id: uuid(), createdAt: new Date().toISOString().slice(0, 19), orderNumber: 'PLY-900', status: 'RECEIVED', supplier: sup, location: { id: pj.id }, totalCost: 40, itemCount: 1 };
+  ply.pos.push(plyPo); ply.poItems[plyPo.id] = [{ id: uuid(), material: { id: uuid(), name: 'Wire nuts' }, quantity: 4, price: 10 }];
+  ply.received[plyPo.id] = [{ id: uuid(), purchaseOrderItemId: ply.poItems[plyPo.id][0].id, quantity: 4 }];
+  await call('POST', '/integrations/ply/sync');
+  assert.equal(db.prepare('SELECT ply_id FROM jobs WHERE id = ?').get(job).ply_id, pj.id, 'linked by the time clock job #, archived Ply job included');
+  const dup = db.prepare('SELECT * FROM purchase_orders WHERE ply_id = ?').get(plyPo.id);
+  assert.equal(dup.job_id, job); assert.equal(db.prepare('SELECT COUNT(*) n FROM job_materials WHERE job_id = ?').get(job).n, 1);
+  // the office had entered the same order here too
+  const vend = db.prepare('SELECT vendor_id FROM purchase_orders WHERE id = ?').get(dup.id).vendor_id;
+  const mine = (await call('POST', '/purchase-orders', { vendor_id: vend, job_id: job, deliver_to: 'job', lines: [{ description: 'Wire nuts', qty: 4, unit_cost: 10 }] })).data.id;
+  const chk = (await call('GET', `/purchase-orders/${dup.id}/remove-check`)).data;
+  assert.deepEqual(chk.blockers, []); assert.equal(chk.undo.job_materials, 1); assert.equal(chk.ply.from_ply, true);
+  assert.equal(chk.twins.find(t => t.id === mine).likely, true);
+  const r = (await call('POST', `/purchase-orders/${dup.id}/remove-duplicate`, { keep_id: mine, reason: 'Entered twice' })).data;
+  assert.equal(r.ok, true); assert.equal(r.ply_ignored, true);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM purchase_orders WHERE id = ?').get(dup.id).n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM job_materials WHERE job_id = ?').get(job).n, 0, 'its received material is off the job');
+  assert.match(db.prepare('SELECT body FROM job_notes WHERE job_id = ? ORDER BY id DESC').get(job).body, /removed as a duplicate of PO-\d+: Entered twice/);
+  await call('POST', '/integrations/ply/sync');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM purchase_orders WHERE ply_id = ?').get(plyPo.id).n, 0, 'the sync leaves it alone');
+  const panel = (await call('GET', `/jobs/${job}/ply`)).data;
+  assert.match(panel.pos.find(p => p.id === plyPo.id).removed, /Entered twice/);
+  // a PO with a vendor bill can't be removed until the bill is voided
+  db.prepare("INSERT INTO bills (vendor_id, po_id, vendor_invoice, bill_date, status) VALUES (?, ?, 'V-1', date('now'), 'open')").run(vend, mine);
+  db.prepare("UPDATE purchase_orders SET status = 'submitted' WHERE id = ?").run(mine);
+  assert.match((await call('POST', `/purchase-orders/${mine}/remove-duplicate`, {})).data.error, /void that bill first/);
+});

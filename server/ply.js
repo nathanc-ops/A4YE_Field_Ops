@@ -139,7 +139,8 @@ function toPlyJob(db, jobId) {
   const j = get(db, `SELECT j.*, c.name customer, c.company, c.phone, l.address, l.city, l.state, l.zip FROM jobs j JOIN customers c ON c.id = j.customer_id
     LEFT JOIN locations l ON l.id = COALESCE(j.location_id, (SELECT id FROM locations WHERE customer_id = j.customer_id ORDER BY id LIMIT 1)) WHERE j.id = ?`, jobId);
   const addr = j.address ? { address: String(j.address).slice(0, 125), city: j.city || undefined, state: j.state || undefined, zipCode: j.zip || undefined } : undefined;
-  return { name: `${j.number} ${j.title}`.slice(0, 500), number: j.number, client: { name: (j.company || j.customer || '').slice(0, 255), phoneNumber: j.phone ? String(j.phone).slice(0, 50) : undefined },
+  const num = j.timeclock_job || j.number;   // the job # the field and Ply go by (A4Y time clock job #), else ours
+  return { name: `${num} ${j.title}`.slice(0, 500), number: num, client: { name: (j.company || j.customer || '').slice(0, 255), phoneNumber: j.phone ? String(j.phone).slice(0, 50) : undefined },
     scheduledAt: j.scheduled_start || undefined, note: [j.description, j.timeclock_job ? `Time clock job # ${j.timeclock_job}` : ''].filter(Boolean).join('\n').slice(0, 5000) || undefined, address: addr };
 }
 async function pushJob(db, jobId) {
@@ -149,8 +150,9 @@ async function pushJob(db, jobId) {
   if (j.ply_id) r = await request(db, 'PUT', `/jobs/${encodeURIComponent(j.ply_id)}`, body);
   else {
     // already in Ply under this job number (e.g. created by hand)? link instead of duplicating
-    const existing = (await listAll(db, '/jobs')).find(x => x.number && x.number === body.number);
+    const existing = (await allPlyJobs(db)).find(x => x.number && norm(x.number) === norm(body.number));
     r = existing || await request(db, 'POST', '/jobs', body);
+    if (!existing) plyJobsCache = { at: 0, list: null };
   }
   run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', String(r.id), jobId);
   return { ply_id: r.id, name: r.name || body.name };
@@ -269,27 +271,50 @@ const PLY_PO_STATUS = { DRAFT: 'draft', WAITING_FOR_APPROVAL: 'draft', SENT: 'su
 // else a Ply job name that is our title. Only an unambiguous match counts.
 const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 function matchPlyJob(j, plyJobs) {
-  const num = norm(j.number), title = norm(j.title);
+  const nums = [...new Set([norm(j.timeclock_job), norm(j.number)].filter(Boolean))], title = norm(j.title);
   const one = list => (list.length === 1 ? list[0] : null);
-  return one(plyJobs.filter(x => x.number && norm(x.number) === num))
-    || (num ? one(plyJobs.filter(x => (` ${norm(x.name)} `).includes(` ${num} `))) : null)
-    || (title.length >= 6 ? one(plyJobs.filter(x => norm(x.name) === title || norm(x.name).endsWith(` ${title}`))) : null);
+  for (const num of nums) {
+    const m = one(plyJobs.filter(x => x.number && norm(x.number) === num)) || one(plyJobs.filter(x => (` ${norm(x.name)} `).includes(` ${num} `)));
+    if (m) return m;
+  }
+  return title.length >= 6 ? one(plyJobs.filter(x => norm(x.name) === title || norm(x.name).endsWith(` ${title}`))) : null;
+}
+// every Ply job, open and archived (a job finished in Ply can still have POs). Read fresh for matching; type-ahead
+// search reuses one read for 30 seconds so typing doesn't spend the 60-a-minute limit (cleared when we create a Ply job)
+let plyJobsCache = { at: 0, list: null };
+async function allPlyJobs(db, { cached = false } = {}) {
+  if (cached && plyJobsCache.list && Date.now() - plyJobsCache.at < 30e3) return plyJobsCache.list;
+  const list = [...await listAll(db, '/jobs'), ...await listAll(db, '/jobs', { active: false })];
+  if (cached) plyJobsCache = { at: Date.now(), list };   // only type-ahead search reads it back
+  return list;
+}
+// find Ply jobs by a number or words: Ply's own search only reads names, so numbers are matched here too
+async function searchPlyJobs(db, q, { archived = false, list = null, cached = false } = {}) {
+  const t = norm(q); if (t.length < 2) return [];
+  if (cached && !list) {   // nothing in the saved read? Ply may have a job added since: read it again before saying none
+    const hits = await searchPlyJobs(db, q, { archived, list: await allPlyJobs(db, { cached: true }) });
+    if (hits.length) return hits;
+    return searchPlyJobs(db, q, { archived, list: await allPlyJobs(db) });
+  }
+  list = (list || await allPlyJobs(db, { cached })).filter(x => archived || x.active !== false);
+  const hit = x => norm(x.number) === t || norm(x.number).includes(t) || norm(x.name).includes(t);
+  return list.filter(hit).sort((a, b) => (norm(b.number) === t) - (norm(a.number) === t) || (a.active === false) - (b.active === false) || String(a.name).localeCompare(String(b.name)));
 }
 
 // Everything Ply has for one job, read live for the job's Purchasing tab: its Ply job, POs delivered there (and whether
 // each is here yet), and pick lists going there with their status. Each part says why if it can't be read.
 async function jobPly(db, jobId) {
-  const j = get(db, 'SELECT id, number, title, ply_id FROM jobs WHERE id = ?', jobId);
-  const out = { linked: !!j.ply_id, ply_job: null, suggestions: [], pos: [], pick_lists: [], errors: [] };
+  const j = get(db, 'SELECT id, number, title, ply_id, timeclock_job FROM jobs WHERE id = ?', jobId);
+  const out = { linked: !!j.ply_id, ply_job: null, suggestions: [], pos: [], pick_lists: [], errors: [], numbers: [j.timeclock_job, j.number].filter(Boolean) };
   const note = (what, scope, e) => out.errors.push(`${what}: ${e.message}${/permission|scope/i.test(e.message) ? ` — add ${scope} to the Ply API key` : ''}`);
   if (!j.ply_id) {
     try {
-      // by job number, then each main word of the title (Ply matches part of the name)
+      // by the time clock job # and the job number (in Ply's number or name), then each main word of the title
       const words = [...new Set(norm(j.title).split(' ').filter(w => w.length > 3 && !/^(the|and|with|from|install|replace|repair|service)$/.test(w)))].slice(0, 3);
-      const found = [];
-      for (const q of [j.number, ...words]) found.push(...await listAll(db, '/jobs', { textToSearch: q }));
+      const found = [], every = await allPlyJobs(db);
+      for (const q of [j.timeclock_job, j.number, ...words].filter(Boolean)) found.push(...await searchPlyJobs(db, q, { archived: true, list: every }));
       const taken = new Set(all(db, 'SELECT ply_id FROM jobs WHERE ply_id IS NOT NULL').map(x => x.ply_id));
-      const seen = new Set(); out.suggestions = found.filter(x => !seen.has(x.id) && seen.add(x.id) && !taken.has(String(x.id))).slice(0, 12).map(x => ({ id: x.id, name: x.name, number: x.number || null }));
+      const seen = new Set(); out.suggestions = found.filter(x => !seen.has(x.id) && seen.add(x.id) && !taken.has(String(x.id))).slice(0, 12).map(x => ({ id: x.id, name: x.name, number: x.number || null, active: x.active !== false }));
     } catch (e) { note('Looking up Ply jobs', 'jobs:read', e); }
     return out;
   }
@@ -297,9 +322,9 @@ async function jobPly(db, jobId) {
   catch (e) { note('Reading the Ply job', 'jobs:read', e); }
   try {
     const pos = await listAll(db, '/purchase-orders', { locationId: j.ply_id });
-    out.pos = pos.map(p => { const here = get(db, 'SELECT id, number, status FROM purchase_orders WHERE ply_id = ?', String(p.id));
+    out.pos = pos.map(p => { const here = get(db, 'SELECT id, number, status FROM purchase_orders WHERE ply_id = ?', String(p.id)), ign = get(db, 'SELECT reason FROM ply_ignored WHERE ply_id = ?', String(p.id));
       return { id: p.id, order_number: p.orderNumber || null, status: p.status, supplier: p.supplier && p.supplier.name, total: p.totalCost ?? p.subtotal ?? null, created_at: p.createdAt, due_date: p.dueDate || null,
-        received_at: p.receivedAt || null, here: here ? { id: here.id, number: here.number, status: here.status } : null }; });
+        received_at: p.receivedAt || null, here: here ? { id: here.id, number: here.number, status: here.status } : null, removed: ign ? ign.reason || 'removed as a duplicate' : null }; });
   } catch (e) { note('Reading POs', 'purchase_orders:read', e); }
   try {
     // the API can't filter pick lists by destination: read the newest few hundred and keep the ones going to this job
@@ -322,10 +347,10 @@ async function jobPly(db, jobId) {
 async function importJobPOs(db, H, { days = 180 } = {}) {
   const out = { imported: 0, linked_jobs: 0, received_lines: 0, skipped: 0, errors: [] };
   // link open jobs to Ply jobs made by hand in Ply (same job number)
-  const unlinked = all(db, "SELECT id, number, title FROM jobs WHERE ply_id IS NULL AND status NOT IN ('cancelled')");
+  const unlinked = all(db, "SELECT id, number, title, timeclock_job FROM jobs WHERE ply_id IS NULL AND status NOT IN ('cancelled')");
   if (unlinked.length) {
     try {
-      const plyJobs = await listAll(db, '/jobs');
+      const plyJobs = await allPlyJobs(db);
       for (const j of unlinked) {
         const m = matchPlyJob(j, plyJobs);
         if (m && !get(db, 'SELECT 1 x FROM jobs WHERE ply_id = ?', String(m.id))) { run(db, 'UPDATE jobs SET ply_id = ? WHERE id = ?', String(m.id), j.id); out.linked_jobs++; }
@@ -340,6 +365,7 @@ async function importJobPOs(db, H, { days = 180 } = {}) {
     const job = p.location && jobs.get(String(p.location.id));
     if (!job) continue;                                                       // to a warehouse, truck or someone else's job
     if (get(db, 'SELECT 1 x FROM purchase_orders WHERE ply_id = ?', String(p.id))) continue;   // ours, or already imported
+    if (get(db, 'SELECT 1 x FROM ply_ignored WHERE ply_id = ?', String(p.id))) continue;          // removed here as a duplicate
     try {
       // supplier → vendor (by Ply link, then exact name; added if new)
       let vendor = p.supplier && p.supplier.id ? get(db, 'SELECT id FROM vendors WHERE ply_vendor_id = ?', String(p.supplier.id)) : null;
@@ -398,4 +424,4 @@ async function syncStatus(db, H) {
   return out;
 }
 
-module.exports = { config, request, listAll, test, pullItems, pushJob, pushPO, pushPickList, syncStatus, importJobPOs, jobPly, matchPlyJob, log, toPlyPO, toPlyPickList, toPlyJob, BASES };
+module.exports = { config, request, listAll, test, pullItems, pushJob, pushPO, pushPickList, syncStatus, importJobPOs, jobPly, matchPlyJob, searchPlyJobs, log, toPlyPO, toPlyPickList, toPlyJob, BASES };

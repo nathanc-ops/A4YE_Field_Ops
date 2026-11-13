@@ -720,11 +720,11 @@ async function plyJobCard(j) {
     $('#plypush').onclick = async () => { await act(() => POST('/integrations/ply/push-job/' + j.id), 'Job created in Ply and linked'); route(); };
     return;
   }
-  const notHere = r.pos.filter(p => !p.here).length;
+  const notHere = r.pos.filter(p => !p.here && !p.removed).length;
   el.innerHTML = `<div class="card"><div class="row spread"><h2 style="margin:0">In Ply for this job</h2><span class="small muted">Ply job: <b>${esc((r.ply_job && r.ply_job.name) || 'linked')}</b>${r.ply_job && r.ply_job.active === false ? ' (archived in Ply)' : ''} · <a href="#" id="plyunlink">change</a></span></div>${errs}
     <h3 style="margin:12px 0 4px">Purchase orders (${r.pos.length})</h3>
     ${table([{ label: 'Ply PO', html: p => `<b>${esc(p.order_number || '—')}</b><div class="small muted">${esc(p.supplier || '')}</div>` }, { label: 'Status', html: p => `${plyPill(p.status)}${p.received_at ? `<div class="small muted">${fmtDate(String(p.received_at).slice(0, 10))}</div>` : ''}` },
-      { label: 'Total', num: 1, get: p => p.total != null ? money(p.total) : '—' }, { label: 'Here', html: p => p.here ? `<a href="#/purchasing/po/${p.here.id}">${esc(p.here.number)}</a> ${pill(p.here.status)}` : '<span class="pill warn">not brought in yet</span>' }],
+      { label: 'Total', num: 1, get: p => p.total != null ? money(p.total) : '—' }, { label: 'Here', html: p => p.here ? `<a href="#/purchasing/po/${p.here.id}">${esc(p.here.number)}</a> ${pill(p.here.status)}` : p.removed ? `<span class="pill" title="${esc(p.removed)}">removed here as a duplicate</span>` : '<span class="pill warn">not brought in yet</span>' }],
       r.pos, { empty: 'No Ply POs delivered to this job' })}
     ${notHere ? `<div class="row" style="margin-top:8px"><button class="btn sm primary" id="plypos2">Bring in ${notHere} PO(s) now</button></div>` : ''}
     <h3 style="margin:14px 0 4px">Pick lists (${r.pick_lists.length})</h3>
@@ -926,6 +926,22 @@ function vendorContactForm(v, c) {
     await act(() => DEL('/vendor-contacts/' + c.id), 'Removed'); m.close(); route(); };
 }
 
+// a PO that's here twice (entered here and in Ply, or twice): say what removing it undoes, pick the copy it duplicates
+async function removeDuplicatePO(po) {
+  const c = await GET(`/purchase-orders/${po.id}/remove-check`);
+  if (c.blockers.length) { const m = modal(`<h2>Can't remove ${esc(po.number)} yet</h2><ul>${c.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul><div class="actions"><button type="button" class="btn primary" data-x>OK</button></div>`); $('[data-x]', m.el).onclick = m.close; return; }
+  const twins = c.twins.sort((a, b) => b.likely - a.likely);
+  formModal({ title: `Remove ${po.number} as a duplicate`, okLabel: 'Remove this PO',
+    fields: [...(twins.length ? [{ name: 'keep_id', label: 'It duplicates (the one to keep)', type: 'select', blank: '— not sure / not on this job —', options: twins.map(t => [t.id, `${t.number}${t.ply_number ? ` (Ply ${t.ply_number})` : t.source === 'ply' ? ' (from Ply)' : ''} · ${t.vendor_name} · ${money(t.total)}${t.likely ? ' — likely match' : ''}`]) }] : []),
+      { name: 'reason', label: 'Note (optional)', full: true, placeholder: 'e.g. Entered in Ply by the foreman and here by the office' }],
+    values: { keep_id: twins.find(t => t.likely) ? twins.find(t => t.likely).id : '' },
+    extra: `<ul class="small" style="margin-top:8px">
+      ${c.undo.job_materials ? `<li>${c.undo.job_materials} received material line(s) come back off the job's costs.</li>` : '<li>Nothing was received on it, so no job costs change.</li>'}
+      ${c.undo.stock.length ? `<li>Stock goes back down: ${c.undo.stock.map(s => `${esc(s.description)} −${num(s.qty)}`).join(', ')}.</li>` : ''}
+      ${c.ply ? `<li>${c.ply.from_ply ? 'It came from Ply' : 'It was sent to Ply'}${c.ply.number ? ` (${esc(c.ply.number)})` : ''}: the Ply sync will leave that Ply PO alone from now on. It stays in Ply. Cancel it there if it shouldn't be ordered.</li>` : ''}
+      <li>A note goes on the job. This can't be undone.</li></ul>`,
+    submit: async v => { await POST(`/purchase-orders/${po.id}/remove-duplicate`, { keep_id: v.keep_id ? Number(v.keep_id) : null, reason: v.reason }); toast(`${po.number} removed`); go(po.job_id ? `#/jobs/${po.job_id}?tab=purchasing` : '#/purchasing'); } });
+}
 async function viewPO(id) {
   const { params } = hashParams();
   const [vendors, pb] = await Promise.all([loadVendors(true), loadPricebook(true)]);
@@ -944,6 +960,7 @@ async function viewPO(id) {
       ${plyOn && po.status !== 'cancelled' ? `<button class="btn" id="ply">${po.ply_id ? 'Re-send to Ply' : 'Send to Ply'}</button>` : ''}
       ${['submitted', 'partial', 'draft'].includes(po.status) ? '<button class="btn" id="recv">Receive…</button>' : ''}
       ${isAdmin() && ['partial', 'received'].includes(po.status) && !po.billed ? '<button class="btn" id="bill">Enter vendor bill</button>' : ''}
+      ${po.status !== 'draft' ? '<button class="btn danger" id="podup" title="The same order is here twice (for example entered here and in Ply): remove this copy">Remove (duplicate)</button>' : ''}
       <button class="btn" onclick="print()">Print</button>${(po.to_emails || []).length ? `<a class="btn" title="Opens your email to ${esc(po.to_emails.join(', '))}" href="mailto:${po.to_emails.map(encodeURIComponent).join(',')}?subject=${encodeURIComponent(`PO ${po.number}${po.job_number ? ' · ' + po.job_number : ''} · ${S.settings.company_name || ''}`)}&body=${encodeURIComponent(`Please see PO ${po.number}${po.job_number ? ` for job ${po.job_number}` : ''}.\n\n` + po.lines.map(l => `${l.qty} × ${l.description}${l.sku ? ' (' + l.sku + ')' : ''}`).join('\n'))}">✉ Email PO</a>` : ''}`,
     po.job_id ? `For job <a href="#/jobs/${po.job_id}">${esc(po.job_number || '')}</a>` : 'Shop / truck stock') + `
     <form id="pof" class="stack"><div class="card"><div class="form-grid">
@@ -961,6 +978,7 @@ async function viewPO(id) {
       ${['submitted', 'partial'].includes(po.status) ? '<button type="button" class="btn danger" id="cancel">Cancel PO</button>' : ''}</div></form>
     ${id !== 'new' ? `<div class="grid g2" style="margin-top:14px"><div class="card"><h2>Receipts</h2>${table([{ label: 'Date', get: r => fmtDate(r.received_at) }, { label: 'Item', key: 'description' }, { label: 'Qty', num: 1, get: r => num(r.qty) }, { label: 'By', get: r => r.user_name || label(r.source) }], po.receipts || [], { empty: 'Nothing received yet' })}</div>
       <div class="card"><h2>Vendor bills</h2>${table([{ label: 'Invoice', get: b => b.vendor_invoice || '#' + b.id }, { label: 'Date', get: b => fmtDate(b.bill_date) }, { label: 'Status', html: b => pill(b.status) }, { label: 'Total', num: 1, get: b => money(b.total) }], po.bills || [], { onClick: isAdmin() ? b => go('#/accounting/bills/' + b.id) : null, empty: 'Not billed yet' })}</div></div>` : ''}`;
+  if ($('#podup')) $('#podup').onclick = () => removeDuplicatePO(po);
   const tb = $('#lines'), form = $('#pof');
   const totals = () => { const sub = po.lines.reduce((s, l) => s + (+l.qty || 0) * (+l.unit_cost || 0), 0); const t = sub + (+form.tax.value || 0) + (+form.shipping.value || 0);
     $('#pot').innerHTML = `<div><span>Subtotal</span><span>${money(sub)}</span></div><div class="grand"><span>Total</span><span>${money(t)}</span></div>`; };
