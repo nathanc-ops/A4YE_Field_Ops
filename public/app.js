@@ -1176,7 +1176,7 @@ async function viewDoc(kind, id) {
   const optItems = k => doc.items.filter(it => it.opt == null || it.opt === k);
 
   const itemRow = (it, i) => `<tr data-i="${i}">
-    <td><input class="desc" data-k="description" value="${esc(it.description)}" list="pblist" ${locked ? 'disabled' : ''}></td>
+    <td class="desc-cell"><textarea class="desc" data-k="description" rows="1" placeholder="Type to search the price book, or write the line (Enter for a new line)" ${locked ? 'disabled' : ''}>${esc(it.description)}</textarea></td>
     <td><input class="n" type="number" step="any" data-k="qty" value="${esc(it.qty)}" ${locked ? 'disabled' : ''}></td>
     <td><input class="n" type="number" step="any" data-k="unit_price" value="${esc(it.unit_price)}" ${locked || (techMode && it.pricebook_id) ? 'disabled title="Price-book price"' : ''}></td>
     ${seeCosts ? `<td><input class="n" type="number" step="any" data-k="unit_cost" value="${esc(it.unit_cost ?? '')}" title="Your cost — never shown to the customer" ${locked || (techMode && it.pricebook_id) ? 'disabled' : ''}></td>` : ''}
@@ -1237,6 +1237,7 @@ async function viewDoc(kind, id) {
     const rows = doc.items.map((it, i) => ({ it, i })).filter(x => !doc.opts.length || x.it.opt === optTab);
     tbody.innerHTML = rows.map(x => itemRow(x.it, x.i)).join('') || `<tr><td colspan="8" class="empty">${doc.opts.length ? (optTab == null ? 'No shared lines. Add things every option includes, like the permit or trip charge.' : 'No lines in this option yet') : 'No line items — add one below'}</td></tr>`;
     drawOpts(); totals();
+    $$('#items textarea.desc').forEach(el => { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 320) + 'px'; });
   };
   const drawOpts = () => {
     const bar = $('#optbar'); if (!bar) return;
@@ -1320,11 +1321,42 @@ async function viewDoc(kind, id) {
     const it = doc.items[tr.dataset.i]; const k = e.target.dataset.k;
     it[k] = e.target.type === 'checkbox' ? (e.target.checked ? 1 : 0) : e.target.value;
     if (k === 'description') {
+      growDesc(e.target);
       const p = pb.find(x => x.name === e.target.value);
-      if (p) { Object.assign(it, { pricebook_id: p.id, unit_price: p.unit_price, unit_cost: p.unit_cost ?? 0, taxable: p.taxable, cost_code_id: p.cost_code_id || it.cost_code_id }); draw(); $(`tr[data-i="${tr.dataset.i}"] [data-k=qty]`).focus(); return; }
+      if (p) { pickPb(tr.dataset.i, p); return; }
+      pbMenu(e.target, tr.dataset.i);
     }
     $('[data-line]', tr).textContent = money((+it.qty || 0) * (+it.unit_price || 0)); totals();
   });
+  // ---- description: a growing text box (several lines OK) with a price-book dropdown while the line is short
+  const growDesc = el => { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight + 2, 320) + 'px'; };
+  const pickPb = (ix, p) => {
+    const it = doc.items[ix];
+    Object.assign(it, { pricebook_id: p.id, description: p.name, unit_price: p.unit_price, unit_cost: p.unit_cost ?? 0, taxable: p.taxable, cost_code_id: p.cost_code_id || it.cost_code_id });
+    closeMenu(); draw(); const q = $(`tr[data-i="${ix}"] [data-k=qty]`); if (q) q.focus();
+  };
+  let menu = null, menuIx = null, menuSel = -1, menuList = [];
+  const closeMenu = () => { if (menu) menu.remove(); menu = null; menuIx = null; menuSel = -1; menuList = []; };
+  const pbMenu = (el, ix) => {
+    const t = el.value.trim().toLowerCase();
+    if (locked || t.length < 2 || el.value.includes('\n')) return closeMenu();   // a multi-line description isn't a search
+    menuList = pb.filter(p => `${p.name} ${p.code || ''}`.toLowerCase().includes(t)).slice(0, 8);
+    if (!menuList.length) return closeMenu();
+    if (!menu) { menu = document.createElement('div'); menu.className = 'pbdrop'; document.body.appendChild(menu); }
+    menuIx = ix; menuSel = -1;
+    const r = el.getBoundingClientRect();
+    Object.assign(menu.style, { left: `${r.left + window.scrollX}px`, top: `${r.bottom + window.scrollY + 2}px`, width: `${Math.max(r.width, 320)}px` });
+    menu.innerHTML = menuList.map((p, n) => `<div class="pbopt" data-n="${n}"><b>${esc(p.name)}</b> <span class="muted small">${esc(p.code || '')} · ${money(p.unit_price)}</span></div>`).join('');
+    $$('.pbopt', menu).forEach(o => o.onmousedown = ev => { ev.preventDefault(); pickPb(menuIx, menuList[+o.dataset.n]); });
+  };
+  tbody.addEventListener('keydown', e => {
+    if (!e.target.classList.contains('desc') || !menu) return;
+    const tr = e.target.closest('tr[data-i]'); if (!tr || tr.dataset.i !== menuIx) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); menuSel = (menuSel + (e.key === 'ArrowDown' ? 1 : -1) + menuList.length) % menuList.length; $$('.pbopt', menu).forEach((o, n) => o.classList.toggle('on', n === menuSel)); }
+    else if (e.key === 'Enter' && menuSel >= 0 && !e.shiftKey) { e.preventDefault(); pickPb(menuIx, menuList[menuSel]); }
+    else if (e.key === 'Escape') closeMenu();
+  });
+  tbody.addEventListener('focusout', e => { if (e.target.classList.contains('desc')) setTimeout(closeMenu, 150); });
   tbody.addEventListener('change', e => {
     if (e.target.type === 'checkbox') totals();
     if (e.target.dataset.k === 'cost_code_id') doc.items[e.target.closest('tr').dataset.i].cost_code_id = e.target.value || null;

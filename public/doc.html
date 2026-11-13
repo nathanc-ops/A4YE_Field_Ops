@@ -72,7 +72,7 @@ function render(d) {
   let pick = chosen ? chosen.id : canRespond && opts.length ? (opts.find(o => o.recommended) || opts[0]).id : null;
   const optLines = id => doc.items.filter(i => i.option_id === id);
   const shared = doc.items.filter(i => !i.option_id);
-  const lineLi = i => `<li>${esc(i.description)}${Number(i.qty) !== 1 ? ` <span class="muted">× ${Number(i.qty).toLocaleString()}</span>` : ''}</li>`;
+  const lineLi = i => `<li style="white-space:pre-line">${esc(i.description)}${Number(i.qty) !== 1 ? ` <span class="muted">× ${Number(i.qty).toLocaleString()}</span>` : ''}</li>`;
   const optionsHtml = !opts.length ? '' : `
     <h3 style="margin-top:6px">${canRespond ? 'Choose your option' : chosen ? 'Your choice' : 'Options'}</h3>
     <div class="opt-grid">${opts.map(o => `<button type="button" class="opt-card ${o.recommended ? 'rec' : ''} ${o.id === pick ? 'sel' : ''} ${chosen && o.id !== chosen.id ? 'dim' : ''}" data-pick="${o.id}" ${canRespond ? '' : 'disabled'}>
@@ -103,7 +103,7 @@ function render(d) {
     ${doc.title ? `<h2>${esc(doc.title)}</h2>` : ''}
     ${optionsHtml}
     ${opts.length ? '' : `<div class="table-wrap"><table><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>
-      <tbody>${doc.items.map(it => `<tr><td>${esc(it.description)}</td><td class="num">${Number(it.qty).toLocaleString()}</td><td class="num">${money(it.unit_price)}</td><td class="num">${money(it.qty * it.unit_price)}</td></tr>`).join('')}</tbody></table></div>
+      <tbody>${doc.items.map(it => `<tr><td style="white-space:pre-line">${esc(it.description)}</td><td class="num">${Number(it.qty).toLocaleString()}</td><td class="num">${money(it.unit_price)}</td><td class="num">${money(it.qty * it.unit_price)}</td></tr>`).join('')}</tbody></table></div>
     <div class="totals" style="margin-top:14px">
       <div><span>Subtotal</span><span>${money(doc.subtotal)}</span></div>
       ${doc.discount ? `<div><span>Discount</span><span>−${money(doc.discount)}</span></div>` : ''}
