@@ -1188,6 +1188,10 @@ const MIGRATIONS = [
     )`);
     addColumn(db, 'users', 'payroll_id', 'TEXT');
   },
+  // 53: the workweek (pay week, overtime week) starts on Sunday: All 4 You pays Sunday–Saturday. Settings → Company can change it.
+  db => { db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('workweek_start', 'sun')").run(); },
+  // 54: salaried (overtime-exempt) staff: paid a set salary each week, never overtime. Hourly wage still drives job costing.
+  db => { addColumn(db, 'users', 'pay_type', "TEXT NOT NULL DEFAULT 'hourly'"); addColumn(db, 'users', 'salary_annual', 'REAL NOT NULL DEFAULT 0'); },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

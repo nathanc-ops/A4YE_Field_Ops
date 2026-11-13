@@ -89,7 +89,7 @@ module.exports = function kpiAuto(db, h) {
       payments: () => once('pay', () => all(db, 'SELECT p.*, i.number inv_number, i.customer_id FROM payments p JOIN invoices i ON i.id = p.invoice_id')),
       visits: () => once('vis', () => all(db, `SELECT a.id, a.start, a.end, a.job_id, j.number job_number, t.user_id, u.name FROM appointments a JOIN appointment_techs t ON t.appointment_id = a.id
         JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = a.job_id WHERE a.status != 'cancelled' AND u.role = 'tech'`)),
-      punches: () => once('tp', () => all(db, `SELECT t.*, u.name, u.role, j.number job_number FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE u.role = 'tech'`)),
+      punches: () => once('tp', () => all(db, `SELECT t.*, u.name, u.role, u.pay_type, j.number job_number FROM time_entries t JOIN users u ON u.id = t.user_id LEFT JOIN jobs j ON j.id = t.job_id WHERE u.role = 'tech'`)),
       pos: () => once('po', () => all(db, "SELECT p.*, v.name vendor, j.number job_number FROM purchase_orders p LEFT JOIN vendors v ON v.id = p.vendor_id LEFT JOIN jobs j ON j.id = p.job_id WHERE p.status NOT IN ('draft','cancelled')")
         .map(p => { const sub = (get(db, 'SELECT SUM(qty * unit_cost) t FROM po_lines WHERE po_id = ?', p.id) || {}).t || 0; return { ...p, total: r2(sub + (p.tax || 0) + (p.shipping || 0)) }; })),
       list: v => String(v || '').toLowerCase().split(/[\s,]+/).filter(Boolean),
@@ -271,12 +271,12 @@ module.exports = function kpiAuto(db, h) {
           if (!inWeek(X.day(p.clock_in)) || !p.clock_out || p.kind === 'pto') continue;
           const h_ = Math.max(0, (X.ms(p.clock_out) - X.ms(p.clock_in)) / 36e5);
           const onJob = p.kind === 'job' && p.job_id && !nonJob.includes(String(p.job_number || '').toLowerCase());
-          const x = per.get(p.user_id) || { name: p.name, paid: 0, on: 0, n: 0 };
+          const x = per.get(p.user_id) || { name: p.name, paid: 0, on: 0, n: 0, exempt: p.pay_type === 'salary' };
           x.paid += h_; if (onJob) x.on += h_; x.n++; per.set(p.user_id, x);
         }
         let total = 0;
         for (const x of [...per.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-          const v = rule === 'clock_paid_hours' ? x.paid : rule === 'clock_onsite_hours' ? x.on : Math.max(0, x.paid - otAfter);
+          const v = rule === 'clock_paid_hours' ? x.paid : rule === 'clock_onsite_hours' ? x.on : x.exempt ? 0 : Math.max(0, x.paid - otAfter);
           if (rule === 'clock_overtime' && v <= 0) continue;
           total += v; detail.push({ label: x.name, amount: r2(v), ref: `${r2(x.paid)} h paid, ${r2(x.on)} h on job sites (${x.n} punches)` });
         }

@@ -22,6 +22,9 @@ const isOffice = () => S.user && S.user.role !== 'tech';
 const isAdmin = () => S.user && S.user.role === 'admin';
 // per-employee permissions (Team → edit person). Admins can do everything.
 const can = k => !!S.user && (S.user.role === 'admin' || !!(S.user.perms || {})[k]);
+// the company workweek (payroll, overtime): Sunday–Saturday unless Settings says Monday–Sunday
+const weekOffset = d => (d.getDay() - (S.settings.workweek_start === 'mon' ? 1 : 0) + 7) % 7;
+const weekLabel = () => (S.settings.workweek_start === 'mon' ? 'Monday–Sunday' : 'Sunday–Saturday');
 const label = s => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
 const STATUS_TONE = {
@@ -1475,7 +1478,7 @@ async function viewDoc(kind, id) {
 // ============================================================ time clock & timesheets
 async function viewTime() {
   const { params } = hashParams();
-  const from = params.get('from') || (() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return localDate(d); })();
+  const from = params.get('from') || (() => { const d = new Date(); d.setDate(d.getDate() - weekOffset(d)); return localDate(d); })();
   const to = params.get('to') || todayStr();
   const userId = params.get('user_id') || '';
   $('#view').innerHTML = setTop('Time Clock', isOffice() ? '<button class="btn" id="add">+ Add time</button>' : '') + `<div id="clock"></div>
@@ -1499,7 +1502,7 @@ async function viewTime() {
     { onClick: isOffice() ? t => timeForm(t) : null, empty: 'No time in this range', foot: rows.length ? ['Total', ...(isOffice() ? [''] : []), '', '', '', '', '', '', { v: num(total), num: 1 }, ''] : null });
 }
 
-// Everyone's week (Mon–Sun): hours worked so far, scheduled, projected; flags anyone over or headed over the overtime line.
+// Everyone's workweek (Sun–Sat or Mon–Sun, per Settings): hours worked so far, scheduled, projected; flags anyone over or headed over the overtime line.
 async function weekCard(el, day, { compact = false } = {}) {
   const w = await GET('/time/week' + qs({ week: day }));
   if (!el.isConnected) return;
@@ -1781,10 +1784,10 @@ async function viewReports() {
     if (!can('timesheets')) { R.innerHTML = exp; payrollExportCard($('#pxcard')); return; }
     const rows = await GET('/reports/payroll' + qs({ from, to }));
     const kinds = ['job', 'travel', 'shop', 'training', 'pto'];
-    const cols = [{ label: 'Employee', key: 'name' }, ...kinds.map(k => ({ label: label(k), num: 1, get: r => num(r.by_kind[k] || 0), csv: r => r.by_kind[k] || 0 })),
+    const cols = [{ label: 'Employee', html: r => `${esc(r.name)}${r.pay_type === 'salary' ? ' <span class="pill">Salary</span>' : ''}`, csv: r => r.name }, ...kinds.map(k => ({ label: label(k), num: 1, get: r => num(r.by_kind[k] || 0), csv: r => r.by_kind[k] || 0 })),
       { label: 'Regular', num: 1, get: r => num(r.regular_hours), csv: r => r.regular_hours }, { label: 'Overtime', num: 1, html: r => r.overtime_hours ? `<span class="pill warn">${num(r.overtime_hours)}</span>` : '0', csv: r => r.overtime_hours },
       { label: 'Total hrs', num: 1, get: r => num(r.total_hours), csv: r => r.total_hours }, { label: 'Gross pay', num: 1, get: r => money(r.gross_pay), csv: r => r.gross_pay }];
-    R.innerHTML = exp + `<div class="card"><h2>Payroll summary — ${sub}</h2><p class="small muted">Overtime: hours worked over ${esc(S.settings.overtime_weekly_hours)}/week (Mon–Sun) at ${esc(S.settings.overtime_multiplier)}×; PTO doesn't count toward overtime. Gross pay is before taxes & deductions.${can('payroll_export') ? ' Use <b>Payroll export</b> above for the file to send to payroll.' : ''}</p>
+    R.innerHTML = exp + `<div class="card"><h2>Payroll summary — ${sub}</h2><p class="small muted">Overtime: hours worked over ${esc(S.settings.overtime_weekly_hours)}/week (${weekLabel()}) at ${esc(S.settings.overtime_multiplier)}×; PTO doesn't count toward overtime. Gross pay is before taxes & deductions.${can('payroll_export') ? ' Use <b>Payroll export</b> above for the file to send to payroll.' : ''}</p>
       ${table(cols, rows, { empty: 'No time in range', foot: ['Total', ...kinds.map(() => ''), '', '', { v: num(rows.reduce((s, r) => s + r.total_hours, 0)), num: 1 }, { v: money(rows.reduce((s, r) => s + r.gross_pay, 0)), num: 1 }] })}</div>`;
     csv = () => toCSV(cols, rows, `payroll_${from}_${to}.csv`);
     if (exp) payrollExportCard($('#pxcard'));
@@ -1827,7 +1830,7 @@ async function viewTeam() {
   const users = await loadUsers(true);
   $('#view').innerHTML = setTop('Team', '<button class="btn" id="teamimp">⇪ Import list</button> <button class="btn primary" id="new">+ Employee</button>', 'Wage + burden = loaded labor cost used in job costing and P&L. Bill rate is used for T&M invoices.') + `<div class="card">
     ${table([{ label: 'Name', html: u => `<span class="dot" style="background:${esc(u.color)}"></span> <b>${esc(u.name)}</b>${u.active ? '' : ' <span class="pill">Inactive</span>'}<div class="muted small">${esc(u.email)}</div>` },
-      { label: 'Role', html: u => `${esc(label(u.role))}${u.custom_perms && u.custom_perms.length ? ` <span class="pill warn" title="${esc(u.custom_perms.join(', '))}">custom permissions</span>` : ''}` }, { label: 'Title', key: 'title' }, { label: 'License', key: 'license_number' }, { label: 'Wage', num: 1, get: u => money(u.hourly_wage) },
+      { label: 'Role', html: u => `${esc(label(u.role))}${u.custom_perms && u.custom_perms.length ? ` <span class="pill warn" title="${esc(u.custom_perms.join(', '))}">custom permissions</span>` : ''}` }, { label: 'Title', key: 'title' }, { label: 'License', key: 'license_number' }, { label: 'Pay', num: 1, get: u => u.pay_type === 'salary' ? `${money(u.salary_annual)}/yr salary` : `${money(u.hourly_wage)}/hr` },
       { label: 'Burden', num: 1, get: u => pct(u.burden_pct) }, { label: 'Loaded cost/hr', num: 1, get: u => money(u.hourly_wage * (1 + u.burden_pct / 100)) }, { label: 'Bill rate', num: 1, get: u => money(u.bill_rate) }],
     users, { onClick: u => userForm(u) })}</div>`;
   $('#new').onclick = () => userForm({});
@@ -1890,7 +1893,9 @@ async function userForm(u) {
     fields: [{ name: 'name', label: 'Name', required: true }, { name: 'email', label: 'Email (login)', type: 'email', required: true },
       { name: 'role', label: 'Role', type: 'select', options: [['tech', 'Technician (field app)'], ['office', 'Office (choose what they can do below)'], ['manager', 'Manager (all office work + company KPIs; not Team/Settings)'], ['admin', 'Admin (everything)']], blank: false, default: 'tech' },
       { name: 'title', label: 'Title (Apprentice, Journeyman, Foreman…)' }, { name: 'phone', label: 'Phone' }, { name: 'license_number', label: 'License #' },
-      { name: 'hourly_wage', label: 'Hourly wage $', type: 'number', default: 0 }, { name: 'burden_pct', label: 'Burden % (taxes, WC, benefits)', type: 'number', default: 25 },
+      { name: 'pay_type', label: 'Pay type', type: 'select', options: [['hourly', 'Hourly (overtime after the weekly limit)'], ['salary', 'Salary (exempt: set pay, no overtime)']], blank: false, default: 'hourly' },
+      { name: 'salary_annual', label: 'Yearly salary $ (salaried only)', type: 'number', default: 0 },
+      { name: 'hourly_wage', label: 'Hourly wage $ (salaried: cost per hour for job costing; blank = salary ÷ 2080)', type: 'number', default: 0 }, { name: 'burden_pct', label: 'Burden % (taxes, WC, benefits)', type: 'number', default: 25 },
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },
       { name: 'password', label: u.id ? 'New password (leave blank to keep)' : 'Password (8+ chars)', type: 'password', required: !u.id },
       { name: 'timeclock_id', label: 'Time clock ID (A4Y Time Clock employee ID)', placeholder: 'e.g. E0A1B2C3D4F' },
@@ -1920,6 +1925,7 @@ async function viewSettings() {
     { name: 'company_address', label: 'Address', full: true }, { name: 'default_tax_rate', label: 'Default sales tax %', type: 'number' }, { name: 'invoice_terms_days', label: 'Default invoice terms (days)', type: 'number' },
     { name: 'estimate_valid_days', label: 'Estimates valid for (days)', type: 'number' }, { name: 'target_gross_margin', label: 'Target gross margin %', type: 'number' },
     { name: 'overtime_weekly_hours', label: 'Overtime after (hrs/week)', type: 'number' }, { name: 'overtime_multiplier', label: 'Overtime multiplier', type: 'number' },
+    { name: 'workweek_start', label: 'Workweek / pay week starts (overtime, payroll export, time clock week)', type: 'select', options: [['sun', 'Sunday (Sunday–Saturday)'], ['mon', 'Monday (Monday–Sunday)']], blank: false },
     { name: 'estimate_terms', label: 'Default estimate terms', type: 'textarea', full: true }, { name: 'invoice_terms', label: 'Default invoice terms', type: 'textarea', full: true }];
   $('#view').innerHTML = setTop('Settings') + `<div class="grid g2"><div class="card"><h2>Company</h2><form id="sf"><div class="form-grid">${fields.map(f => fieldHtml(f, s[f.name])).join('')}</div>
       ${isAdmin() ? '<div class="row" style="margin-top:12px"><button class="btn primary">Save settings</button></div>' : '<p class="muted">Only admins can change settings.</p>'}</form></div>
@@ -2085,10 +2091,10 @@ async function payrollExportCard(el, period) {
   const info = await GET('/payroll-export');
   const p = period || { from: info.from, to: info.to };
   const addD = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
-  const lastMon = addD(info.to, -6);
-  const presets = [['Last week', lastMon, info.to], ['Last 2 weeks', addD(lastMon, -7), info.to], ['This week', addD(lastMon, 7), addD(info.to, 7)]];
+  const wk = addD(info.to, -6);
+  const presets = [["Last week", wk, info.to], ["Last 2 weeks", addD(wk, -7), info.to], ["This week", addD(wk, 7), addD(info.to, 7)]];
   el.innerHTML = `<div class="card no-print" style="margin-bottom:14px"><div class="row spread"><h2>Payroll export</h2></div>
-    <p class="small muted">Hours, rates and gross pay for one pay period, as a CSV for your payroll provider or bookkeeper. Periods run Monday–Sunday so overtime is figured per workweek. Every download is logged below.</p>
+    <p class="small muted">Hours, rates and gross pay for one pay period, as a CSV for your payroll provider or bookkeeper. Periods run ${weekLabel()} (Settings → Company) so overtime is figured per workweek. Every download is logged below.</p>
     <form id="pxf" class="row" style="flex-wrap:wrap"><input type="date" name="from" value="${p.from}" style="width:auto"> to <input type="date" name="to" value="${p.to}" style="width:auto">
       ${presets.map(([l, f, t]) => `<button type="button" class="btn sm" data-pxp="${f}|${t}">${l}</button>`).join('')}
       <select name="layout" style="width:auto">${Object.entries(info.layouts).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select>
@@ -2106,10 +2112,10 @@ async function payrollExportCard(el, period) {
       box.innerHTML = `${r.warnings.length ? `<div class="alert" style="margin-bottom:10px">${r.warnings.map(w => `⚠ ${esc(w)}`).join('<br>')}</div>` : ''}
         ${table([{ label: 'Employee', html: x => `${esc(x.name)}${x.employee_id ? ` <span class="muted small">#${esc(x.employee_id)}</span>` : ''}` }, { label: 'Regular', num: 1, get: x => num(x.regular_hours) },
           { label: 'Overtime', num: 1, html: x => x.overtime_hours ? `<span class="pill warn">${num(x.overtime_hours)}</span>` : '0' }, { label: 'PTO', num: 1, get: x => num(x.pto_hours) },
-          { label: 'Rate', num: 1, get: x => money(x.hourly_rate) }, { label: 'Gross pay', num: 1, get: x => money(x.gross_pay) }], r.summary,
+          { label: 'Rate', num: 1, get: x => x.pay_type === 'Salary' ? `Salary ${money(x.salary_per_week)}/wk` : money(x.hourly_rate) }, { label: 'Gross pay', num: 1, get: x => money(x.gross_pay) }], r.summary,
           { empty: 'No closed time entries in this period', foot: ['Total', { v: num(r.summary.reduce((a, x) => a + x.regular_hours, 0)), num: 1 }, { v: num(r.summary.reduce((a, x) => a + x.overtime_hours, 0)), num: 1 },
             { v: num(r.summary.reduce((a, x) => a + x.pto_hours, 0)), num: 1 }, '', { v: money(r.total_gross), num: 1 }] })}
-        <p class="small muted">Overtime after ${num(r.overtime_after)} hrs/week at ${r.overtime_multiplier}×, days counted in ${esc(r.timezone)}. Gross is before taxes and deductions.</p>`;
+        <p class="small muted">Overtime after ${num(r.overtime_after)} hrs/week at ${r.overtime_multiplier}× for hourly staff; salaried staff get yearly salary ÷ 52 each week, no overtime (their hours are shown for reference). Weeks start ${esc(r.week_starts)}, days counted in ${esc(r.timezone)}. Gross is before taxes and deductions.</p>`;
     } catch (e) { box.innerHTML = `<div class="alert">${esc(e.message)}</div>`; }
   }
   f.onsubmit = e => { e.preventDefault(); preview(); };

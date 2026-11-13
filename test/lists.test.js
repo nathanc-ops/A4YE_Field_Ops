@@ -96,7 +96,7 @@ test('weekly hours: worked, scheduled, projected and overtime flags', () => {
   const local = (d, h) => new Date(`${d}T${String(h).padStart(2, '0')}:00:00`).toISOString();
   const clock = (u, d, a, b) => ins('INSERT INTO time_entries (user_id, kind, clock_in, clock_out, hourly_cost, hourly_wage) VALUES (?, \'job\', ?, ?, 0, 0)', u, local(d, a), b == null ? null : local(d, b));
   const visit = (u, d1, h1, d2, h2) => { const a = ins("INSERT INTO appointments (job_id, start, end) VALUES (?,?,?)", ids.j1, local(d1, h1), local(d2, h2)); ins('INSERT INTO appointment_techs (appointment_id, user_id) VALUES (?,?)', a, u); };
-  // week of Mon 2026-11-02. "now" = Wed 2026-11-04 noon.
+  // workweek Sun 2026-11-01 – Sat 11-07 (A4YE pays Sunday–Saturday). "now" = Wed 2026-11-04 noon.
   // Tech One: 11 h Mon + 11 h Tue = 22 worked; Wed–Fri 7–3 crew visit (multi-day) = 8 h/day scheduled, 3 h of today left + Thu/Fri 16 = 19 ahead → 41 projected
   clock(t1, '2026-11-02', 6, 17); clock(t1, '2026-11-03', 6, 17);
   visit(t1, '2026-11-04', 7, '2026-11-06', 15);
@@ -104,11 +104,11 @@ test('weekly hours: worked, scheduled, projected and overtime flags', () => {
   for (const d of ['2026-11-02', '2026-11-03']) clock(t2, d, 2, 23);
   clock(t2, '2026-11-04', 9, null);
   const w = C.weekHours(db, '2026-11-05', local('2026-11-04', 12));
-  assert.equal(w.week, '2026-11-02'); assert.equal(w.days.length, 7);
+  assert.equal(w.week, '2026-11-01'); assert.equal(w.days.length, 7);
   const one = w.rows.find(r => r.user_id === t1), two = w.rows.find(r => r.user_id === t2);
   assert.equal(one.worked, 22); assert.equal(one.scheduled, 24); assert.equal(one.ahead, 19); assert.equal(one.projected, 41);
   assert.deepEqual(one.flags, ['projected']); assert.equal(one.projected_overtime, 1);
-  assert.deepEqual(one.scheduled_by_day.slice(2, 5), [8, 8, 8]);
+  assert.deepEqual(one.scheduled_by_day.slice(3, 6), [8, 8, 8]);
   assert.equal(two.worked, 45); assert.ok(two.on_clock); assert.deepEqual(two.flags, ['over']); assert.equal(two.overtime, 5);
 });
 

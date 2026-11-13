@@ -172,7 +172,7 @@ function createApp(db) {
   // Per-employee permissions for office staff: one rule table (perms.js) decides which area a request belongs to.
   const COST_KEYS = new Set(['unit_cost', 'est_cost', 'est_margin_pct', 'hourly_cost', 'hourly_wage', 'burden_pct', 'labor_cost', 'materials_cost', 'material_cost',
     'other_cost', 'total_cost', 'cost_to_date', 'estimated_cost', 'projected_profit', 'projected_margin_pct', 'profit', 'margin_pct', 'budget_cost', 'budget_material',
-    'budget_other', 'budget_materials', 'material_variance', 'loaded_rate', 'loaded_cost', 'permit_fees', 'forecast_cost', 'cost_variance',
+    'budget_other', 'budget_materials', 'material_variance', 'loaded_rate', 'loaded_cost', 'salary_annual', 'permit_fees', 'forecast_cost', 'cost_variance',
     'committed_cost', 'invoiced_cost', 'open_commit', 'cost_to_date', 'gain_loss', 'margin', 'labor_rate', 'approved_cost']);
   const stripCosts = v => {
     if (Array.isArray(v)) { v.forEach(stripCosts); return v; }
@@ -250,9 +250,16 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ users / employees
-  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id', 'on_schedule', 'payroll_id'];
+  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id', 'on_schedule', 'payroll_id', 'pay_type', 'salary_annual'];
+  // salaried: pay_type 'salary' + yearly salary. With no hourly wage set, job costing uses salary ÷ 2080 h.
+  const payFields = data => {
+    if (data.pay_type !== undefined && !['hourly', 'salary'].includes(data.pay_type)) throw bad('Pay type must be hourly or salary');
+    if (data.salary_annual != null && !(Number(data.salary_annual) >= 0)) throw bad('Salary must be a number');
+    if (data.pay_type === 'salary' && Number(data.salary_annual) > 0 && !(Number(data.hourly_wage) > 0)) data.hourly_wage = Math.round(Number(data.salary_annual) / 2080 * 100) / 100;
+    return data;
+  };
   app.get('/api/users', wrap((req, res) => {
-    const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active, on_schedule' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions, on_schedule';
+    const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active, on_schedule' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions, on_schedule, pay_type, salary_annual, payroll_id, timeclock_id';
     const s = D.settings(db);
     res.json(all(db, `SELECT ${cols} FROM users ORDER BY active DESC, name`).map(u => {
       if (req.user.role !== 'admin') { delete u.permissions; return u; }
@@ -262,14 +269,17 @@ function createApp(db) {
   }));
   app.post('/api/users', admin, wrap((req, res) => {
     if (!req.body.password || req.body.password.length < 8) throw bad('Password must be 8+ characters');
-    const id = insert('users', { ...pick(req.body, USER_FIELDS), password_hash: D.hashPassword(req.body.password),
+    const id = insert('users', { ...payFields(pick(req.body, USER_FIELDS)), password_hash: D.hashPassword(req.body.password),
       permissions: P.overridesFrom(req.body.role || 'tech', req.body.perms, D.settings(db)) });
     res.json({ id });
   }));
   app.put('/api/users/:id', admin, wrap((req, res) => {
-    const data = pick(req.body, USER_FIELDS);
     const target = get(db, 'SELECT * FROM users WHERE id = ?', req.params.id);
     if (!target) throw bad('Not found', 404);
+    const data = pick(req.body, USER_FIELDS);
+    payFields({ ...data, pay_type: data.pay_type ?? target.pay_type, salary_annual: data.salary_annual ?? target.salary_annual, hourly_wage: data.hourly_wage ?? target.hourly_wage });
+    if ((data.pay_type ?? target.pay_type) === 'salary' && Number(data.salary_annual ?? target.salary_annual) > 0 && !(Number(data.hourly_wage ?? target.hourly_wage) > 0))
+      data.hourly_wage = Math.round(Number(data.salary_annual ?? target.salary_annual) / 2080 * 100) / 100;
     if (req.body.perms !== undefined || data.role) data.permissions = P.overridesFrom(data.role || target.role, req.body.perms !== undefined ? req.body.perms : P.effective(target, D.settings(db)), D.settings(db));
     if (Number(req.params.id) === req.user.id && data.role && data.role !== 'admin') throw bad("You can't take admin away from yourself");
     if (req.body.password) { if (req.body.password.length < 8) throw bad('Password must be 8+ characters'); data.password_hash = D.hashPassword(req.body.password); }

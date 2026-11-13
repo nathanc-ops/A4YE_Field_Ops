@@ -396,12 +396,14 @@ module.exports = function workbookRoutes(app, db, X) {
   const CLASSES = ['Foreman', 'Journeyman', 'Apprentice', 'Office'];
   const classOf = (u, job) => u.user_id === job.foreman_id || /foreman|super/i.test(u.title || '') ? 'Foreman' : /apprent/i.test(u.title || '') ? 'Apprentice'
     : u.role !== 'tech' && !/journey|electric|wireman|master/i.test(u.title || '') ? 'Office' : 'Journeyman';
-  // overtime the way payroll counts it: hours past the weekly threshold (Mon–Sun, all jobs) are OT, in clock-in order
+  // overtime the way payroll counts it: hours past the weekly threshold (per workweek, all jobs) are OT, in clock-in order
   function overtimeByEntry(userIds) {
     const out = new Map(); if (!userIds.length) return out;
     const after = Number(s().overtime_weekly_hours) || 40, now = new Date().toISOString(), acc = new Map();
+    const exempt = new Set(all(db, `SELECT id FROM users WHERE pay_type = 'salary' AND id IN (${userIds.map(() => '?').join(',')})`, ...userIds).map(u => u.id));
     for (const t of all(db, `SELECT id, user_id, clock_in, clock_out FROM time_entries WHERE user_id IN (${userIds.map(() => '?').join(',')}) ORDER BY clock_in, id`, ...userIds)) {
-      const k = `${t.user_id}|${mondayOf(localDate(t.clock_in))}`, h = Math.max(0, (Date.parse(t.clock_out || now) - Date.parse(t.clock_in)) / 36e5), a = acc.get(k) || 0;
+      if (exempt.has(t.user_id)) { out.set(t.id, 0); continue; }
+      const ld = localDate(t.clock_in), k = `${t.user_id}|${addD(ld, -((dow(ld) - (s().workweek_start === 'mon' ? 1 : 0) + 7) % 7))}`, h = Math.max(0, (Date.parse(t.clock_out || now) - Date.parse(t.clock_in)) / 36e5), a = acc.get(k) || 0;
       out.set(t.id, Math.max(0, h - Math.max(0, after - a))); acc.set(k, a + h);
     }
     return out;

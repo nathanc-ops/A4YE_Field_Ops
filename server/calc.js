@@ -131,6 +131,9 @@ function visitHoursOnDay(a, day, after = -Infinity) {
   return we > ws ? overlap(ws, we) : overlap(d0, d1);
 }
 const startOfDay = d => new Date(d + 'T00:00:00').toISOString();
+// The workweek: payroll, overtime and the time clock's week all start on this day (Settings → Company → Workweek starts).
+const weekStartDow = s => (s && s.workweek_start === 'mon' ? 1 : 0);              // 0 = Sunday (default), 1 = Monday
+const daysIntoWeek = (jsDay, s) => (jsDay - weekStartDow(s) + 7) % 7;
 
 function profitAndLoss(db, from, to) {
   const invs = all(db, "SELECT * FROM invoices WHERE status != 'draft' AND status != 'void' AND issue_date >= ? AND issue_date <= ?", from, to)
@@ -214,15 +217,15 @@ function hoursByJob(db, from, to, userId) {
   })).sort((a, b) => b.hours - a.hours);
 }
 
-// One week (Mon–Sun, like payroll) for everyone: hours worked so far, hours scheduled, and what the week is headed for.
+// One workweek (same weeks as payroll) for everyone: hours worked so far, hours scheduled, and what the week is headed for.
 // projected = worked so far + the scheduled visit time still ahead. Flags against the overtime threshold.
 function weekHours(db, anyDay, nowIso = new Date().toISOString()) {
   const s = settings(db), otAfter = Number(s.overtime_weekly_hours) || 40;
-  const d = new Date(anyDay + 'T00:00:00'); d.setDate(d.getDate() - (d.getDay() + 6) % 7);
+  const d = new Date(anyDay + 'T00:00:00'); d.setDate(d.getDate() - daysIntoWeek(d.getDay(), s));
   const days = [...Array(7)].map((_, i) => { const x = new Date(d); x.setDate(d.getDate() + i); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; });
   const from = startOfDay(days[0]), to = endOfDay(days[6]), now = Date.parse(nowIso);
-  const users = all(db, "SELECT id, name, role, color FROM users WHERE active = 1 ORDER BY CASE role WHEN 'tech' THEN 0 ELSE 1 END, name");
-  const by = new Map(users.map(u => [u.id, { user_id: u.id, name: u.name, role: u.role, color: u.color, worked: Array(7).fill(0), scheduled: Array(7).fill(0), ahead: 0, on_clock: false }]));
+  const users = all(db, "SELECT id, name, role, color, pay_type FROM users WHERE active = 1 ORDER BY CASE role WHEN 'tech' THEN 0 ELSE 1 END, name");
+  const by = new Map(users.map(u => [u.id, { user_id: u.id, name: u.name, role: u.role, color: u.color, salaried: u.pay_type === 'salary', worked: Array(7).fill(0), scheduled: Array(7).fill(0), ahead: 0, on_clock: false }]));
   // time entries, split across the days they touch (an entry past midnight counts on both)
   const entries = all(db, `SELECT user_id, clock_in, clock_out FROM time_entries WHERE clock_in < ? AND COALESCE(clock_out, ?) > ?`, to, nowIso, from);
   for (const t of entries) {
@@ -241,6 +244,7 @@ function weekHours(db, anyDay, nowIso = new Date().toISOString()) {
     const worked = r2(u.worked.reduce((x, y) => x + y, 0)), scheduled = r2(u.scheduled.reduce((x, y) => x + y, 0)), ahead = r2(u.ahead);
     const projected = r2(worked + ahead);
     const flags = [];
+    if (u.salaried) return { ...u, worked_by_day: u.worked.map(r2), scheduled_by_day: u.scheduled.map(r2), worked, scheduled, ahead, projected, overtime: 0, projected_overtime: 0, flags };   // exempt: no overtime
     if (worked > otAfter) flags.push('over');
     else if (projected > otAfter) flags.push('projected');
     if (scheduled > otAfter) flags.push('scheduled');
@@ -250,17 +254,18 @@ function weekHours(db, anyDay, nowIso = new Date().toISOString()) {
   return { week: days[0], days, ot_after: otAfter, now: nowIso, rows };
 }
 
-// Weekly payroll with overtime over the configured threshold (per ISO week starting Monday).
+// Weekly payroll with overtime over the configured threshold, per workweek (Sunday or Monday start, from Settings).
 function payroll(db, from, to) {
   const s = settings(db);
   const otAfter = Number(s.overtime_weekly_hours) || 40;
   const otMult = Number(s.overtime_multiplier) || 1.5;
   const time = timeInRange(db, startOfDay(from), endOfDay(to));
+  const pay = new Map(all(db, "SELECT id, pay_type, salary_annual FROM users").map(u => [u.id, u]));
   const byUser = new Map();
   for (const t of time) {
     if (!byUser.has(t.user_id)) byUser.set(t.user_id, { user_id: t.user_id, name: t.user_name, weeks: {}, by_kind: {}, wage: t.hourly_wage });
     const u = byUser.get(t.user_id);
-    const d = new Date(t.clock_in); const day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day);
+    const d = new Date(t.clock_in); d.setDate(d.getDate() - daysIntoWeek(d.getDay(), s));
     const wk = d.toISOString().slice(0, 10);
     u.weeks[wk] = u.weeks[wk] || { hours: 0, pay_base: 0, entries: [] };
     u.weeks[wk].hours += t.hours;
@@ -268,7 +273,15 @@ function payroll(db, from, to) {
     u.by_kind[t.kind] = (u.by_kind[t.kind] || 0) + t.hours;
   }
   const rows = [];
+  const days = Math.round((new Date(to + 'T12:00:00') - new Date(from + 'T12:00:00')) / 864e5) + 1;
   for (const u of byUser.values()) {
+    const p = pay.get(u.user_id) || {};
+    if (p.pay_type === 'salary') {   // exempt: no overtime; salary for the days in the range (yearly ÷ 52 per week)
+      const hrs = Object.values(u.weeks).reduce((a, w) => a + w.hours, 0);
+      rows.push({ user_id: u.user_id, name: u.name, pay_type: 'salary', regular_hours: r2(hrs), overtime_hours: 0, total_hours: r2(hrs),
+        by_kind: Object.fromEntries(Object.entries(u.by_kind).map(([k, v]) => [k, r2(v)])), gross_pay: r2((Number(p.salary_annual) || 0) / 52 * days / 7) });
+      continue;
+    }
     let reg = 0, ot = 0, gross = 0;
     for (const w of Object.values(u.weeks)) {
       let acc = 0;
@@ -281,7 +294,7 @@ function payroll(db, from, to) {
         gross += regPart * e.hourly_wage + otPart * e.hourly_wage * otMult;
       }
     }
-    rows.push({ user_id: u.user_id, name: u.name, regular_hours: r2(reg), overtime_hours: r2(ot), total_hours: r2(reg + ot),
+    rows.push({ user_id: u.user_id, name: u.name, pay_type: 'hourly', regular_hours: r2(reg), overtime_hours: r2(ot), total_hours: r2(reg + ot),
       by_kind: Object.fromEntries(Object.entries(u.by_kind).map(([k, v]) => [k, r2(v)])), gross_pay: r2(gross) });
   }
   return rows.sort((a, b) => a.name.localeCompare(b.name));
@@ -413,6 +426,7 @@ function costCodeReport(db, from, to) {
 }
 
 module.exports = {
+  weekStartDow, daysIntoWeek,
   visitHoursOnDay, weekHours,
   estimateChosenItems, jobCostCodes, costCodeReport,
   r2, docTotals, invoiceWithTotals, estimateWithTotals, refreshInvoiceStatus, jobCosting,
