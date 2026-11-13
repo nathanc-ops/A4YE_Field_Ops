@@ -1177,6 +1177,17 @@ const MIGRATIONS = [
     );`);
     addColumn(db, 'bank_transactions', 'plaid_account_id', 'INTEGER');
   },
+  // 52: payroll export — a log of every export, and each person's employee ID at the payroll provider
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS payroll_exports (
+      id INTEGER PRIMARY KEY,
+      period_start TEXT NOT NULL, period_end TEXT NOT NULL, layout TEXT NOT NULL,
+      employees INTEGER NOT NULL DEFAULT 0, total_hours REAL NOT NULL DEFAULT 0, total_gross REAL NOT NULL DEFAULT 0, warnings INTEGER NOT NULL DEFAULT 0,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    addColumn(db, 'users', 'payroll_id', 'TEXT');
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

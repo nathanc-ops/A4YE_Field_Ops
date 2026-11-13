@@ -250,7 +250,7 @@ function createApp(db) {
   }));
 
   // ------------------------------------------------------------ users / employees
-  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id', 'on_schedule'];
+  const USER_FIELDS = ['name', 'email', 'role', 'phone', 'title', 'license_number', 'hourly_wage', 'burden_pct', 'bill_rate', 'color', 'active', 'timeclock_id', 'on_schedule', 'payroll_id'];
   app.get('/api/users', wrap((req, res) => {
     const cols = req.user.role === 'tech' ? 'id, name, role, color, title, active, on_schedule' : 'id, name, email, role, phone, title, license_number, hourly_wage, burden_pct, bill_rate, color, active, created_at, permissions, on_schedule';
     const s = D.settings(db);
@@ -1321,6 +1321,14 @@ function createApp(db) {
   app.get('/api/reports/pl', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.profitAndLoss(db, from, to)); }));
   app.get('/api/reports/trend', office, wrap((req, res) => res.json(C.monthlyTrend(db, Math.min(36, Number(req.query.months) || 12)))));
   app.get('/api/reports/hours-by-job', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.hoursByJob(db, from, to, req.query.user_id)); }));
+  // Payroll export (admins; office staff and managers only when the owner turns on "Payroll export" for them under Team)
+  const PX = require('./payroll_export');
+  app.get('/api/payroll-export', office, wrap((req, res) => res.json({ ...PX.lastPeriod(db), layouts: PX.LAYOUTS, history: PX.history(db) })));
+  app.get('/api/payroll-export/preview', office, wrap((req, res) => { const r = PX.build(db, req.query.from, req.query.to); delete r.detail; res.json(r); }));
+  app.get('/api/payroll-export/csv', office, wrap((req, res) => {
+    const { csv, filename } = PX.exportCSV(db, { from: req.query.from, to: req.query.to, layout: req.query.layout || 'summary', userId: req.user.id });
+    res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"`, 'Cache-Control': 'no-store' }).send('\ufeff' + csv);
+  }));
   app.get('/api/reports/payroll', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.payroll(db, from, to)); }));
   app.get('/api/reports/ar-aging', office, wrap((req, res) => res.json(C.arAging(db))));
   app.get('/api/reports/tech-performance', office, wrap((req, res) => { const { from, to } = range(req); res.json(C.techPerformance(db, from, to)); }));

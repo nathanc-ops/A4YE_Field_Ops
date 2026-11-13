@@ -1708,9 +1708,9 @@ async function viewReports() {
   const r = params.get('r') || 'pl';
   const [defFrom, defTo] = presetRange('mtd');
   const from = params.get('from') || defFrom, to = params.get('to') || defTo;
-  const REPORT_PERM = { hours: 'timesheets', payroll: 'timesheets', permits: 'jobs' };
+  const REPORT_PERM = { hours: 'timesheets', payroll: ['timesheets', 'payroll_export'], permits: 'jobs' };
   const tabs = [['pl', 'Profit & Loss'], ['jobs', 'Jobs'], ['jobcost', 'Job Costing'], ['hours', 'Hours by Job'], ['payroll', 'Payroll / Timesheet'], ['tech', 'Tech Performance'], ['ar', 'A/R Aging'], ['est', 'Estimates'], ['source', 'Lead Sources'], ['cc', 'Cost Codes'], ['wip', 'WIP & Unbilled'], ['permits', 'Permits']]
-    .filter(([k]) => can(REPORT_PERM[k] || 'reports'));
+    .filter(([k]) => [].concat(REPORT_PERM[k] || 'reports').some(p => can(p)));
   if (!tabs.length) { $('#view').innerHTML = setTop('Reports') + '<div class="card empty">You don\'t have access to any reports. Ask the owner to turn some on under Team.</div>'; return; }
   if (!tabs.some(([k]) => k === r)) return go('#/reports' + qs({ r: tabs[0][0], from: params.get('from'), to: params.get('to') }));
   $('#view').innerHTML = setTop('Reports', '<button class="btn" id="csv">Export CSV</button><button class="btn" onclick="print()">Print</button>') + `
@@ -1777,14 +1777,17 @@ async function viewReports() {
     csv = () => toCSV(cols, rows, `hours_by_job_${from}_${to}.csv`);
   }
   if (r === 'payroll') {
+    const exp = can('payroll_export') ? '<div id="pxcard"></div>' : '';
+    if (!can('timesheets')) { R.innerHTML = exp; payrollExportCard($('#pxcard')); return; }
     const rows = await GET('/reports/payroll' + qs({ from, to }));
     const kinds = ['job', 'travel', 'shop', 'training', 'pto'];
     const cols = [{ label: 'Employee', key: 'name' }, ...kinds.map(k => ({ label: label(k), num: 1, get: r => num(r.by_kind[k] || 0), csv: r => r.by_kind[k] || 0 })),
       { label: 'Regular', num: 1, get: r => num(r.regular_hours), csv: r => r.regular_hours }, { label: 'Overtime', num: 1, html: r => r.overtime_hours ? `<span class="pill warn">${num(r.overtime_hours)}</span>` : '0', csv: r => r.overtime_hours },
       { label: 'Total hrs', num: 1, get: r => num(r.total_hours), csv: r => r.total_hours }, { label: 'Gross pay', num: 1, get: r => money(r.gross_pay), csv: r => r.gross_pay }];
-    R.innerHTML = `<div class="card"><h2>Payroll summary — ${sub}</h2><p class="small muted">Overtime: hours over ${esc(S.settings.overtime_weekly_hours)}/week (Mon–Sun) at ${esc(S.settings.overtime_multiplier)}×. Gross pay is before taxes & deductions — export to your payroll provider.</p>
+    R.innerHTML = exp + `<div class="card"><h2>Payroll summary — ${sub}</h2><p class="small muted">Overtime: hours worked over ${esc(S.settings.overtime_weekly_hours)}/week (Mon–Sun) at ${esc(S.settings.overtime_multiplier)}×; PTO doesn't count toward overtime. Gross pay is before taxes & deductions.${can('payroll_export') ? ' Use <b>Payroll export</b> above for the file to send to payroll.' : ''}</p>
       ${table(cols, rows, { empty: 'No time in range', foot: ['Total', ...kinds.map(() => ''), '', '', { v: num(rows.reduce((s, r) => s + r.total_hours, 0)), num: 1 }, { v: money(rows.reduce((s, r) => s + r.gross_pay, 0)), num: 1 }] })}</div>`;
     csv = () => toCSV(cols, rows, `payroll_${from}_${to}.csv`);
+    if (exp) payrollExportCard($('#pxcard'));
   }
   if (r === 'tech') {
     const rows = await GET('/reports/tech-performance' + qs({ from, to }));
@@ -1891,6 +1894,7 @@ async function userForm(u) {
       { name: 'bill_rate', label: 'Bill rate $/hr', type: 'number', default: 0 }, { name: 'color', label: 'Schedule color', type: 'color', default: '#2563eb' },
       { name: 'password', label: u.id ? 'New password (leave blank to keep)' : 'Password (8+ chars)', type: 'password', required: !u.id },
       { name: 'timeclock_id', label: 'Time clock ID (A4Y Time Clock employee ID)', placeholder: 'e.g. E0A1B2C3D4F' },
+      { name: 'payroll_id', label: 'Payroll employee ID (as your payroll provider lists them; goes on the payroll export)' },
       { name: 'on_schedule', label: 'Show on the schedule like a tech (Tech board, Week, Dispatch) — e.g. a service manager who runs calls', type: 'checkbox', full: true },
       { name: 'active', label: 'Active (can sign in)', type: 'checkbox', default: 1 }],
     extra: `<h3 style="margin-top:14px">Permissions</h3><div id="perms"></div>`,
@@ -2074,3 +2078,49 @@ function applyTheme() { const t = themePref(); if (t === 'system') delete docume
 
 applyTheme();
 // boot() runs from ext.js once all views are defined
+
+// ------------------------------------------------------------ payroll export (Reports → Payroll)
+// Admins always; office staff and managers only when "Payroll export" is switched on for them under Team.
+async function payrollExportCard(el, period) {
+  const info = await GET('/payroll-export');
+  const p = period || { from: info.from, to: info.to };
+  const addD = (d, n) => { const x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
+  const lastMon = addD(info.to, -6);
+  const presets = [['Last week', lastMon, info.to], ['Last 2 weeks', addD(lastMon, -7), info.to], ['This week', addD(lastMon, 7), addD(info.to, 7)]];
+  el.innerHTML = `<div class="card no-print" style="margin-bottom:14px"><div class="row spread"><h2>Payroll export</h2></div>
+    <p class="small muted">Hours, rates and gross pay for one pay period, as a CSV for your payroll provider or bookkeeper. Periods run Monday–Sunday so overtime is figured per workweek. Every download is logged below.</p>
+    <form id="pxf" class="row" style="flex-wrap:wrap"><input type="date" name="from" value="${p.from}" style="width:auto"> to <input type="date" name="to" value="${p.to}" style="width:auto">
+      ${presets.map(([l, f, t]) => `<button type="button" class="btn sm" data-pxp="${f}|${t}">${l}</button>`).join('')}
+      <select name="layout" style="width:auto">${Object.entries(info.layouts).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select>
+      <button class="btn">Preview</button><button type="button" class="btn primary" id="pxdl">⬇ Download CSV</button></form>
+    <div id="pxprev" style="margin-top:12px"></div>
+    ${info.history.length ? `<h3 style="margin-top:14px">Recent exports</h3>${table([{ label: 'When', get: h => fmtDT(h.created_at) }, { label: 'By', get: h => h.user_name || '' }, { label: 'Period', get: h => `${fmtDate(h.period_start)} – ${fmtDate(h.period_end)}` },
+      { label: 'Layout', get: h => info.layouts[h.layout] || h.layout }, { label: 'People', num: 1, key: 'employees' }, { label: 'Hours', num: 1, get: h => num(h.total_hours) }, { label: 'Gross', num: 1, get: h => money(h.total_gross) },
+      { label: '', html: h => h.warnings ? `<span class="pill warn">${h.warnings} warning${h.warnings === 1 ? '' : 's'}</span>` : '' }], info.history.slice(0, 8))}` : ''}</div>`;
+  const f = $('#pxf', el);
+  $$('[data-pxp]', el).forEach(b => b.onclick = () => { const [a, z] = b.dataset.pxp.split('|'); f.from.value = a; f.to.value = z; preview(); });
+  async function preview() {
+    const box = $('#pxprev', el);
+    try {
+      const r = await GET('/payroll-export/preview' + qs({ from: f.from.value, to: f.to.value }));
+      box.innerHTML = `${r.warnings.length ? `<div class="alert" style="margin-bottom:10px">${r.warnings.map(w => `⚠ ${esc(w)}`).join('<br>')}</div>` : ''}
+        ${table([{ label: 'Employee', html: x => `${esc(x.name)}${x.employee_id ? ` <span class="muted small">#${esc(x.employee_id)}</span>` : ''}` }, { label: 'Regular', num: 1, get: x => num(x.regular_hours) },
+          { label: 'Overtime', num: 1, html: x => x.overtime_hours ? `<span class="pill warn">${num(x.overtime_hours)}</span>` : '0' }, { label: 'PTO', num: 1, get: x => num(x.pto_hours) },
+          { label: 'Rate', num: 1, get: x => money(x.hourly_rate) }, { label: 'Gross pay', num: 1, get: x => money(x.gross_pay) }], r.summary,
+          { empty: 'No closed time entries in this period', foot: ['Total', { v: num(r.summary.reduce((a, x) => a + x.regular_hours, 0)), num: 1 }, { v: num(r.summary.reduce((a, x) => a + x.overtime_hours, 0)), num: 1 },
+            { v: num(r.summary.reduce((a, x) => a + x.pto_hours, 0)), num: 1 }, '', { v: money(r.total_gross), num: 1 }] })}
+        <p class="small muted">Overtime after ${num(r.overtime_after)} hrs/week at ${r.overtime_multiplier}×, days counted in ${esc(r.timezone)}. Gross is before taxes and deductions.</p>`;
+    } catch (e) { box.innerHTML = `<div class="alert">${esc(e.message)}</div>`; }
+  }
+  f.onsubmit = e => { e.preventDefault(); preview(); };
+  $('#pxdl', el).onclick = async () => {
+    try {
+      const res = await fetch('/api/payroll-export/csv' + qs({ from: f.from.value, to: f.to.value, layout: f.layout.value }), { headers: { Authorization: 'Bearer ' + S.token } });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Download failed (${res.status})`);
+      const name = (/filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '') || [])[1] || 'payroll.csv';
+      const a = document.createElement('a'); a.href = URL.createObjectURL(await res.blob()); a.download = name; a.click();
+      toast('Payroll export downloaded'); payrollExportCard(el, { from: f.from.value, to: f.to.value });
+    } catch (e) { toast(e.message, true); }
+  };
+  preview();
+}

@@ -16,6 +16,8 @@ const PERMS = [
   { key: 'pricebook', label: 'Price book and inventory', roles: ['office', 'manager'] },
   { key: 'expenses', label: 'Expenses', roles: ['office', 'manager'] },
   { key: 'timesheets', label: "Timesheets: edit anyone's time, payroll report", roles: ['office', 'manager'] },
+  // off for office staff and managers until the owner switches it on for them; admins always have it
+  { key: 'payroll_export', label: 'Payroll export: download hours, pay rates and gross pay for payroll', roles: ['office', 'manager'], off: true, offAll: true },
   { key: 'reports', label: 'Business reports: P&L, A/R, job costing, dashboard money figures', roles: ['office', 'manager'] },
   { key: 'accounting', label: 'Accounting, vendor bills and banking', roles: ['office', 'manager'] },
   // both
@@ -35,7 +37,7 @@ const KEYS = PERMS.map(p => p.key);
 function defaults(role, settings = {}) {
   if (role === 'admin') return Object.fromEntries(KEYS.map(k => [k, true]));
   // manager: every office area (accounting included) and the company-wide KPI views; admin can still switch any off
-  if (role === 'manager') return Object.fromEntries(PERMS.filter(p => p.roles.includes('manager')).map(p => [p.key, true]));
+  if (role === 'manager') return Object.fromEntries(PERMS.filter(p => p.roles.includes('manager')).map(p => [p.key, !p.offAll]));
   if (role === 'office') return Object.fromEntries(KEYS.map(k => [k, k !== 'accounting' && !OFF_BY_DEFAULT.has(k)]));
   return { // tech: the company-wide field settings are the starting point
     field_estimates: settings.tech_estimates !== '0', see_costs: settings.tech_see_costs === '1',
@@ -95,6 +97,7 @@ const RULES = [
   R('POST', /^\/api\/time$/, 'timesheets'),
   R('*', /^\/api\/timeclock\//, 'timesheets'),
   R('PUT,DELETE', /^\/api\/time\/\d+$/, 'timesheets'),
+  R('*', /^\/api\/payroll-export(\/|$)/, 'payroll_export'),
   R('GET', /^\/api\/reports\/(payroll|hours-by-job)$/, 'timesheets'),
   R('GET', /^\/api\/reports\/permits$/, 'jobs'),
   R('GET', /^\/api\/reports\//, 'reports'),

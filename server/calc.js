@@ -273,9 +273,10 @@ function payroll(db, from, to) {
     for (const w of Object.values(u.weeks)) {
       let acc = 0;
       for (const e of w.entries) {
-        const regPart = Math.max(0, Math.min(e.hours, otAfter - acc));
+        // PTO is paid at the regular rate and isn't time worked, so it never pushes anyone into overtime
+        const regPart = e.kind === 'pto' ? e.hours : Math.max(0, Math.min(e.hours, otAfter - acc));
         const otPart = e.hours - regPart;
-        acc += e.hours;
+        if (e.kind !== 'pto') acc += e.hours;
         reg += regPart; ot += otPart;
         gross += regPart * e.hourly_wage + otPart * e.hourly_wage * otMult;
       }
