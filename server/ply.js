@@ -307,6 +307,20 @@ async function searchPlyJobs(db, q, { archived = false, list = null, cached = fa
 //   3. its order number or note names the job number (POs delivered to the shop or a truck "for" the job).
 // Only an unambiguous match counts; numbers shorter than 4 characters aren't used for 3.
 const LOOKBACK_DAYS = 730;
+// Ply's documented PO has no job field and no pickup/delivery choice; the "Scheduling & assignment" job may still come
+// back under a field the docs don't list. Any of these, holding a Ply job's id (or {id}), counts as the PO's job.
+const JOB_FIELDS = ['job', 'jobId', 'job_id', 'assignedJob', 'assignedJobId', 'jobLocation', 'project', 'projectId', 'scheduling', 'assignment'];
+function poJobRef(p) {
+  for (const k of JOB_FIELDS) {
+    const v = p[k]; if (!v) continue;
+    if (typeof v === 'string') return { id: v, field: k };
+    if (typeof v === 'object') { const inner = v.job || v.jobId || v; if (inner && (inner.id || typeof inner === 'string')) return { id: String(inner.id || inner), name: inner.name || null, field: k }; }
+  }
+  return null;
+}
+// pickup or delivery, when Ply sends it (also undocumented)
+const poMethod = p => { for (const k of ['deliveryMethod', 'fulfillmentType', 'fulfillment', 'deliveryType', 'shippingMethod', 'pickup']) if (p[k] != null) return k === 'pickup' ? (p[k] ? 'pickup' : 'delivery') : String(p[k]).toLowerCase(); return null; };
+const DOCUMENTED = new Set(['id', 'itemCount', 'orderNumber', 'status', 'type', 'totalCost', 'subtotal', 'note', 'supplier', 'location', 'dueDate', 'receivedAt', 'assignedUserIds', 'createdAt', 'updatedAt']);
 function poMatcher(db, plyJobs) {
   const jobs = all(db, "SELECT id, number, title, ply_id, timeclock_job FROM jobs WHERE status != 'cancelled'");
   const byLoc = new Map(), how = new Map();
@@ -319,6 +333,8 @@ function poMatcher(db, plyJobs) {
   }
   const tokens = jobs.map(j => ({ j, nums: numsOf(j).filter(n => n.replace(/\D/g, '').length >= 4) })).filter(t => t.nums.length);
   return p => {
+    const ref = poJobRef(p);
+    if (ref && byLoc.has(String(ref.id))) return { job: byLoc.get(String(ref.id)), why: `Ply's Scheduling & assignment names its job${poMethod(p) ? ` (${poMethod(p)})` : ''}` };
     const loc = p.location && String(p.location.id);
     if (loc && byLoc.has(loc)) return { job: byLoc.get(loc), why: how.get(loc) };
     const text = ` ${norm(p.orderNumber)} ${norm(p.note)} `;
@@ -419,6 +435,8 @@ async function findPlyPO(db, q) {
     for (const p of r.data || []) if (norm(p.orderNumber).includes(t) || norm(p.note).includes(t)) found.push(p);
     if (!r.pagination || page + 1 >= r.pagination.totalPages) break;
   }
+  // the full record for each (get-by-id returns more than the list), so the lookup can show every field Ply sends
+  for (let i = 0; i < found.length; i++) { try { found[i] = { ...found[i], ...await request(db, 'GET', `/purchase-orders/${encodeURIComponent(found[i].id)}`, null, { quiet: true }) }; } catch { /* keep the list row */ } }
   return found.map(p => {
     const here = get(db, 'SELECT p.id, p.number, p.job_id, j.number job_number FROM purchase_orders p LEFT JOIN jobs j ON j.id = p.job_id WHERE p.ply_id = ?', String(p.id));
     const ign = get(db, 'SELECT reason FROM ply_ignored WHERE ply_id = ?', String(p.id)), m = match(p), old = String(p.createdAt || '').slice(0, 10) < since;
@@ -427,10 +445,11 @@ async function findPlyPO(db, q) {
       : ign ? `It was removed here as a duplicate (${ign.reason || 'no reason given'}), so the sync leaves it alone.`
       : m && old ? `It matches ${m.job.number} (${m.why}) but is older than 2 years, so the sync doesn't bring it in.`
       : m ? `It matches ${m.job.number} (${m.why}). It should come in at the next sync, or press Put on this job.`
+      : poJobRef(p) ? `Ply names a job on it (${poJobRef(p).name || poJobRef(p).id}, field "${poJobRef(p).field}"), but that Ply job isn't linked to a job here — link it on the job (In Ply for this job), or press Put on this job.`
       : plyJob ? `It's delivered to the Ply job "${plyJob.name}", which isn't linked to any job here and doesn't carry a job number that matches one.`
       : `It's delivered to ${(p.location && p.location.name) || 'no location'}, which isn't a job, and neither its order number nor its note names a job number.`;
     return { id: p.id, order_number: p.orderNumber || null, status: p.status, supplier: p.supplier && p.supplier.name, total: p.totalCost ?? p.subtotal ?? null,
-      created_at: p.createdAt || null, location: p.location && p.location.name || null, location_is_job: !!plyJob, here: here || null, removed: !!ign, match: m ? { job_id: m.job.id, job_number: m.job.number, why: m.why } : null, reason };
+      created_at: p.createdAt || null, location: p.location && p.location.name || null, location_is_job: !!plyJob, method: poMethod(p), job_ref: poJobRef(p), extra_fields: Object.fromEntries(Object.entries(p).filter(([k, v]) => !DOCUMENTED.has(k) && v != null).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v).slice(0, 200) : String(v).slice(0, 200)])), here: here || null, removed: !!ign, match: m ? { job_id: m.job.id, job_number: m.job.number, why: m.why } : null, reason };
   });
 }
 // put a Ply PO on a job by hand (a person knows it's this job's). Already here on another job with nothing received: moved.

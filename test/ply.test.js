@@ -376,3 +376,18 @@ test('find a Ply PO by its number, see why it is not on a job, and put it on one
   assert.match(r[0].reason, /here as PO-\d+ on /);
   assert.equal((await call('POST', `/jobs/${job}/ply-po`, { ply_po_id: p.id })).data.already, true);
 });
+
+test('a pickup PO whose job is only in Scheduling & assignment (an undocumented field) still lands on the job; the lookup shows what Ply sent', async () => {
+  const cust = (await call('POST', '/customers', { name: 'Pickup Customer' })).data.id;
+  const job = (await call('POST', '/jobs', { customer_id: cust, title: 'Pickup job', timeclock_job: '2699300' })).data.id;
+  const pj = { id: uuid(), name: '2699300 Pickup job', number: '2699300', active: true }; ply.jobs.push(pj);
+  await call('POST', '/integrations/ply/sync');   // links the job
+  const p = { id: uuid(), createdAt: new Date().toISOString().slice(0, 19), orderNumber: 'C9900300', status: 'CONFIRMED', supplier: { id: uuid(), name: 'Counter Supply' },
+    location: null, totalCost: 12, itemCount: 1, deliveryMethod: 'PICKUP', job: { id: pj.id, name: pj.name } };
+  ply.pos.push(p); ply.poItems[p.id] = [{ id: uuid(), material: { id: uuid(), name: 'Breaker' }, quantity: 1, price: 12 }]; ply.received[p.id] = [];
+  await call('POST', '/integrations/ply/sync');
+  assert.equal((db.prepare('SELECT job_id FROM purchase_orders WHERE ply_id = ?').get(p.id) || {}).job_id, job);
+  assert.match(db.prepare("SELECT body FROM job_notes WHERE job_id = ? AND body LIKE '%C9900300%'").get(job).body, /Scheduling & assignment names its job \(pickup\)/);
+  const r = (await call('GET', '/integrations/ply/po-lookup?q=C9900300')).data[0];
+  assert.equal(r.method, 'pickup'); assert.equal(r.job_ref.id, pj.id); assert.match(r.extra_fields.deliveryMethod, /PICKUP/);
+});

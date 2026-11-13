@@ -70,4 +70,5 @@ Every Ply line must be a Ply catalog material. When a pick list or PO has lines 
 - **One PO still missing:** on the job, **In Ply for this job → Find a Ply PO by number**. Type the Ply order number (or part of it).
   - It shows where Ply has the PO and why it isn't on a job here.
   - **Put on this job** brings it in, received material included. A copy on another job with nothing received is moved over. One with material received has to be removed there first.
+- **Pickup vs delivery, and the job in Ply's Scheduling & assignment:** Ply's published API doesn't document either. If Ply's live API sends a job reference on a PO anyway (e.g. a job field), Field Ops uses it to put the PO on the linked job, pickup or delivery. **Find a Ply PO by number** shows every field Ply sent for that PO, and says when there are no fields beyond the documented ones. If Ply sends nothing, ask Ply support to expose the PO's Scheduling & assignment job in the Public API. Meanwhile use the order number or note (put the job number in it), or **Put on this job**.
 
