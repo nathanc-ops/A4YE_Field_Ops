@@ -21,8 +21,9 @@ function createApp(db) {
   const bigJson = express.json({ limit: '15mb', verify: keepRaw }), smallJson = express.json({ limit: '2mb', verify: keepRaw });
   const importJson = express.json({ limit: '40mb' }); // CSV exports from the old system can be large
   const rawUpload = express.raw({ type: () => true, limit: '160mb' });   // plan files, one at a time
-  app.use((req, res, next) => /^\/api\/estimating\/takeoffs\/\d+\/upload$/.test(req.path) ? rawUpload(req, res, next) : next());
-  app.use((req, res, next) => /^\/api\/estimating\/takeoffs\/\d+\/upload$/.test(req.path) ? next() : (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
+  const isRaw = req => /^\/api\/estimating\/takeoffs\/\d+\/upload$/.test(req.path) || (req.method === 'POST' && /^\/api\/estimating\/bids\/\d+\/files$/.test(req.path));
+  app.use((req, res, next) => isRaw(req) ? rawUpload(req, res, next) : next());
+  app.use((req, res, next) => isRaw(req) ? next() : (req.path === '/api/attachments' || req.path === '/api/import/photos' ? bigJson
     : req.path.startsWith('/api/import/') || req.path === '/api/estimating/import' || req.path === '/api/estimating/price-list' || /^\/api\/estimating\/(bids\/\d+\/takeoff|takeoffs\/\d+\/files)$/.test(req.path) ? importJson : smallJson)(req, res, next));
 
   // ------------------------------------------------------------ helpers
@@ -1465,7 +1466,8 @@ function createApp(db) {
   require('./email_templates').routes(app, db, { wrap, bad, admin });
   Push.routes(app, db, { wrap, bad, admin });
   require('./kpi')(app, db, { wrap, bad, admin });
-  require('./estimating')(app, db, { wrap, bad });
+  const BF = require('./bid_files')(app, db, { wrap });
+  require('./estimating')(app, db, { wrap, bad, BF });
   require('./takeoff')(app, db, { wrap, bad });
   require('./voice_estimate')(app, db, { wrap, bad });
   require('./cc_suggest')(app, db, { wrap, office });

@@ -260,7 +260,7 @@ function setTop(title, actions = '', sub = '') {
 
 // ============================================================ router
 const ROUTES = [
-  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/estimating\/takeoff\/(\d+)$/, id => viewTakeoff(id)], [/^\/estimating\/proposal\/(\d+)$/, id => viewProposal(id)], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
+  [/^\/kpi$/, () => viewKpi()], [/^\/estimating$/, () => viewEstimating()], [/^\/estimating\/takeoff\/(\d+)$/, id => viewTakeoff(id)], [/^\/estimating\/bid\/(\d+)\/files$/, id => viewBidFiles(id)], [/^\/estimating\/proposal\/(\d+)$/, id => viewProposal(id)], [/^\/notifications$/, () => viewNotifications()], [/^\/dashboard$/, viewDashboard], [/^\/my-day$/, () => viewMyDay2()], [/^\/schedule$/, () => viewScheduleHub()],
   [/^\/purchasing$/, () => viewPurchasing()], [/^\/vendors$/, () => viewVendors()], [/^\/vendors\/(\d+)$/, id => viewVendor(id)], [/^\/purchasing\/po\/(new|\d+)$/, id => viewPO(id)], [/^\/(?:purchasing\/)?pick\/(\d+)$/, id => viewPickList(id)],
   [/^\/picklists$/, () => viewTechPickLists()],
   [/^\/accounting$/, () => viewAccounting()], [/^\/accounting\/reconcile\/(\d+)$/, id => viewReconcile(id)], [/^\/accounting\/ledger\/(\d+)$/, id => viewLedger(id)], [/^\/accounting\/bills\/(new|\d+)$/, id => viewBill(id)],
@@ -828,6 +828,7 @@ async function viewJob(id) {
      ${!isOffice() && can('field_estimates') && !['invoiced', 'cancelled'].includes(j.status) ? `<a class="btn" href="#/estimates/new?job_id=${j.id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a>` : ''}
      ${isOffice() && j.status === 'cancelled' ? '<button class="btn" id="reopenjob">Reopen job</button>' : ''}
      ${isAdmin() ? '<button class="btn" id="renum" title="Change the job number">Job #</button>' : ''}
+     ${j.is_project && ['admin', 'manager'].includes(S.user.role) ? '<a class="btn" id="projfiles" style="display:none">📁 Files</a>' : ''}
      ${isOffice() && j.status !== 'cancelled' ? `<button class="btn" id="edit">Edit</button><a class="btn" href="#/estimates/new?job_id=${j.id}&customer_id=${j.customer_id}">${j.billing_type === 'fixed' && j.contract_amount ? '+ Change order' : '+ Estimate'}</a><button class="btn primary" id="invoice">Bill job</button>` : ''}
      ${isOffice() && !['cancelled', 'invoiced'].includes(j.status) ? '<button class="btn danger" id="canceljob">Cancel job</button>' : ''}
      ${isAdmin() ? `<button class="btn danger" id="deljob" ${j.delete_blockers.length ? `title="Can't delete: has ${esc(j.delete_blockers.join(', '))}"` : ''}>Delete</button>` : ''}
@@ -840,6 +841,8 @@ async function viewJob(id) {
   pipelinePath('job', j.id);
   if ($('#canceljob')) $('#canceljob').onclick = () => cancelJobModal(j);
   wireHoldBanner(j);
+  // a project that came from a bid: its file cabinet (same Drive folder layout)
+  if ($('#projfiles')) GET(`/estimating/bid-for-job/${j.id}`).then(b => { const el = $('#projfiles'); if (b && el) { el.href = `#/estimating/bid/${b.id}/files`; el.style.display = ''; } }).catch(() => null);
   if ($('#renum')) $('#renum').onclick = () => formModal({
     title: `Change job number — ${j.number}`, okLabel: 'Change number', values: { number: j.number },
     fields: [{ name: 'number', label: 'New job number', required: true, full: true }],

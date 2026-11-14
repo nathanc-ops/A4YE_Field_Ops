@@ -18,7 +18,7 @@ const CHECK_IN_DAYS = 14;
 const str = v => v == null ? '' : String(v).trim();
 const r2 = n => Math.round(n * 100) / 100;
 
-module.exports = function estimating(app, db, { wrap, bad }) {
+module.exports = function estimating(app, db, { wrap, bad, BF }) {
   const only = (req, res, next) => ['admin', 'manager'].includes(req.user.role) ? next() : res.status(403).json({ error: 'The estimating dashboard is for admins and managers' });
 
   const gcs = () => all(db, 'SELECT * FROM bid_gcs ORDER BY active DESC, sort, name COLLATE NOCASE');
@@ -41,7 +41,7 @@ module.exports = function estimating(app, db, { wrap, bad }) {
     const links = all(db, 'SELECT l.bid_id, g.id, g.name FROM bid_gc_links l JOIN bid_gcs g ON g.id = l.gc_id ORDER BY g.sort, g.name');
     const by = new Map(); for (const l of links) { if (!by.has(l.bid_id)) by.set(l.bid_id, []); by.get(l.bid_id).push({ id: l.id, name: l.name }); }
     return all(db, `SELECT b.*, j.number job_number, j.title job_title, j.is_project job_is_project,
-      (SELECT COUNT(*) FROM takeoffs t WHERE t.bid_id = b.id) takeoff_count FROM bids b LEFT JOIN jobs j ON j.id = b.job_id
+      (SELECT COUNT(*) FROM takeoffs t WHERE t.bid_id = b.id) takeoff_count, (SELECT COUNT(*) FROM bid_files bf WHERE bf.bid_id = b.id) file_count FROM bids b LEFT JOIN jobs j ON j.id = b.job_id
       ORDER BY CASE WHEN b.status = 'estimating' THEN 0 ELSE 1 END, COALESCE(b.due_date, b.submitted_date) DESC, b.id DESC`)
       .map(b => ({ ...b, gcs: by.get(b.id) || [] }));
   };
@@ -124,6 +124,7 @@ module.exports = function estimating(app, db, { wrap, bad }) {
     res.json({ ok: true });
   }));
   app.delete('/api/estimating/bids/:id', only, wrap((req, res) => {
+    if (BF) BF.removeBidFiles(+req.params.id);   // the stored files go with it (rows cascade)
     run(db, 'DELETE FROM bids WHERE id = ?', +req.params.id); res.json({ ok: true });
   }));
 

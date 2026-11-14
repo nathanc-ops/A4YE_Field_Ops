@@ -24,7 +24,7 @@ async function viewEstimating() {
   const T = d.totals, lbl = Object.fromEntries(d.statuses.map(s => [s.key, s.label]));
   const byId = new Map(d.bids.map(b => [b.id, b]));
   const count = st => d.bids.filter(b => b.status === st).length;
-  $('#view').innerHTML = setTop('Estimating', `<button class="btn" id="etpl">Estimate templates</button><button class="btn" id="eplist">Import price list</button><button class="btn" id="egc">Contractors</button><button class="btn" id="eimp">Import workbook</button><button class="btn primary" id="enew">+ New bid</button>`,
+  $('#view').innerHTML = setTop('Estimating', `<button class="btn" id="etpl">Estimate templates</button><button class="btn" id="eplist">Import price list</button><button class="btn" id="egc">Contractors</button>${isAdmin() ? '<button class="btn" id="ebf">Bid folders</button>' : ''}<button class="btn" id="eimp">Import workbook</button><button class="btn primary" id="enew">+ New bid</button>`,
     'Commercial bids · admins and managers only') + `
     <div class="row" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
       <select id="eper" aria-label="Period">${[['all', 'All bids'], ['year', 'This year'], ['365', 'Last 12 months'], ['90', 'Last 90 days']].map(([k, v]) => `<option value="${k}" ${EST.period === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
@@ -89,6 +89,7 @@ async function viewEstimating() {
   $$('[data-b]').forEach(a => a.onclick = e => { e.preventDefault(); estEdit(byId.get(+a.dataset.b), d); });
   $('#enew').onclick = () => estEdit(null, d);
   $('#egc').onclick = () => estGcs(d);
+  if ($('#ebf')) $('#ebf').onclick = bidFolderSetup;
   $('#eimp').onclick = () => estImport();
   $('#etpl').onclick = () => takeoffTemplates();
   $('#eplist').onclick = () => priceListImport();
@@ -119,7 +120,7 @@ function estEdit(b, d) {
   let fc = null;
   const m = formModal({ title: b ? `Bid ${b.bid_number || ''} · ${b.project_name}` : 'New bid', fields, wide: true,
     values: b || { bid_number: d.next_number, status: 'estimating' },
-    extra: gcBoxes + plans + (b ? `<p class="small muted" style="margin:8px 0 0">${b.checked_in_at ? `Notes last changed ${fmtDT(b.checked_in_at)}. ` : ''}<a href="#" id="edel" style="color:var(--bad)">Delete this bid</a></p>` : ''),
+    extra: (b ? `<p style="margin:0 0 8px"><a class="btn" href="#/estimating/bid/${b.id}/files" id="efiles">📁 Files${b.file_count ? ` (${b.file_count})` : ''}</a> <span class="small muted">Drawings, specs, quotes, proposal — PDF, Word, Excel, in your Drive folder layout</span></p>` : '') + gcBoxes + plans + (b ? `<p class="small muted" style="margin:8px 0 0">${b.checked_in_at ? `Notes last changed ${fmtDT(b.checked_in_at)}. ` : ''}<a href="#" id="edel" style="color:var(--bad)">Delete this bid</a></p>` : ''),
     submit: async (o, form) => {
       o.gc_ids = $$('[name=gc]:checked', form).map(x => +x.value);
       const files = fc ? fc.files() : [];
@@ -131,6 +132,7 @@ function estEdit(b, d) {
       viewEstimating();
     } });
   fc = fileCollector($('#eplans', m.el));
+  const ef = $('#efiles', m.el); if (ef) ef.onclick = () => m.close();
   const tos = $('#etos', m.el); if (tos) tos.onclick = async e => { e.preventDefault(); const list = await GET(`/estimating/bids/${b.id}/takeoffs`); m.close(); if (list[0]) go('#/estimating/takeoff/' + list[0].id); };
   const del = $('#edel', m.el);
   if (del) del.onclick = async e => { e.preventDefault(); if (!confirm(`Delete ${b.project_name}?`)) return; await act(() => DEL(`/estimating/bids/${b.id}`), 'Deleted'); m.close(); viewEstimating(); };
@@ -702,3 +704,94 @@ function proposalStdModal(std, done) {
   const m = modal('<div></div>', { wide: true });
   render();
 }
+
+// ------------------------------------------------------------ bid files (folders mirror the Google Drive project template)
+const BF_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.jpg,.jpeg,.png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg,image/png';
+const bfOk = f => /\.(pdf|docx?|xlsx?|xlsm|jpe?g|png)$/i.test(f.name);
+const bfIcon = f => /pdf/.test(f.mime) ? '📕' : /word|msword/.test(f.mime) ? '📘' : /excel|sheet/.test(f.mime) ? '📗' : '🖼';
+async function bfOpen(bidId, f, download) {
+  const res = await fetch(`/api/estimating/bids/${bidId}/files/${f.id}`, { headers: { Authorization: 'Bearer ' + S.token } });
+  if (!res.ok) return toast((await res.json().catch(() => ({}))).error || 'Could not open the file', true);
+  const url = URL.createObjectURL(await res.blob());
+  if (!download && /^(application\/pdf|image\/)/.test(f.mime)) window.open(url, '_blank');
+  else { const a = document.createElement('a'); a.href = url; a.download = f.filename; document.body.append(a); a.click(); a.remove(); }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+async function bfUpload(bidId, folder, files) {
+  const okF = files.filter(bfOk), skipped = files.filter(f => !bfOk(f));
+  if (skipped.length) toast(`Skipped ${skipped.map(f => f.name).join(', ')} — only PDF, Word, Excel and photos`, true);
+  let n = 0;
+  for (const f of okF) {
+    uploadNote(`Uploading ${n + 1} of ${okF.length}: ${f.name}…`);
+    const res = await fetch(`/api/estimating/bids/${bidId}/files?folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(f.name)}`, { method: 'POST',
+      headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/octet-stream' }, body: f });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { uploadNote(''); toast(`${f.name}: ${data.error || (res.status === 413 ? 'too large for the server' : `upload failed (${res.status})`)}`, true); break; }
+    n++;
+  }
+  uploadNote('');
+  if (n) toast(`${n} file${n === 1 ? '' : 's'} added to ${folder.split('/').pop()}`);
+  return n;
+}
+async function viewBidFiles(id, sel) {
+  const d = await GET(`/estimating/bids/${id}/files`);
+  const { params } = hashParams(); sel = sel || params.get('folder') || d.folders[0];
+  const count = f => d.files.filter(x => x.folder === f || x.folder.startsWith(f + '/')).length;
+  const leaf = f => f.split('/').pop(), depth = f => f.split('/').length - 1;
+  const here = d.files.filter(x => x.folder === sel);
+  const title = `${d.bid.bid_number ? d.bid.bid_number + ' - ' : ''}${d.bid.project_name}`;
+  $('#view').innerHTML = setTop(`Files · ${esc(title)}`, `<a class="btn" href="#/estimating">← Estimating</a> <button class="btn" id="bfnew">＋ Folder</button>`,
+      'Same folders as the Google Drive project template. Drop files on a folder (left) or into the list. PDF, Word, Excel and photos, up to ' + d.max_mb + ' MB each.') + `
+    <div class="bfgrid">
+      <div class="card bftree" role="tree">${d.folders.map(f => `<div class="bff${f === sel ? ' on' : ''}" role="treeitem" tabindex="0" data-f="${esc(f)}" style="padding-left:${8 + depth(f) * 16}px">
+        <span>${f === sel ? '📂' : '📁'} ${esc(leaf(f))}</span>${count(f) ? `<span class="pill">${count(f)}</span>` : ''}</div>`).join('')}</div>
+      <div class="card">
+        <div class="small muted" style="margin-bottom:6px">${esc(title)} / ${sel.split('/').map(esc).join(' / ')}</div>
+        <div class="fdrop" id="bfdrop" tabindex="0" role="button"><b>Drop files here</b> or <span class="btn sm">Choose files…</span>
+          <div class="small muted">Adds to <b>${esc(leaf(sel))}</b>. PDF, Word (.doc/.docx), Excel (.xls/.xlsx), photos.</div>
+          <input type="file" multiple hidden accept="${BF_ACCEPT}"></div>
+        ${here.length ? `<table class="items" style="margin-top:10px"><thead><tr><th>Name</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
+          ${here.map(f => `<tr><td><a href="#" data-open="${f.id}">${bfIcon(f)} ${esc(f.filename)}</a></td><td class="num">${mb(f.size)}</td>
+            <td class="small">${fmtDT(f.created_at)}${f.user_name ? `<div class="muted">${esc(f.user_name)}</div>` : ''}</td>
+            <td style="white-space:nowrap"><button class="btn sm" data-dl="${f.id}" title="Download">⬇</button>
+              <select class="sm" data-mv="${f.id}" aria-label="Move to folder" style="max-width:150px"><option value="">Move to…</option>${d.folders.filter(x => x !== f.folder).map(x => `<option value="${esc(x)}">${esc(x.replace(/\//g, ' › '))}</option>`).join('')}</select>
+              <button class="btn sm" data-rn="${f.id}" title="Rename">✎</button><button class="btn sm danger" data-rm="${f.id}" title="Delete">✕</button></td></tr>`).join('')}</tbody></table>`
+          : `<p class="muted" style="margin-top:12px">No files in this folder yet.${count(sel) ? ` ${count(sel)} in the folders under it.` : ''}</p>`}
+      </div></div>`;
+  const byId = new Map(d.files.map(f => [String(f.id), f]));
+  const reload = f => viewBidFiles(id, f || sel);
+  $$('.bff').forEach(el => {
+    el.onclick = () => reload(el.dataset.f);
+    el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reload(el.dataset.f); } };
+    el.ondragover = e => { e.preventDefault(); el.classList.add('drop'); };
+    el.ondragleave = () => el.classList.remove('drop');
+    el.ondrop = async e => { e.preventDefault(); el.classList.remove('drop'); if (await bfUpload(id, el.dataset.f, [...e.dataTransfer.files])) reload(el.dataset.f); };
+  });
+  const drop = $('#bfdrop'), inp = $('input', drop);
+  drop.onclick = e => { if (e.target !== inp) inp.click(); };
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } };
+  inp.onchange = async () => { const fl = [...inp.files]; inp.value = ''; if (await bfUpload(id, sel, fl)) reload(); };
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
+  drop.ondragleave = () => drop.classList.remove('on');
+  drop.ondrop = async e => { e.preventDefault(); drop.classList.remove('on'); if (await bfUpload(id, sel, [...e.dataTransfer.files])) reload(); };
+  $$('[data-open]').forEach(a => a.onclick = e => { e.preventDefault(); bfOpen(id, byId.get(a.dataset.open)); });
+  $$('[data-dl]').forEach(b => b.onclick = () => bfOpen(id, byId.get(b.dataset.dl), true));
+  $$('[data-mv]').forEach(s2 => s2.onchange = async () => { if (!s2.value) return; await act(() => PUT(`/estimating/bids/${id}/files/${s2.dataset.mv}`, { folder: s2.value }), 'Moved'); reload(); });
+  $$('[data-rn]').forEach(b => b.onclick = async () => { const f = byId.get(b.dataset.rn); const n = prompt('New name', f.filename); if (!n || n === f.filename) return; await act(() => PUT(`/estimating/bids/${id}/files/${f.id}`, { filename: n }), 'Renamed'); reload(); });
+  $$('[data-rm]').forEach(b => b.onclick = async () => { const f = byId.get(b.dataset.rm); if (!confirm(`Delete ${f.filename}?`)) return; await act(() => DEL(`/estimating/bids/${id}/files/${f.id}`), 'Deleted'); reload(); });
+  $('#bfnew').onclick = async () => {
+    const n = prompt(`New folder inside "${leaf(sel)}" (start with / to put it at the top level)`); if (!n || !n.trim()) return;
+    const folder = n.trim().startsWith('/') ? n.trim().slice(1) : `${sel}/${n.trim()}`;
+    const r = await act(() => POST(`/estimating/bids/${id}/folders`, { folder })); reload(r.folder);
+  };
+}
+// Estimating → Bid folders (admins): the folder layout every bid gets, one per line, "/" between levels
+async function bidFolderSetup() {
+  const r = await GET('/estimating/bid-folders');
+  const m = modal(`<h2>Bid folders</h2><p class="small muted">Every bid's Files page starts with these folders — the same layout as the Google Drive project template. One folder per line; put <code>/</code> between levels. Folders added on a single bid stay on that bid.</p>
+    <textarea id="bft" rows="18" style="width:100%;font-family:monospace;font-size:12px">${esc(r.folders.join('\n'))}</textarea>
+    <div class="row" style="margin-top:8px;gap:8px"><button class="btn primary" id="bfsave">Save</button><button class="btn" id="bfreset">Reset to the Drive template</button></div>`, { wide: true });
+  $('#bfsave', m.el).onclick = async () => { S.settings = await act(() => PUT('/settings', { bid_folder_template: $('#bft', m.el).value.trim() }), 'Bid folders saved'); m.close(); };
+  $('#bfreset', m.el).onclick = () => { $('#bft', m.el).value = r.default.join('\n'); };
+}
+

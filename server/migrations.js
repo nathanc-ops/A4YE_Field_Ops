@@ -1224,6 +1224,16 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_jobs_hcp ON jobs(hcp_id); CREATE INDEX IF NOT EXISTS idx_est_hcp ON estimates(hcp_id);
     CREATE INDEX IF NOT EXISTS idx_jobnotes_hcp ON job_notes(hcp_id);`);
   },
+  // 57: files on commercial bids, in folders that mirror the Google Drive project template (Settings → Bid folders)
+  db => {
+    db.exec(`CREATE TABLE IF NOT EXISTS bid_files (
+      id INTEGER PRIMARY KEY, bid_id INTEGER NOT NULL REFERENCES bids(id) ON DELETE CASCADE,
+      folder TEXT NOT NULL, filename TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, path TEXT NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE INDEX IF NOT EXISTS idx_bidfiles ON bid_files(bid_id, folder);
+    CREATE TABLE IF NOT EXISTS bid_folders (
+      bid_id INTEGER NOT NULL REFERENCES bids(id) ON DELETE CASCADE, folder TEXT NOT NULL, PRIMARY KEY (bid_id, folder));`);
+  },
 ];
 
 // SQLite can't alter a CHECK constraint, so copy the table under the new definition.

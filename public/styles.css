@@ -811,3 +811,12 @@ textarea.desc { width: 100%; min-height: 36px; resize: vertical; overflow: hidde
 tr.kflash td { animation: kflash 1.6s ease-out; }
 @keyframes kflash { from { background: rgba(61,220,132,.22); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .klivedot, tr.kflash td { animation: none; } }
+
+/* bid files: folder tree + file list */
+.bfgrid { display: grid; grid-template-columns: minmax(220px, 300px) 1fr; gap: 14px; align-items: start; }
+@media (max-width: 760px) { .bfgrid { grid-template-columns: 1fr; } }
+.bftree { padding: 6px; max-height: 75vh; overflow-y: auto; }
+.bff { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.bff:hover, .bff:focus-visible { background: color-mix(in srgb, var(--series-1) 12%, transparent); outline: none; }
+.bff.on { background: color-mix(in srgb, var(--series-1) 22%, transparent); font-weight: 600; }
+.bff.drop { outline: 2px dashed var(--series-1); }
