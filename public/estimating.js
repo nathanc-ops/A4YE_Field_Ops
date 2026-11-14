@@ -120,7 +120,7 @@ function estEdit(b, d) {
   let fc = null;
   const m = formModal({ title: b ? `Bid ${b.bid_number || ''} · ${b.project_name}` : 'New bid', fields, wide: true,
     values: b || { bid_number: d.next_number, status: 'estimating' },
-    extra: (b ? `<p style="margin:0 0 8px"><a class="btn" href="#/estimating/bid/${b.id}/files" id="efiles">📁 Files${b.file_count ? ` (${b.file_count})` : ''}</a> <span class="small muted">Drawings, specs, quotes, proposal — PDF, Word, Excel, in your Drive folder layout</span></p>` : '') + gcBoxes + plans + (b ? `<p class="small muted" style="margin:8px 0 0">${b.checked_in_at ? `Notes last changed ${fmtDT(b.checked_in_at)}. ` : ''}<a href="#" id="edel" style="color:var(--bad)">Delete this bid</a></p>` : ''),
+    extra: (b ? `<p style="margin:0 0 8px"><a class="btn" href="#/estimating/bid/${b.id}/files" id="efiles">📁 Files${b.file_count ? ` (${b.file_count})` : ''}</a> <span class="small muted">Drawings, specs, quotes, proposal — any file, in your Drive folder layout</span></p>` : '') + gcBoxes + plans + (b ? `<p class="small muted" style="margin:8px 0 0">${b.checked_in_at ? `Notes last changed ${fmtDT(b.checked_in_at)}. ` : ''}<a href="#" id="edel" style="color:var(--bad)">Delete this bid</a></p>` : ''),
     submit: async (o, form) => {
       o.gc_ids = $$('[name=gc]:checked', form).map(x => +x.value);
       const files = fc ? fc.files() : [];
@@ -706,9 +706,9 @@ function proposalStdModal(std, done) {
 }
 
 // ------------------------------------------------------------ bid files (folders mirror the Google Drive project template)
-const BF_ACCEPT = '.pdf,.doc,.docx,.xls,.xlsx,.xlsm,.jpg,.jpeg,.png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg,image/png';
-const bfOk = f => /\.(pdf|docx?|xlsx?|xlsm|jpe?g|png)$/i.test(f.name);
-const bfIcon = f => /pdf/.test(f.mime) ? '📕' : /word|msword/.test(f.mime) ? '📘' : /excel|sheet/.test(f.mime) ? '📗' : '🖼';
+// every file is kept, except the hidden clutter computers leave in folders
+const bfJunk = f => /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|~\$.*)$/i.test(f.name);
+const bfIcon = f => /pdf/.test(f.mime) ? '📕' : /word|msword/.test(f.mime) ? '📘' : /excel|sheet/.test(f.mime) ? '📗' : /^image\//.test(f.mime) ? '🖼' : '📄';
 async function bfOpen(bidId, f, download) {
   const res = await fetch(`/api/estimating/bids/${bidId}/files/${f.id}`, { headers: { Authorization: 'Bearer ' + S.token } });
   if (!res.ok) return toast((await res.json().catch(() => ({}))).error || 'Could not open the file', true);
@@ -750,7 +750,7 @@ async function bfUpload(bidId, target, { items, dirs = [] }) {
   }
   const loose = items.filter(i => !i.dir && !target);
   if (loose.length) toast(`${loose.map(i => i.file.name).join(', ')}: pick a folder for loose files (the top level holds folders only)`, true);
-  const okI = items.filter(i => (i.dir || target) && bfOk(i.file)), skipped = items.filter(i => (i.dir || target) && !bfOk(i.file));
+  const okI = items.filter(i => (i.dir || target) && !bfJunk(i.file));
   if (dirs.length) await POST(`/estimating/bids/${bidId}/folders`, { folders: dirs.map(d => join(target, d)) }).catch(() => null);
   let n = 0, replaced = 0;
   for (const { file: f, dir } of okI) {
@@ -763,7 +763,6 @@ async function bfUpload(bidId, target, { items, dirs = [] }) {
   }
   uploadNote('');
   if (n || dirs.length) toast(`${n} file${n === 1 ? '' : 's'} added${replaced ? ` (${replaced} replaced a file with the same name)` : ''}${dirs.length ? `, ${dirs.length} folder${dirs.length === 1 ? '' : 's'}` : ''}`);
-  if (skipped.length) toast(`Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} that aren't PDF, Word, Excel or photos: ${skipped.slice(0, 5).map(i => i.file.name).join(', ')}${skipped.length > 5 ? '…' : ''}`, true);
   return n || dirs.length;
 }
 async function viewBidFiles(id, sel) {
@@ -774,15 +773,15 @@ async function viewBidFiles(id, sel) {
   const here = d.files.filter(x => x.folder === sel);
   const title = `${d.bid.bid_number ? d.bid.bid_number + ' - ' : ''}${d.bid.project_name}`;
   $('#view').innerHTML = setTop(`Files · ${esc(title)}`, `<a class="btn" href="#/estimating">← Commercial Estimating</a> <button class="btn" id="bfnew">＋ Folder</button>`,
-      'Same folders as the Google Drive project template. Drop files or whole folders on a folder (left) or into the list. A folder with the same name as one here merges into it, and a file with the same name replaces the old one. PDF, Word, Excel and photos, up to ' + d.max_mb + ' MB each.') + `
+      'Same folders as the Google Drive project template. Drop files or whole folders on a folder (left) or into the list. A folder with the same name as one here merges into it, and a file with the same name replaces the old one. Every file type is kept (PDF, Word, Excel, CAD, photos…), up to ' + d.max_mb + ' MB each.') + `
     <div class="bfgrid">
       <div class="card bftree" role="tree"><div class="bff bfroot" role="treeitem" tabindex="0" data-f="" title="Drop folders here to add them at the top level"><span>🗂 ${esc(title)}</span></div>${d.folders.map(f => `<div class="bff${f === sel ? ' on' : ''}" role="treeitem" tabindex="0" data-f="${esc(f)}" style="padding-left:${8 + depth(f) * 16}px">
         <span>${f === sel ? '📂' : '📁'} ${esc(leaf(f))}</span>${count(f) ? `<span class="pill">${count(f)}</span>` : ''}</div>`).join('')}</div>
       <div class="card">
         <div class="small muted" style="margin-bottom:6px">${esc(title)} / ${sel.split('/').map(esc).join(' / ')}</div>
         <div class="fdrop" id="bfdrop" tabindex="0" role="button"><b>Drop files or folders here</b> or <span class="btn sm">Choose files…</span> <span class="btn sm" id="bfdirbtn">Choose a folder…</span>
-          <div class="small muted">Adds to <b>${esc(leaf(sel))}</b>. PDF, Word (.doc/.docx), Excel (.xls/.xlsx), photos. Same name = replaced.</div>
-          <input type="file" multiple hidden accept="${BF_ACCEPT}"><input type="file" id="bfdir" hidden webkitdirectory multiple></div>
+          <div class="small muted">Adds to <b>${esc(leaf(sel))}</b>. All files in a folder come along. Same name = replaced.</div>
+          <input type="file" multiple hidden><input type="file" id="bfdir" hidden webkitdirectory multiple></div>
         ${here.length ? `<table class="items" style="margin-top:10px"><thead><tr><th>Name</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
           ${here.map(f => `<tr><td><a href="#" data-open="${f.id}">${bfIcon(f)} ${esc(f.filename)}</a></td><td class="num">${mb(f.size)}</td>
             <td class="small">${fmtDT(f.created_at)}${f.user_name ? `<div class="muted">${esc(f.user_name)}</div>` : ''}</td>

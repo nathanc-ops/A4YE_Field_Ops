@@ -46,22 +46,24 @@ test('a bid starts with the Drive template folders', async () => {
   assert.equal((await call('office', 'GET', `/estimating/bids/${bid}/files`)).status, 403, 'admins and managers only, like estimating');
 });
 
-test('PDF, Word and Excel go in; anything else is refused; files open with their own name', async () => {
+test('PDF, Word, Excel and any other file go in; only real PDFs and photos open in the browser', async () => {
   const bid = (await call('admin', 'POST', '/estimating/bids', { project_name: 'Sample Warehouse', bid_number: '9002' })).data.id;
   assert.equal((await upload('admin', bid, '001 - Precon/001 - Customer Supplied Documents', 'E-sheets.pdf', PDF)).data.mime, 'application/pdf');
   assert.match((await upload('admin', bid, '001 - Precon/004 - Proposal', 'Proposal.docx', DOCX)).data.mime, /wordprocessingml/);
   assert.match((await upload('admin', bid, '001 - Precon/003 - Estimate', 'Takeoff.xlsx', XLSX)).data.mime, /spreadsheetml/);
   assert.equal((await upload('admin', bid, '001 - Precon/002 - Vendor Quotes', 'Old quote.xls', OLE)).data.mime, 'application/vnd.ms-excel');
   assert.equal((await upload('admin', bid, '001 - Precon/002 - Vendor Quotes', 'Letter.doc', OLE)).data.mime, 'application/msword');
-  const exe = await upload('admin', bid, '001 - Precon/005 - RFI', 'setup.exe', Buffer.from('MZ\x90\x00 not a document'));
-  assert.equal(exe.status, 400); assert.match(exe.data.error, /only PDF, Word/);
-  const sneaky = await upload('admin', bid, '001 - Precon/005 - RFI', 'notes.pdf', Buffer.from('<html>not really a pdf</html>'));
-  assert.equal(sneaky.status, 400, 'checked by content, not by name');
+  const dwg = await upload('admin', bid, '001 - Precon/005 - RFI', 'E101.dwg', Buffer.from('AC1032 drawing bytes'));
+  assert.equal(dwg.status, 200); assert.equal(dwg.data.mime, 'application/octet-stream');
+  const sneaky = await upload('admin', bid, '001 - Precon/005 - RFI', 'notes.pdf', Buffer.from('<html><script>alert(1)</script></html>'));
+  assert.equal(sneaky.data.mime, 'application/octet-stream', 'typed by content, not by name');
+  const sr = await fetch(`${base}/api/estimating/bids/${bid}/files/${sneaky.data.id}`, { headers: { Authorization: 'Bearer ' + tok.admin } });
+  assert.equal(sr.headers.get('content-type'), 'application/octet-stream'); assert.match(sr.headers.get('content-disposition'), /^attachment/, 'never opened in the browser');
   const esc = await upload('admin', bid, '../../etc', 'x.pdf', PDF);
   assert.equal(esc.status, 200); assert.equal(esc.data.folder, 'etc', '".." is stripped from folder paths');
 
   const list = (await call('admin', 'GET', `/estimating/bids/${bid}/files`)).data;
-  assert.equal(list.files.length, 6);
+  assert.equal(list.files.length, 8);
   const pdf = list.files.find(f => f.filename === 'E-sheets.pdf');
   const res = await fetch(`${base}/api/estimating/bids/${bid}/files/${pdf.id}`, { headers: { Authorization: 'Bearer ' + tok.admin } });
   assert.equal(res.status, 200); assert.equal(res.headers.get('content-type'), 'application/pdf');
@@ -72,7 +74,7 @@ test('PDF, Word and Excel go in; anything else is refused; files open with their
   assert.match(r2.headers.get('content-disposition'), /^attachment/, 'Office files download');
   // the bid list shows how many files it has
   const bids = (await call('admin', 'GET', '/estimating')).data;
-  assert.equal(bids.bids.find(b => b.id === bid).file_count, 6);
+  assert.equal(bids.bids.find(b => b.id === bid).file_count, 8);
 });
 
 test('move, rename (keeps the extension), extra folders, delete; deleting the bid removes its files', async () => {

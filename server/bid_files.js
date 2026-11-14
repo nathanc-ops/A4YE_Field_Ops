@@ -1,6 +1,7 @@
 'use strict';
 // Commercial bids: a file cabinet per bid whose folders mirror the company's Google Drive project template
-// (Commercial Estimating → Bid folders). PDF, Word, Excel (and photos) — sent one file at a time as raw bytes.
+// (Commercial Estimating → Bid folders). Any file type — sent one file at a time as raw bytes. Only PDFs and photos
+// (recognised from their bytes) ever open in the browser; everything else is served as a plain download.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -90,8 +91,8 @@ module.exports = function bidFiles(app, db, { wrap }) {
     const filename = String(req.query.filename || 'file').replace(/[\\/\u0000-\u001f]/g, '_').slice(0, 200);
     if (!buf.length) throw bad(`${filename} is empty`);
     if (buf.length > MAX_FILE) throw bad(`${filename} is larger than ${MAX_FILE / 1048576} MB`);
-    const k = kindOf(buf, filename);
-    if (!k) throw bad(`${filename}: only PDF, Word (.doc/.docx), Excel (.xls/.xlsx) and photos (JPEG/PNG) can be added`);
+    // any file is kept; types we recognise get their real type, the rest are stored as plain bytes (download only)
+    const k = kindOf(buf, filename) || { mime: 'application/octet-stream', ext: ((filename.match(/\.([a-z0-9]{1,8})$/i) || [])[1] || 'bin').toLowerCase() };
     const folder = sameFolder(b.id, cleanFolder(req.query.folder));
     const rel = path.join('bids', String(b.id), `${crypto.randomBytes(12).toString('hex')}.${k.ext}`);
     fs.mkdirSync(path.join(UPLOAD_DIR, 'bids', String(b.id)), { recursive: true });
