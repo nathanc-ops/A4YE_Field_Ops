@@ -1,6 +1,6 @@
 'use strict';
 // Commercial bids: a file cabinet per bid whose folders mirror the company's Google Drive project template
-// (Settings → Estimating → Bid folders). PDF, Word, Excel (and photos) — sent one file at a time as raw bytes.
+// (Commercial Estimating → Bid folders). PDF, Word, Excel (and photos) — sent one file at a time as raw bytes.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');

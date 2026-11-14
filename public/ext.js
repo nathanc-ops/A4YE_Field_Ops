@@ -1466,7 +1466,7 @@ async function settingsExtras(el) {
         <li>Paste it here. The key stays on your server and is never sent to browsers.</li></ol></details>
       <div class="row"><button class="btn primary">Save</button>${s.google_maps_api_key_set ? '<button type="button" class="btn danger" id="geoclear">Remove key</button>' : ''}</div></form></div>`);
     cards.push(`<div class="card"><h2>Plan takeoff (Claude)</h2>
-      <p class="small">Estimating → a bid → Plans (PDF): Claude reads the plan set and returns the takeoff as Estimate Import rows, priced from your price book. Admins and managers only.</p>
+      <p class="small">Commercial Estimating → a bid → Plans (PDF): Claude reads the plan set and returns the takeoff as Estimate Import rows, priced from your price book. Admins and managers only.</p>
       <p class="small">${s.anthropic_api_key_set ? '<span class="pill good">Anthropic key saved</span>' : '<span class="pill">Not set up</span>'} Usage is billed to your Anthropic account; each takeoff shows the tokens it used.</p>
       <form id="aif"><div class="form-grid">${fieldHtml({ name: 'anthropic_api_key', label: s.anthropic_api_key_set ? 'Anthropic API key (saved — leave blank to keep)' : 'Anthropic API key', type: 'password', full: true })}</div>
       <details class="small" style="margin:8px 0"><summary>How to get a key</summary><ol><li>Sign in at console.anthropic.com (or create an account) and add billing.</li><li>Under <b>API keys</b>, create a key for Field Ops.</li><li>Paste it here. It stays on your server and is never sent to browsers.</li></ol></details>

@@ -24,7 +24,7 @@ async function viewEstimating() {
   const T = d.totals, lbl = Object.fromEntries(d.statuses.map(s => [s.key, s.label]));
   const byId = new Map(d.bids.map(b => [b.id, b]));
   const count = st => d.bids.filter(b => b.status === st).length;
-  $('#view').innerHTML = setTop('Estimating', `<button class="btn" id="etpl">Estimate templates</button><button class="btn" id="eplist">Import price list</button><button class="btn" id="egc">Contractors</button>${isAdmin() ? '<button class="btn" id="ebf">Bid folders</button>' : ''}<button class="btn" id="eimp">Import workbook</button><button class="btn primary" id="enew">+ New bid</button>`,
+  $('#view').innerHTML = setTop('Commercial Estimating', `<button class="btn" id="etpl">Estimate templates</button><button class="btn" id="eplist">Import price list</button><button class="btn" id="egc">Contractors</button>${isAdmin() ? '<button class="btn" id="ebf">Bid folders</button>' : ''}<button class="btn" id="eimp">Import workbook</button><button class="btn primary" id="enew">+ New bid</button>`,
     'Commercial bids · admins and managers only') + `
     <div class="row" style="margin-bottom:12px;gap:8px;flex-wrap:wrap">
       <select id="eper" aria-label="Period">${[['all', 'All bids'], ['year', 'This year'], ['365', 'Last 12 months'], ['90', 'Last 90 days']].map(([k, v]) => `<option value="${k}" ${EST.period === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
@@ -740,7 +740,7 @@ async function viewBidFiles(id, sel) {
   const leaf = f => f.split('/').pop(), depth = f => f.split('/').length - 1;
   const here = d.files.filter(x => x.folder === sel);
   const title = `${d.bid.bid_number ? d.bid.bid_number + ' - ' : ''}${d.bid.project_name}`;
-  $('#view').innerHTML = setTop(`Files · ${esc(title)}`, `<a class="btn" href="#/estimating">← Estimating</a> <button class="btn" id="bfnew">＋ Folder</button>`,
+  $('#view').innerHTML = setTop(`Files · ${esc(title)}`, `<a class="btn" href="#/estimating">← Commercial Estimating</a> <button class="btn" id="bfnew">＋ Folder</button>`,
       'Same folders as the Google Drive project template. Drop files on a folder (left) or into the list. PDF, Word, Excel and photos, up to ' + d.max_mb + ' MB each.') + `
     <div class="bfgrid">
       <div class="card bftree" role="tree">${d.folders.map(f => `<div class="bff${f === sel ? ' on' : ''}" role="treeitem" tabindex="0" data-f="${esc(f)}" style="padding-left:${8 + depth(f) * 16}px">

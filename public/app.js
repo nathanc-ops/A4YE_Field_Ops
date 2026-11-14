@@ -238,7 +238,7 @@ const NAV = [
   { href: '#/reports', label: 'Reports', icon: '📈', roles: ['admin', 'manager', 'office'], perm: ['reports', 'timesheets', 'jobs'] },
   { href: '#/accounting', label: 'Accounting', icon: '📒', roles: ['admin', 'manager', 'office'], perm: 'accounting' },
   { href: '#/team', label: 'Team', icon: '👷', roles: ['admin'] },
-  { href: '#/estimating', label: 'Estimating', icon: '📐', roles: ['admin', 'manager'] },
+  { href: '#/estimating', label: 'Commercial Estimating', icon: '📐', roles: ['admin', 'manager'] },
   { href: '#/kpi', label: 'KPIs', icon: '🎯', roles: ['admin', 'manager', 'office'], show: () => S.user.kpi || isAdmin() },
   { href: '#/notifications', label: 'Notifications', icon: '🔔' },
   { href: '#/settings', label: 'Settings', icon: '⚙', roles: ['admin', 'manager', 'office'] },

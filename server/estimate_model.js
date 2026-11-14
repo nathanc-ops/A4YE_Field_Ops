@@ -17,7 +17,7 @@ const scopeLabel = k => (SCOPES.find(s => s[0] === k) || [, 'Electrical - Power'
 const phaseLabel = k => (PHASES.find(p => p[0] === k) || [, ''])[1];
 
 // Cover & Assumptions. Percentages are stored as percent (21.95 = 21.95%). Wages are market rates by classification
-// (no names): set your own under Estimating → Estimate templates.
+// (no names): set your own under Commercial Estimating → Estimate templates.
 const DEFAULTS = {
   commercial: {
     crew: [

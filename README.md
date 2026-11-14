@@ -231,7 +231,7 @@ A visit spanning several days counts its daily window (Mon–Fri 7–3 = 8 h a d
 ## Estimating dashboard (📐 Estimating)
 
 The commercial bid log from the Estimating Dashboard workbook. **Admins and managers only**: office staff and technicians don't see it, and the server refuses them.
-- **Import:** Estimating → Import workbook. Reads the DATA tab only (due date, bid #, project, the contractor columns marked X, date submitted, bid value, status, check-in notes). Bids match by bid #, so importing again updates them instead of adding copies.
+- **Import:** Commercial Estimating → Import workbook. Reads the DATA tab only (due date, bid #, project, the contractor columns marked X, date submitted, bid value, status, check-in notes). Bids match by bid #, so importing again updates them instead of adding copies.
 - **Totals use the sheet's formulas:** bids submitted (has a submitted date), total value, awarded, waiting. Added: win rate (awarded ÷ awarded + lost, by count and by $) and results per contractor.
 - **Due next** lists bids still being estimated, by due date; late ones are flagged. **Needs a check-in** lists bids waiting 14+ days since they went out and since the notes last changed.
 - A bid sent to two contractors counts under both, so the per-contractor $ adds up to more than the total (the sheet's "Bid Value % per Contractor" chart had the same double count).
