@@ -820,3 +820,4 @@ tr.kflash td { animation: kflash 1.6s ease-out; }
 .bff:hover, .bff:focus-visible { background: color-mix(in srgb, var(--series-1) 12%, transparent); outline: none; }
 .bff.on { background: color-mix(in srgb, var(--series-1) 22%, transparent); font-weight: 600; }
 .bff.drop { outline: 2px dashed var(--series-1); }
+.bff.bfroot { font-weight: 600; border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; margin-bottom: 4px; }

@@ -61,16 +61,27 @@ function kindOf(buf, filename) {
 module.exports = function bidFiles(app, db, { wrap }) {
   const only = (req, res, next) => ['admin', 'manager'].includes(req.user.role) ? next() : res.status(403).json({ error: 'Bid files are for admins and managers' });
   const bidOf = id => { const b = get(db, 'SELECT id, bid_number, project_name, job_id FROM bids WHERE id = ?', +id); if (!b) throw bad('Not found', 404); return b; };
+  // every folder the bid has: the template, folders added on this bid, and folders its files are in
+  const foldersOf = bidId => {
+    const out = new Set(template(db));
+    const more = [...all(db, 'SELECT folder FROM bid_folders WHERE bid_id = ?', bidId).map(r => r.folder), ...all(db, 'SELECT DISTINCT folder FROM bid_files WHERE bid_id = ?', bidId).map(r => r.folder)];
+    for (const f of more) { const p = f.split('/'); p.forEach((_, i) => out.add(p.slice(0, i + 1).join('/'))); }
+    return [...out];
+  };
+  // a folder with the same name (any letter case) at the same level is the same folder: use the one already there
+  const sameFolder = (bidId, folder) => {
+    const have = new Map(foldersOf(bidId).map(f => [f.toLowerCase(), f]));
+    const parts = folder.split('/'); let cur = '';
+    for (const p of parts) { const next = cur ? `${cur}/${p}` : p; cur = have.get(next.toLowerCase()) || next; }
+    return cur;
+  };
   const fileOf = (bid, fid) => { const f = get(db, 'SELECT * FROM bid_files WHERE id = ? AND bid_id = ?', +fid, bid.id); if (!f) throw bad('Not found', 404); return f; };
 
   app.get('/api/estimating/bids/:id/files', only, wrap((req, res) => {
     const b = bidOf(req.params.id);
     const files = all(db, `SELECT f.id, f.folder, f.filename, f.mime, f.size, f.created_at, u.name user_name FROM bid_files f
       LEFT JOIN users u ON u.id = f.user_id WHERE f.bid_id = ? ORDER BY lower(f.filename)`, b.id);
-    const extra = all(db, 'SELECT folder FROM bid_folders WHERE bid_id = ?', b.id).map(r => r.folder);
-    const folders = new Set(template(db));
-    for (const f of [...extra, ...files.map(x => x.folder)]) { const p = f.split('/'); p.forEach((_, i) => folders.add(p.slice(0, i + 1).join('/'))); }
-    res.json({ bid: b, folders: [...folders].sort((x, y) => x.localeCompare(y, undefined, { numeric: true })), files, max_mb: MAX_FILE / 1048576 });
+    res.json({ bid: b, folders: foldersOf(b.id).sort((x, y) => x.localeCompare(y, undefined, { numeric: true })), files, max_mb: MAX_FILE / 1048576 });
   }));
   // one file, raw bytes in the body (?folder=…&filename=…)
   app.post('/api/estimating/bids/:id/files', only, wrap((req, res) => {
@@ -81,13 +92,20 @@ module.exports = function bidFiles(app, db, { wrap }) {
     if (buf.length > MAX_FILE) throw bad(`${filename} is larger than ${MAX_FILE / 1048576} MB`);
     const k = kindOf(buf, filename);
     if (!k) throw bad(`${filename}: only PDF, Word (.doc/.docx), Excel (.xls/.xlsx) and photos (JPEG/PNG) can be added`);
-    const folder = cleanFolder(req.query.folder);
+    const folder = sameFolder(b.id, cleanFolder(req.query.folder));
     const rel = path.join('bids', String(b.id), `${crypto.randomBytes(12).toString('hex')}.${k.ext}`);
     fs.mkdirSync(path.join(UPLOAD_DIR, 'bids', String(b.id)), { recursive: true });
     fs.writeFileSync(path.join(UPLOAD_DIR, rel), buf);
-    const id = Number(run(db, 'INSERT INTO bid_files (bid_id, folder, filename, mime, size, path, user_id) VALUES (?,?,?,?,?,?,?)',
+    // a file with the same name in the same folder is replaced (the new copy wins)
+    const old = get(db, 'SELECT id, path FROM bid_files WHERE bid_id = ? AND folder = ? AND lower(filename) = ?', b.id, folder, filename.toLowerCase());
+    let id;
+    if (old) {
+      run(db, "UPDATE bid_files SET filename = ?, mime = ?, size = ?, path = ?, user_id = ?, created_at = datetime('now') WHERE id = ?", filename, k.mime, buf.length, rel, req.user.id, old.id);
+      try { fs.unlinkSync(path.join(UPLOAD_DIR, old.path)); } catch { /* already gone */ }
+      id = old.id;
+    } else id = Number(run(db, 'INSERT INTO bid_files (bid_id, folder, filename, mime, size, path, user_id) VALUES (?,?,?,?,?,?,?)',
       b.id, folder, filename, k.mime, buf.length, rel, req.user.id).lastInsertRowid);
-    res.json({ id, folder, mime: k.mime });
+    res.json({ id, folder, mime: k.mime, replaced: !!old });
   }));
   app.get('/api/estimating/bids/:id/files/:fid', only, wrap((req, res) => {
     const f = fileOf(bidOf(req.params.id), req.params.fid);
@@ -116,9 +134,14 @@ module.exports = function bidFiles(app, db, { wrap }) {
   }));
   // an extra folder on this bid only (the template is in Settings)
   app.post('/api/estimating/bids/:id/folders', only, wrap((req, res) => {
-    const b = bidOf(req.params.id), folder = cleanFolder(req.body.folder);
-    if (!get(db, 'SELECT 1 x FROM bid_folders WHERE bid_id = ? AND folder = ?', b.id, folder)) run(db, 'INSERT INTO bid_folders (bid_id, folder) VALUES (?,?)', b.id, folder);
-    res.json({ ok: true, folder });
+    const b = bidOf(req.params.id);
+    const list = (Array.isArray(req.body.folders) ? req.body.folders : [req.body.folder]).slice(0, 500);
+    const made = list.map(f => {
+      const folder = sameFolder(b.id, cleanFolder(f));
+      if (!foldersOf(b.id).includes(folder)) run(db, 'INSERT OR IGNORE INTO bid_folders (bid_id, folder) VALUES (?,?)', b.id, folder);
+      return folder;
+    });
+    res.json({ ok: true, folder: made[0], folders: made });
   }));
   app.get('/api/estimating/bid-folders', only, (req, res) => res.json({ folders: template(db), default: DEFAULT_FOLDERS, custom: !!settings(db).bid_folder_template }));
   // the bid behind a project (for its Files button)

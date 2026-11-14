@@ -102,3 +102,25 @@ test('the folder template can be changed in Settings; a project finds its bid', 
   assert.equal((await call('admin', 'GET', `/estimating/bid-for-job/${job}`)).data.id, bid);
   assert.equal(BF.cleanFolder(' a / ../b /c '), 'a/b/c');
 });
+
+test('adding a folder with the same name merges into it (any letter case); a same-named file is replaced', async () => {
+  await call('admin', 'PUT', '/settings', { bid_folder_template: '' });   // back to the Drive template
+  const bid = (await call('admin', 'POST', '/estimating/bids', { project_name: 'Sample Lab', bid_number: '9005' })).data.id;
+  const first = await upload('admin', bid, '001 - Precon/003 - Estimate', 'Takeoff.pdf', PDF);
+  const oldPath = db.prepare('SELECT path FROM bid_files WHERE id = ?').get(first.data.id).path;
+  // a whole folder dropped at the top level, named like the template folder but in other letter case, with a new subfolder
+  const mk = (await call('admin', 'POST', `/estimating/bids/${bid}/folders`, { folders: ['001 - PRECON', '001 - PRECON/003 - estimate', '001 - PRECON/Site Photos'] })).data;
+  assert.deepEqual(mk.folders, ['001 - Precon', '001 - Precon/003 - Estimate', '001 - Precon/Site Photos']);
+  const again = await upload('admin', bid, '001 - PRECON/003 - estimate', 'takeoff.PDF', Buffer.concat([PDF, Buffer.from('v2')]));
+  assert.equal(again.data.replaced, true); assert.equal(again.data.id, first.data.id);
+  assert.equal(again.data.folder, '001 - Precon/003 - Estimate', 'went into the existing folder');
+  const r = (await call('admin', 'GET', `/estimating/bids/${bid}/files`)).data;
+  assert.equal(r.files.length, 1, 'replaced, not duplicated');
+  assert.equal(r.files[0].filename, 'takeoff.PDF'); assert.equal(r.files[0].size, PDF.length + 2);
+  assert.equal(fs.existsSync(path.join(tmp, oldPath)), false, 'the old copy is removed from disk');
+  assert.ok(r.folders.includes('001 - Precon/Site Photos'));
+  assert.equal(r.folders.filter(f => f.toLowerCase() === '001 - precon').length, 1, 'no second Precon folder');
+  // a different name in the same folder is added alongside
+  await upload('admin', bid, '001 - Precon/003 - Estimate', 'Takeoff rev B.pdf', PDF);
+  assert.equal((await call('admin', 'GET', `/estimating/bids/${bid}/files`)).data.files.length, 2);
+});

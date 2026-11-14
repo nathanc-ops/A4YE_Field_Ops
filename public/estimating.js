@@ -717,21 +717,54 @@ async function bfOpen(bidId, f, download) {
   else { const a = document.createElement('a'); a.href = url; a.download = f.filename; document.body.append(a); a.click(); a.remove(); }
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
-async function bfUpload(bidId, folder, files) {
-  const okF = files.filter(bfOk), skipped = files.filter(f => !bfOk(f));
-  if (skipped.length) toast(`Skipped ${skipped.map(f => f.name).join(', ')} — only PDF, Word, Excel and photos`, true);
-  let n = 0;
-  for (const f of okF) {
-    uploadNote(`Uploading ${n + 1} of ${okF.length}: ${f.name}…`);
-    const res = await fetch(`/api/estimating/bids/${bidId}/files?folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(f.name)}`, { method: 'POST',
+// Read what was dropped: plain files, and whole folders with everything inside them (any depth).
+// Each item is { file, dir } where dir is the path inside what was dropped ("" for a loose file).
+async function bfDropped(dt) {
+  const entries = [...(dt.items || [])].map(it => it.webkitGetAsEntry && it.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return { items: [...dt.files].map(file => ({ file, dir: '' })), dirs: [] };
+  const items = [], dirs = [];
+  const readAll = r => new Promise(ok => { const out = []; const next = () => r.readEntries(b => { if (!b.length) return ok(out); out.push(...b); next(); }, () => ok(out)); next(); });
+  const walk = async (en, dir) => {
+    if (en.isFile) { const file = await new Promise((ok, no) => en.file(ok, no)); items.push({ file, dir }); return; }
+    const here = dir ? `${dir}/${en.name}` : en.name; dirs.push(here);
+    for (const c of await readAll(en.createReader())) await walk(c, here);
+  };
+  for (const en of entries) await walk(en, '');
+  return { items, dirs };
+}
+// "Choose a folder…": the browser gives each file its path inside the chosen folder
+const bfPicked = fl => {
+  const items = [...fl].map(file => ({ file, dir: (file.webkitRelativePath || '').split('/').slice(0, -1).join('/') }));
+  return { items, dirs: [...new Set(items.map(i => i.dir).filter(Boolean))] };
+};
+// target '' = the top level (only folders can go there). A folder with the same name as one already here is the same
+// folder (any letter case): its files are added to it, and a file with the same name replaces the one there.
+async function bfUpload(bidId, target, { items, dirs = [] }) {
+  const join = (a, b) => [a, b].filter(Boolean).join('/');
+  // adding "001 - Precon" while "001 - Precon" is open: it's the same folder, so merge into it instead of nesting a copy
+  const here = (target.split('/').pop() || '').toLowerCase();
+  const same = d => here && d.split('/')[0].toLowerCase() === here;
+  if (here && [...dirs, ...items.map(i => i.dir).filter(Boolean)].every(same)) {
+    const strip = d => d.split('/').slice(1).join('/');
+    dirs = dirs.map(strip).filter(Boolean); items = items.map(i => ({ ...i, dir: strip(i.dir) }));
+  }
+  const loose = items.filter(i => !i.dir && !target);
+  if (loose.length) toast(`${loose.map(i => i.file.name).join(', ')}: pick a folder for loose files (the top level holds folders only)`, true);
+  const okI = items.filter(i => (i.dir || target) && bfOk(i.file)), skipped = items.filter(i => (i.dir || target) && !bfOk(i.file));
+  if (dirs.length) await POST(`/estimating/bids/${bidId}/folders`, { folders: dirs.map(d => join(target, d)) }).catch(() => null);
+  let n = 0, replaced = 0;
+  for (const { file: f, dir } of okI) {
+    uploadNote(`Uploading ${n + 1} of ${okI.length}: ${join(dir, f.name)}…`);
+    const res = await fetch(`/api/estimating/bids/${bidId}/files?folder=${encodeURIComponent(join(target, dir))}&filename=${encodeURIComponent(f.name)}`, { method: 'POST',
       headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': 'application/octet-stream' }, body: f });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { uploadNote(''); toast(`${f.name}: ${data.error || (res.status === 413 ? 'too large for the server' : `upload failed (${res.status})`)}`, true); break; }
-    n++;
+    n++; if (data.replaced) replaced++;
   }
   uploadNote('');
-  if (n) toast(`${n} file${n === 1 ? '' : 's'} added to ${folder.split('/').pop()}`);
-  return n;
+  if (n || dirs.length) toast(`${n} file${n === 1 ? '' : 's'} added${replaced ? ` (${replaced} replaced a file with the same name)` : ''}${dirs.length ? `, ${dirs.length} folder${dirs.length === 1 ? '' : 's'}` : ''}`);
+  if (skipped.length) toast(`Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} that aren't PDF, Word, Excel or photos: ${skipped.slice(0, 5).map(i => i.file.name).join(', ')}${skipped.length > 5 ? '…' : ''}`, true);
+  return n || dirs.length;
 }
 async function viewBidFiles(id, sel) {
   const d = await GET(`/estimating/bids/${id}/files`);
@@ -741,15 +774,15 @@ async function viewBidFiles(id, sel) {
   const here = d.files.filter(x => x.folder === sel);
   const title = `${d.bid.bid_number ? d.bid.bid_number + ' - ' : ''}${d.bid.project_name}`;
   $('#view').innerHTML = setTop(`Files · ${esc(title)}`, `<a class="btn" href="#/estimating">← Commercial Estimating</a> <button class="btn" id="bfnew">＋ Folder</button>`,
-      'Same folders as the Google Drive project template. Drop files on a folder (left) or into the list. PDF, Word, Excel and photos, up to ' + d.max_mb + ' MB each.') + `
+      'Same folders as the Google Drive project template. Drop files or whole folders on a folder (left) or into the list. A folder with the same name as one here merges into it, and a file with the same name replaces the old one. PDF, Word, Excel and photos, up to ' + d.max_mb + ' MB each.') + `
     <div class="bfgrid">
-      <div class="card bftree" role="tree">${d.folders.map(f => `<div class="bff${f === sel ? ' on' : ''}" role="treeitem" tabindex="0" data-f="${esc(f)}" style="padding-left:${8 + depth(f) * 16}px">
+      <div class="card bftree" role="tree"><div class="bff bfroot" role="treeitem" tabindex="0" data-f="" title="Drop folders here to add them at the top level"><span>🗂 ${esc(title)}</span></div>${d.folders.map(f => `<div class="bff${f === sel ? ' on' : ''}" role="treeitem" tabindex="0" data-f="${esc(f)}" style="padding-left:${8 + depth(f) * 16}px">
         <span>${f === sel ? '📂' : '📁'} ${esc(leaf(f))}</span>${count(f) ? `<span class="pill">${count(f)}</span>` : ''}</div>`).join('')}</div>
       <div class="card">
         <div class="small muted" style="margin-bottom:6px">${esc(title)} / ${sel.split('/').map(esc).join(' / ')}</div>
-        <div class="fdrop" id="bfdrop" tabindex="0" role="button"><b>Drop files here</b> or <span class="btn sm">Choose files…</span>
-          <div class="small muted">Adds to <b>${esc(leaf(sel))}</b>. PDF, Word (.doc/.docx), Excel (.xls/.xlsx), photos.</div>
-          <input type="file" multiple hidden accept="${BF_ACCEPT}"></div>
+        <div class="fdrop" id="bfdrop" tabindex="0" role="button"><b>Drop files or folders here</b> or <span class="btn sm">Choose files…</span> <span class="btn sm" id="bfdirbtn">Choose a folder…</span>
+          <div class="small muted">Adds to <b>${esc(leaf(sel))}</b>. PDF, Word (.doc/.docx), Excel (.xls/.xlsx), photos. Same name = replaced.</div>
+          <input type="file" multiple hidden accept="${BF_ACCEPT}"><input type="file" id="bfdir" hidden webkitdirectory multiple></div>
         ${here.length ? `<table class="items" style="margin-top:10px"><thead><tr><th>Name</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
           ${here.map(f => `<tr><td><a href="#" data-open="${f.id}">${bfIcon(f)} ${esc(f.filename)}</a></td><td class="num">${mb(f.size)}</td>
             <td class="small">${fmtDT(f.created_at)}${f.user_name ? `<div class="muted">${esc(f.user_name)}</div>` : ''}</td>
@@ -761,19 +794,21 @@ async function viewBidFiles(id, sel) {
   const byId = new Map(d.files.map(f => [String(f.id), f]));
   const reload = f => viewBidFiles(id, f || sel);
   $$('.bff').forEach(el => {
-    el.onclick = () => reload(el.dataset.f);
-    el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reload(el.dataset.f); } };
+    const root = !el.dataset.f;
+    el.onclick = () => root ? toast('Drop a folder here to add it at the top level (a folder with the same name merges into the one here)') : reload(el.dataset.f);
+    el.onkeydown = e => { if (!root && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); reload(el.dataset.f); } };
     el.ondragover = e => { e.preventDefault(); el.classList.add('drop'); };
     el.ondragleave = () => el.classList.remove('drop');
-    el.ondrop = async e => { e.preventDefault(); el.classList.remove('drop'); if (await bfUpload(id, el.dataset.f, [...e.dataTransfer.files])) reload(el.dataset.f); };
+    el.ondrop = async e => { e.preventDefault(); el.classList.remove('drop'); if (await bfUpload(id, el.dataset.f, await bfDropped(e.dataTransfer))) reload(root ? sel : el.dataset.f); };
   });
-  const drop = $('#bfdrop'), inp = $('input', drop);
-  drop.onclick = e => { if (e.target !== inp) inp.click(); };
+  const drop = $('#bfdrop'), inp = $('input', drop), dirInp = $('#bfdir');
+  drop.onclick = e => { if (e.target.id === 'bfdirbtn') { dirInp.click(); return; } if (e.target !== inp && e.target !== dirInp) inp.click(); };
+  dirInp.onchange = async () => { const picked = bfPicked(dirInp.files); dirInp.value = ''; if (await bfUpload(id, sel, picked)) reload(); };
   drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } };
-  inp.onchange = async () => { const fl = [...inp.files]; inp.value = ''; if (await bfUpload(id, sel, fl)) reload(); };
+  inp.onchange = async () => { const fl = [...inp.files]; inp.value = ''; if (await bfUpload(id, sel, { items: fl.map(file => ({ file, dir: '' })) })) reload(); };
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
   drop.ondragleave = () => drop.classList.remove('on');
-  drop.ondrop = async e => { e.preventDefault(); drop.classList.remove('on'); if (await bfUpload(id, sel, [...e.dataTransfer.files])) reload(); };
+  drop.ondrop = async e => { e.preventDefault(); drop.classList.remove('on'); if (await bfUpload(id, sel, await bfDropped(e.dataTransfer))) reload(); };
   $$('[data-open]').forEach(a => a.onclick = e => { e.preventDefault(); bfOpen(id, byId.get(a.dataset.open)); });
   $$('[data-dl]').forEach(b => b.onclick = () => bfOpen(id, byId.get(b.dataset.dl), true));
   $$('[data-mv]').forEach(s2 => s2.onchange = async () => { if (!s2.value) return; await act(() => PUT(`/estimating/bids/${id}/files/${s2.dataset.mv}`, { folder: s2.value }), 'Moved'); reload(); });
